@@ -1,0 +1,409 @@
+import json
+import logging
+import datetime
+import traceback
+import asyncio
+from typing import Dict, List, Optional, Any
+import re
+
+import requests
+import gradio as gr
+from openai import OpenAI
+from wolframalpha import Client as WolframClient
+from openai.types.chat import ChatCompletionMessageToolCall
+from openai.types.chat.chat_completion_message_tool_call import Function
+
+# Import your existing utilities
+from utils import config
+from utils.haos.haos import HomeAssistant
+import utils.haos.haos_tools_defs as haos_tools_defs
+import utils.general_tools_defs as general_tools_defs
+from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
+import shared.scripts.logger as logger_module
+
+
+logger = logger_module.get_logger('custom')
+logger.setLevel(logging.DEBUG)
+
+
+class SeleneAgent:
+    """AI Agent that integrates with OpenAI-Compatible APIs and various tools."""
+    
+    def __init__(self, api_base: str = None, api_key: str = None):
+        self.agent_name = "Selene"
+        self.client = OpenAI(
+            base_url=api_base or config.LLM_API_BASE,
+            api_key=api_key or config.LLM_API_KEY or "dummy-key"
+        )
+        
+        self.model_name = self._detect_model()
+        logger.info(f"Using model: {self.model_name}")
+        
+        self.temperature = 0.1
+        self.top_p = 0.95
+        self.top_k = 20
+        self.max_tokens = 1024
+        
+        self.haos = HomeAssistant()
+        self.wolfram = WolframClient(config.WOLFRAM_ALPHA_API_KEY)
+        self.tools = self._setup_tools() #OpenAI format
+        self.tool_functions = self._setup_tool_functions()
+        self.messages = []
+    
+    def _detect_model(self) -> str:
+        """Auto-detect the loaded model from the API"""
+        try:
+            models_response = self.client.models.list()
+            
+            if models_response and hasattr(models_response, 'data') and models_response.data:
+                detected_model = models_response.data[0].id
+                return detected_model
+                
+        except Exception as e:
+            logger.debug(f"Standard model detection failed: {e}")
+
+            try:
+                base_url = str(self.client.base_url).rstrip('/')
+                models_url = f"{base_url}/models"
+                
+                response = requests.get(models_url, timeout=5)
+                response.raise_for_status()
+                
+                data = response.json()
+
+                if 'data' in data and data['data']:
+                    return data['data'][0]['id']
+                elif 'models' in data and data['models']:
+                    return data['models'][0]['name']
+                    
+            except Exception as e2:
+                logger.debug(f"Direct request also failed: {e2}")
+            
+            logger.warning("Could not detect specific model, using default 'llama'")
+            return "llama"
+        
+    def _setup_tools(self) -> List[Dict[str, Any]]:
+        """Concatenate all tool sources into one list"""
+        tools = []
+        haos_tools = haos_tools_defs.HaosTools()
+        general_tools = general_tools_defs.GeneralTools()
+        tools = haos_tools + general_tools
+        return tools
+    
+    def _setup_tool_functions(self) -> Dict[str, callable]:
+        """Map tool names to their implementation functions"""
+        return {
+            'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
+            'home_assistant.get_domain_services': self.haos.get_domain_services,
+            'home_assistant.execute_service': self.haos.execute_service,
+            'brave_search': self.brave_search,
+            'wolfram_alpha': self.wolfram_alpha
+        }
+    
+    async def init(self):
+        """Initialize the agent with system prompt"""
+        system_prompt = f"""You are {self.agent_name}, a helpful AI assistant with access to various tools.
+Current date and time: {datetime.datetime.now().strftime("%d %B, %Y - %H:%M:%S")}
+Current Location: {config.CURRENT_LOCATION}
+Zip Code: {config.CURRENT_ZIPCODE}
+
+You have access to the following tools:
+- Home Assistant controls for smart home devices
+- Web search via Brave Search
+- Computational queries via Wolfram Alpha
+
+Use these tools when needed to help answer questions or perform actions.
+Be concise but thorough in your responses."""
+        
+        self.messages = [{"role": "system", "content": system_prompt}]
+    
+    def clear_messages(self):
+        """Clear conversation history and reinitialize"""
+        asyncio.create_task(self.init())
+    
+    @with_trace
+
+    def query(self, query: str) -> str:
+        """Process a user query using chat completion with tools"""
+        trace_id = get_trace_id()
+        
+        try:
+            self.messages.append({"role": "user", "content": query})
+            
+            logger.info(f"Query: {query}", extra={"trace_id": trace_id})
+
+            max_iterations = 3  #  prevent infinite loops
+            iteration = 0
+            
+            while iteration < max_iterations:
+                iteration += 1
+                logger.debug(f"Iteration {iteration} of tool calling loop. Calling assistant now", 
+                        extra={"trace_id": trace_id})
+                logger.debug(f"Current messages: {self.messages}", 
+                        extra={"trace_id": trace_id})
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=self.messages,
+                    tools=self.tools,
+                    tool_choice="auto",
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    max_tokens=self.max_tokens
+                )
+
+                assistant_message = response.choices[0].message
+                logger.debug(f"Assistant response: {assistant_message}", 
+                        extra={"trace_id": trace_id})
+
+                if assistant_message.content and not assistant_message.tool_calls:
+                    tool_calls_extracted = self._extract_tool_calls_from_content(
+                        assistant_message.content
+                    )
+                    
+                    if tool_calls_extracted:
+                        logger.debug(f"Extracted {len(tool_calls_extracted)} tool calls from content", 
+                                extra={"trace_id": trace_id})
+                        
+                        formatted_tool_calls = []
+                        for idx, tool_data in enumerate(tool_calls_extracted):
+                            tool_call = ChatCompletionMessageToolCall(
+                                id=f"call_{trace_id}_{iteration}_{idx}",
+                                type="function",
+                                function=Function(
+                                    name=tool_data["name"],
+                                    arguments=json.dumps(tool_data["arguments"])
+                                )
+                            )
+                            formatted_tool_calls.append(tool_call)
+
+                        assistant_message.tool_calls = formatted_tool_calls
+                        assistant_message.content = None
+                if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls == []:
+                    assistant_message.tool_calls = None
+                self.messages.append(assistant_message.model_dump())
+
+                if assistant_message.tool_calls:
+                    logger.debug(f"Model requested {len(assistant_message.tool_calls)} tool calls", 
+                            extra={"trace_id": trace_id})
+
+                    for tool_call in assistant_message.tool_calls:
+                        logger.debug(f"Executing tool: {tool_call.function.name}", 
+                                extra={"trace_id": trace_id})
+                        result = self._execute_tool_call(tool_call)
+                        logger.debug(f"Tool result: {result}", 
+                                extra={"trace_id": trace_id})
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result
+                        })
+
+                    continue
+
+                if assistant_message.content:
+                    logger.info(f"Got final response after {iteration} iteration(s)", 
+                            extra={"trace_id": trace_id})
+                    return assistant_message.content
+
+                logger.warning(f"Response had neither tool calls nor content", 
+                            extra={"trace_id": trace_id})
+                break
+
+            if iteration >= max_iterations:
+                logger.error(f"Hit maximum iterations ({max_iterations}) in tool calling loop", 
+                        extra={"trace_id": trace_id})
+                return "ERROR: Maximum tool calling iterations reached. The model may be stuck in a loop."
+            
+            # Fallback
+            return "ERROR: No valid response generated"
+            
+        except Exception as e:
+            logger.error(f"Error in query: {e}\n{traceback.format_exc()}", 
+                        extra={"trace_id": trace_id})
+            return f"ERROR: {str(e)}"
+
+
+    def _extract_tool_calls_from_content(self, content: str) -> Optional[list]:
+        """
+        Extract tool calls from content wrapped in <tool_call> tags.
+        
+        Args:
+            content: The response content that may contain tool calls
+            
+        Returns:
+            List of tool call dictionaries or None if no tool calls found
+        """
+        if not content:
+            return None
+
+        pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+        matches = re.findall(pattern, content, re.DOTALL)
+        
+        if not matches:
+            return None
+        
+        tool_calls = []
+        for match in matches:
+            try:
+                tool_data = json.loads(match.strip())
+
+                if "name" in tool_data and "arguments" in tool_data:
+                    tool_calls.append(tool_data)
+                else:
+                    logger.warning(f"Invalid tool call structure: {tool_data}", 
+                                extra={"trace_id": get_trace_id()})
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse tool call JSON: {e}\nContent: {match}", 
+                            extra={"trace_id": get_trace_id()})
+                continue
+        
+        return tool_calls if tool_calls else None
+    
+    @with_trace
+    def _execute_tool_call(self, tool_call) -> str:
+        """Execute a single tool call"""
+        trace_id = get_trace_id()
+        
+        try:
+            function_name = tool_call.function.name
+            function_args = json.loads(tool_call.function.arguments)
+            
+            logger.debug(f"Executing tool: {function_name} with args: {function_args}", 
+                        extra={"trace_id": trace_id})
+            
+            if function_name in self.tool_functions:
+                result = self.tool_functions[function_name](**function_args)
+                return str(result)
+            else:
+                return f"ERROR: Unknown tool '{function_name}'"
+                
+        except Exception as e:
+            logger.error(f"Error executing tool {tool_call.function.name}: {e}", 
+                        extra={"trace_id": trace_id})
+            return f"ERROR executing tool: {str(e)}"
+    
+    @with_trace
+    def brave_search(self, query: str) -> str:
+        """Search the web using Brave Search API"""
+        trace_id = get_trace_id()
+        
+        url = "https://api.search.brave.com/res/v1/web/search"
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": config.BRAVE_SEARCH_API_KEY,
+            "Cache-Control": "no-cache"
+        }
+        params = {
+            "q": query,
+            "count": 4,
+            "safesearch": "off"
+        }
+        
+        try:
+            logger.debug(f"Brave Search Query: {query}", extra={"trace_id": trace_id})
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            results = response.json()['web']['results']
+            formatted_results = []
+            for i, result in enumerate(results, 1):
+                formatted_results.append(
+                    f"{i}. {result['title']}\n   {result['url']}\n   {result.get('description', '')}"
+                )
+            
+            return "\n\n".join(formatted_results)
+            
+        except Exception as e:
+            logger.error(f"Error in Brave Search: {e}", extra={"trace_id": trace_id})
+            return f"Error searching: {str(e)}"
+    
+    @with_trace
+    def wolfram_alpha(self, query: str) -> str:
+        """Query Wolfram Alpha"""
+        trace_id = get_trace_id()
+        resp = self.wolfram.query(input=query)
+        logger.debug(f"Wolfram Alpha Query: {query}\nResponse: {str(resp)}", extra={"trace_id": trace_id})
+        return str(resp)
+
+
+class SeleneRunner:
+    """Runner class for Gradio interface"""
+    
+    def __init__(self):
+        self.agent = SeleneAgent()
+        
+    async def init(self):
+        await self.agent.init()
+    
+    @with_trace
+    def process_input(self, text: str, history=None) -> str:
+        """Process user input and return response"""
+        trace_id = set_trace_id()
+        
+        response = self.agent.query(text)
+        logger.info(f"Response: {response}", extra={"trace_id": trace_id})
+        
+        return response
+    
+    def close(self):
+        """Cleanup if needed"""
+        pass
+
+
+@with_trace
+async def main():
+    """Main entry point"""
+    trace_id = get_trace_id()
+    
+    try:
+        logger.info("Starting Selene Agent", extra={"trace_id": trace_id})
+        
+        runner = SeleneRunner()
+        await runner.init()
+
+        iface = gr.Interface(
+            fn=runner.process_input,
+            inputs=gr.Textbox(label="Enter your message", lines=3),
+            outputs=gr.Textbox(label="Selene's Response", lines=10),
+            title="Selene Agent",
+            description="AI Assistant with tools integration",
+            theme=gr.themes.Soft()
+        )
+        
+        logger.info("Starting Gradio Interface", extra={"trace_id": trace_id})
+        iface.launch(server_name="0.0.0.0", server_port=6002)
+        
+    except Exception as e:
+        logger.error(f"Error in main: {e}\n{traceback.format_exc()}", 
+                    extra={"trace_id": trace_id})
+        raise
+    finally:
+        runner.close()
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run Selene Agent with auto-detected model')
+    parser.add_argument(
+        '--api-base', 
+        type=str, 
+        default=None,
+        help='Override API base URL'
+    )
+    parser.add_argument(
+        '--api-key', 
+        type=str, 
+        default=None,
+        help='Override API key'
+    )
+    
+    args = parser.parse_args()
+    if args.api_base or args.api_key:
+        if args.api_base:
+            config.LLM_API_BASE = args.api_base
+        if args.api_key:
+            config.LLM_API_KEY = args.api_key
+    
+    asyncio.run(main())

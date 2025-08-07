@@ -1,0 +1,5 @@
+coqui-tts==0.24.1
+gradio
+fastapi
+uvicorn
+aiofiles

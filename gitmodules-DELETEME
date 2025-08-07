@@ -1,0 +1,24 @@
+[submodule "large-language-model/llama.cpp"]
+	path = large-language-model/llama.cpp
+	url = https://github.com/ggerganov/llama.cpp.git
+[submodule "speech-to-text/whisper_streaming"]
+	path = speech-to-text/whisper_streaming
+	url = https://github.com/ufal/whisper_streaming.git
+[submodule "tools/tabbyapi/tabbyAPI"]
+	path = tools/tabbyapi/tabbyAPI
+	url = https://github.com/theroyallab/tabbyAPI.git
+[submodule "text-to-image/stable-diffusion-webui"]
+	path = text-to-image/stable-diffusion-webui
+	url = https://github.com/AUTOMATIC1111/stable-diffusion-webui.git
+[submodule "image-to-text/vllm"]
+	path = image-to-text/vllm
+	url = https://github.com/vllm-project/vllm.git
+[submodule "text-to-image/comfyui/ComfyUI"]
+	path = text-to-image/comfyui/ComfyUI
+	url = https://github.com/comfyanonymous/ComfyUI.git
+[submodule "speech-to-text/app/whisper_streaming"]
+	path = speech-to-text/app/whisper_streaming
+	url = https://github.com/ufal/whisper_streaming.git
+[submodule "text-to-speech/coqui-ai-TTS"]
+	path = text-to-speech/coqui-ai-TTS
+	url = https://github.com/idiap/coqui-ai-TTS.git

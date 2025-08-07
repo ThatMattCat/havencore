@@ -1,0 +1,68 @@
+services:
+  agent:
+    build:
+      context: ./services/agent
+      dockerfile: Dockerfile
+    image: agent:${VERSION:-latest}
+    volumes:
+      - ./services/agent/app:/app
+      - ./shared:/app/shared:ro
+      # - agent_data:/app/data
+    ports:
+      - "6002:6002"
+    restart: unless-stopped
+    profiles:
+      - assistant 
+  speech-to-text:
+    build:
+      context: ./services/speech-to-text
+      dockerfile: Dockerfile
+    image: speech-to-text:${VERSION:-latest}
+    volumes:
+      - ./services/speech-to-text/app:/app
+      - ./shared:/app/shared:ro
+    ports:
+      - "6000:6000"
+      - "5999:5999"
+    environment:
+      - CUDA_VISIBLE_DEVICES=3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    profiles:
+      - assistant
+      - ai
+
+  text-to-speech:
+    build:
+      context: ./services/text-to-speech
+      dockerfile: Dockerfile
+    image: text-to-speech:${VERSION:-latest}
+    ports:
+      - "6004:6004" # UI/API
+      - "6003:6003" # Serving audio files
+    environment:
+      - COQUI_TOS_AGREED=1
+    deploy:
+      resources:
+        reservations: # GPU Device handled in main.py
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+#      - ./text-to-speech/app/certs:/app/certs
+      - ./services/text-to-speech/app/flagged:/app/flagged
+#      - ./text-to-speech/app/models:/app/models
+      - ./services/text-to-speech/app/output:/app/output
+      - ./services/text-to-speech/app/config.py:/app/config.py
+      - ./shared:/app/shared:ro
+    restart: unless-stopped
+    profiles:
+      - assistant
+      - ai

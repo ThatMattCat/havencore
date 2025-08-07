@@ -1,0 +1,6 @@
+requests
+openai
+HomeAssistant-API
+gradio
+wolframalpha
+nltk
