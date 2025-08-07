@@ -1,0 +1,14 @@
+import os
+from logging.config import dictConfig
+
+# Get the directory of the config.py file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CURRENT_LOCATION = "Citytonville, OH, USA"
+CURRENT_ZIPCODE = "00000"
+HAOS_URL = "https://your.home-assistant.url/api"
+HAOS_TOKEN = "HOME_ASSISTANT_LONG_LIVED_ACCESS_TOKEN"
+LLM_API_KEY = "LLM_API_KEY" # If you use a custom LLM API key
+LLM_API_BASE = "http://YOUR_LLM_IP:PORT/v1"
+WOLFRAM_ALPHA_API_KEY = "YOUR_WOLFRAM_ALPHA_API_KEY"
+BRAVE_SEARCH_API_KEY = "YOUR_BRAVE_SEARCH_API_KEY"

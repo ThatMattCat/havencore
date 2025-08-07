@@ -11,8 +11,6 @@ services:
     ports:
       - "6002:6002"
     restart: unless-stopped
-    profiles:
-      - assistant 
   speech-to-text:
     build:
       context: ./services/speech-to-text
@@ -34,10 +32,6 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    profiles:
-      - assistant
-      - ai
-
   text-to-speech:
     build:
       context: ./services/text-to-speech
@@ -63,6 +57,3 @@ services:
       - ./services/text-to-speech/app/config.py:/app/config.py
       - ./shared:/app/shared:ro
     restart: unless-stopped
-    profiles:
-      - assistant
-      - ai
