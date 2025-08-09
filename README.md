@@ -48,7 +48,7 @@ git clone https://github.com/ThatMattCat/havencore.git
 
 ### Configure
 
-Required configurations are in `shared/configs/shared_config.py`
+Rename `shared/configs/shared_config.py.tmpl` to `shared/configs/shared_config.py` and change all values to fit your environment. 
 
 ### Run
 
