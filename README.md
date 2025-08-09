@@ -1,16 +1,28 @@
 # HavenCore
 
-Self-hosted Smart Home
+Self-Hosted AI Smart Home
 
-[Edge Device Code](https://github.com/ThatMattCat/havencore-edge/tree/main)
+### Overview
 
+This is a personal project slowly being templated for more general use. It is designed to host multiple AI models (audio, text, etc) and act as a voice-activated smart home AI. Current models/functionality:
 
-This project is a work in progress.
-This repo doesn't quite contain all necessary info (xtts2 model missing, at minimum) - Updates to come
+* Integrates with an [Edge Device with Wake-Word Activation](https://github.com/ThatMattCat/havencore-edge/tree/main) (eg: Replacement for Alexa or Google Home) - Designed for RPi3 with [ReSpeaker 4-Mic Array](https://www.seeedstudio.com/ReSpeaker-USB-Mic-Array-p-4247.html) (testing others soon) and a speaker connected to the Pi.
+* Speech-To-Text - Near Realtime Transcription using [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+* Text-To-Speech - Converts LLM response to audio using [Coqui xTTSv2](https://github.com/coqui-ai/TTS). Results are played back on the Edge device.
+* _Large Language Model_ - Not yet included in these containers, must host on your own. Any OpenAI-like API with tool-calling should work but I use llama.cpp(Qwen3 235B Instruct GGUF) and vLLM (Mistral Large 2411 AWQ).
+
+It is written to use the following as tools (function calling):
+
+* Home Assistant - Uses the Python [HomeAssistant-API](https://pypi.org/project/HomeAssistant-API/) package to get device states and perform actions. WARN: Currently no safeguards here, it can try to use any entity/service. The built-in LLM system prompt works for larger AI models (they have enough built-in knowledge to utilize actions) but some may need further information in the system prompt.
+* Brave Search - Used for general web searches to collect URLs. The free API only provides web searches so this doesn't have much use yet without a scraped to parse the search results (TBD). Paid versions of Brave API provide much more value(eg: Summarized results to avoid scraping) and should also be integrated in the future.
+* WolframAlpha - Free API so why not. Doesn't get much use on a day-to-day basis but cool when its needed.
+* More To Come - These are easy to add, just keeping it minimal during the initial build
+
+This project aims to avoid high-level AI libraries (LangChain,etc) in order to allow a wider variety of lower-level setups. That requires a little more boiler-plate code but allows more flexibility when choosing the local AI models & hosting solutions, especially when working in the limits of a Consumer-hosted system like a homelab.
 
 ### Requirements
 
-This project currently has *very* specific requirements but I'll template it out shortly. Works on Ubuntu 24.04 with SuperMicro H12SSL-I server connected to four RTX 3090 GPUs
+This project currently has *very* specific requirements but will be templated out shortly. Works on Ubuntu 22.04 with SuperMicro H12SSL-I server connected to four RTX 3090 GPUs
 
 1. Users must run/have access to an LLM with OpenAI-like API endpoints
 2. Graphics cards (currently hard-coded to require four GPUs, will fix)
