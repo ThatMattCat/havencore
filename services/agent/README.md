@@ -2,7 +2,7 @@
 
 This is essentially responsible for the perceived "Agent" persona, since it controls inference and final response.
 
-The layer between any services and the final LLM Model. Controls tool/function-calling, system prompts, inference configs, and similar. Receives text, and responds with text, on port 6002. 6002 hosts a Gradio API, it can called called as an API at `http://HOST:6002/predict` or accessed directly at `http://HOST:6002`
+The layer between any services and the final LLM Model. Controls tool/function-calling, system prompts, inference configs, and similar. Receives text, and responds with text, on port 6002. 6002 hosts a Gradio API, it can be called as an API or accessed through the UI at `http://HOST_IP:6002`
 
 Example API call to this service:
 
