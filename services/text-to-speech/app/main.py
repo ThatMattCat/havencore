@@ -13,8 +13,9 @@ import torch
 import uuid
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
+import shared.configs.shared_config as shared_config
 
-logger = logger_module.get_logger('custom')
+logger = logger_module.get_logger('loki')
 
 os.makedirs(config.AUDIO_DIR, exist_ok=True)
 

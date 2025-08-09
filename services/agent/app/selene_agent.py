@@ -13,16 +13,16 @@ from wolframalpha import Client as WolframClient
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function
 
-# Import your existing utilities
-from utils import config
+#from utils import local_config
 from utils.haos.haos import HomeAssistant
 import utils.haos.haos_tools_defs as haos_tools_defs
 import utils.general_tools_defs as general_tools_defs
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
+import shared.configs.shared_config as shared_config
 
 
-logger = logger_module.get_logger('custom')
+logger = logger_module.get_logger('loki')
 logger.setLevel(logging.DEBUG)
 
 
@@ -32,8 +32,8 @@ class SeleneAgent:
     def __init__(self, api_base: str = None, api_key: str = None):
         self.agent_name = "Selene"
         self.client = OpenAI(
-            base_url=api_base or config.LLM_API_BASE,
-            api_key=api_key or config.LLM_API_KEY or "dummy-key"
+            base_url=api_base or shared_config.LLM_API_BASE,
+            api_key=api_key or shared_config.LLM_API_KEY or "dummy-key"
         )
         
         self.model_name = self._detect_model()
@@ -45,7 +45,7 @@ class SeleneAgent:
         self.max_tokens = 1024
         
         self.haos = HomeAssistant()
-        self.wolfram = WolframClient(config.WOLFRAM_ALPHA_API_KEY)
+        self.wolfram = WolframClient(shared_config.WOLFRAM_ALPHA_API_KEY)
         self.tools = self._setup_tools() #OpenAI format
         self.tool_functions = self._setup_tool_functions()
         self.messages = []
@@ -58,7 +58,7 @@ class SeleneAgent:
             if models_response and hasattr(models_response, 'data') and models_response.data:
                 detected_model = models_response.data[0].id
                 return detected_model
-                
+
         except Exception as e:
             logger.debug(f"Standard model detection failed: {e}")
 
@@ -104,8 +104,8 @@ class SeleneAgent:
         """Initialize the agent with system prompt"""
         system_prompt = f"""You are {self.agent_name}, a helpful AI assistant with access to various tools.
 Current date and time: {datetime.datetime.now().strftime("%d %B, %Y - %H:%M:%S")}
-Current Location: {config.CURRENT_LOCATION}
-Zip Code: {config.CURRENT_ZIPCODE}
+Current Location: {shared_config.CURRENT_LOCATION}
+Zip Code: {shared_config.CURRENT_ZIPCODE}
 
 You have access to the following tools:
 - Home Assistant controls for smart home devices
@@ -291,7 +291,7 @@ Be concise but thorough in your responses."""
         headers = {
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
-            "X-Subscription-Token": config.BRAVE_SEARCH_API_KEY,
+            "X-Subscription-Token": shared_config.BRAVE_SEARCH_API_KEY,
             "Cache-Control": "no-cache"
         }
         params = {
@@ -402,8 +402,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.api_base or args.api_key:
         if args.api_base:
-            config.LLM_API_BASE = args.api_base
+            shared_config.LLM_API_BASE = args.api_base
         if args.api_key:
-            config.LLM_API_KEY = args.api_key
+            shared_config.LLM_API_KEY = args.api_key
     
     asyncio.run(main())

@@ -20,8 +20,9 @@ from aiohttp import ClientSession
 from gradio_client import Client
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
+import shared.configs.shared_config as shared_config
 
-logger = logger_module.get_logger('custom')
+logger = logger_module.get_logger('loki')
 
 class WSMessages(Enum):
     AUDIO_TYPE = "AUDIO"
@@ -34,11 +35,11 @@ class OrderedAudioProcessor:
     def __init__(self):
         os.makedirs(config.TRANSCRIPT_FOLDER, exist_ok=True)
         os.makedirs(config.AUDIO_FOLDER, exist_ok=True)
-        self.asr = FasterWhisperASR(config.SRC_LAN, config.WHISPER_MODEL)
+        self.asr = FasterWhisperASR(shared_config.SRC_LAN, config.WHISPER_MODEL)
         self.asr.transcribe(config.WARMUP_FILE)
         #asr.use_vad()
         self.online = OnlineASRProcessor(self.asr)
-        self.source_ip = config.SOURCE_IP
+        self.source_ip = shared_config.SOURCE_IP
         # TODO: Automate sizes based on client-provided rates/etc
         self.chunk_size = 16000  # 0.5 seconds of 16kHz audio with 2 bytes per sample
         self.max_buffer_size = 10 * 1024 * 1024  # 10MB
@@ -127,9 +128,9 @@ class OrderedAudioProcessor:
         transcript = prefix + transcript
         trace_id = get_trace_id()
         
-        text_client = Client(f"http://{config.IP_ADDRESS}:6002/")
-        tts_client = Client(f"http://{config.IP_ADDRESS}:6004/")
-        
+        text_client = Client(f"http://{shared_config.IP_ADDRESS}:6002/")
+        tts_client = Client(f"http://{shared_config.IP_ADDRESS}:6004/")
+
         try:
             logger.debug(f"Sending transcription to text inference: {transcript}", extra={'trace_id': trace_id})
             loop = asyncio.get_event_loop()
