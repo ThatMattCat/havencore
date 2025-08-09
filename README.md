@@ -9,7 +9,7 @@ This is a personal project slowly being templated for more general use. It is de
 * **Integrates** with an [Edge Device with Wake-Word Activation](https://github.com/ThatMattCat/havencore-edge/tree/main) (eg: Replacement for Alexa or Google Home)
 * **Speech-To-Text** - Near Realtime Transcription using [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 * **Text-To-Speech** - Converts LLM response to audio using [Coqui xTTSv2](https://github.com/coqui-ai/TTS). Results are played back on the Edge device.
-* _Large Language Model_ - Not yet included in these containers, must host on your own. Any OpenAI-like API with tool-calling should work but I  use llama.cpp(Qwen3 235B Instruct GGUF) and vLLM (Mistral Large 2411 AWQ).
+* **Large Language Model** - Currently uses vLLM, although any OpenAI-like API with tool-calling should work.
 
 It is written to use the following as tools (function calling):
 
