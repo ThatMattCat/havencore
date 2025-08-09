@@ -9,7 +9,10 @@ This is a personal project slowly being templated for more general use. It is de
 * Integrates with an [Edge Device with Wake-Word Activation](https://github.com/ThatMattCat/havencore-edge/tree/main) (eg: Replacement for Alexa or Google Home) - Designed for RPi3 with [ReSpeaker 4-Mic Array](https://www.seeedstudio.com/ReSpeaker-USB-Mic-Array-p-4247.html) (testing others soon) and a speaker connected to the Pi.
 * Speech-To-Text - Near Realtime Transcription using [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 * Text-To-Speech - Converts LLM response to audio using [Coqui xTTSv2](https://github.com/coqui-ai/TTS). Results are played back on the Edge device.
-* _Large Language Model_ - Not yet included in these containers, must host on your own. Any OpenAI-like API with tool-calling should work but I use llama.cpp(Qwen3 235B Instruct GGUF) and vLLM (Mistral Large 2411 AWQ).
+* Integrates with Grafana Loki for logging. This is hard-coded/required right now but will be optional soon. Uses the Loki ingest API, tested working with locally-hosted Loki but _should_ work for Cloud as well, with a few changes to `shared/scripts/logger.py`
+  * The logger.py also includes comments to replace Loki with LogScale, this worked in the past but is no longer tested. This will be streamlined with configs at some point.
+  * The logs include `trace_id` values with each trace unique to a 'conversation', for easier analysis. Right now this is custom code but should be migrated to OpenTelemetry standards.
+* _Large Language Model_ - Not yet included in these containers, must host on your own. Any OpenAI-like API with tool-calling should work but I  use llama.cpp(Qwen3 235B Instruct GGUF) and vLLM (Mistral Large 2411 AWQ).
 
 It is written to use the following as tools (function calling):
 
@@ -32,6 +35,10 @@ This project currently has *very* specific requirements but will be templated ou
 ```
 git clone https://github.com/ThatMattCat/havencore.git
 ```
+
+### Configure
+
+Required configurations are in `shared/configs/shared_config.py`
 
 ### Run
 
