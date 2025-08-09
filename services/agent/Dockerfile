@@ -3,4 +3,5 @@ WORKDIR /app
 COPY app/requirements.txt .
 RUN pip install -r requirements.txt
 EXPOSE 6002
+RUN apt-get update && apt-get install -y curl
 CMD ["python", "selene_agent.py"]

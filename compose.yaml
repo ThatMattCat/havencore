@@ -4,10 +4,20 @@ services:
       context: ./services/agent
       dockerfile: Dockerfile
     image: agent:${VERSION:-latest}
+    env_file:
+      - .env
+    depends_on:
+      vllm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6002/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     volumes:
       - ./services/agent/app:/app
       - ./shared:/app/shared:ro
-      # - agent_data:/app/data
     ports:
       - "6002:6002"
     restart: unless-stopped
@@ -40,20 +50,50 @@ services:
     ports:
       - "6004:6004" # UI/API
       - "6003:6003" # Serving audio files
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6004/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     environment:
       - COQUI_TOS_AGREED=1
     deploy:
       resources:
-        reservations: # GPU Device handled in main.py
+        reservations: # GPU Device to use is configured in shared_config.py
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    volumes:
-#      - ./text-to-speech/app/certs:/app/certs
+    volumes:  # TODO: why did I use individual volumes?
       - ./services/text-to-speech/app/flagged:/app/flagged
-#      - ./text-to-speech/app/models:/app/models
       - ./services/text-to-speech/app/output:/app/output
       - ./services/text-to-speech/app/config.py:/app/config.py
       - ./shared:/app/shared:ro
+    restart: unless-stopped
+  vllm:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./services/vllm/app:/app
+    ipc: host
+    command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .76
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
