@@ -20,7 +20,7 @@ logger = logger_module.get_logger('loki')
 os.makedirs(config.AUDIO_DIR, exist_ok=True)
 
 
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
+device = f"cuda:{shared_config.TTS_DEVICE}" if torch.cuda.is_available() else "cpu"
 mp="./models/xtts_v2"
 tts = TTS(model_path=f"{mp}",config_path=f"{mp}/config.json",progress_bar=False).to(device)
 

@@ -1,7 +1,4 @@
 import os
-if not os.environ.get("CUDA_VISIBLE_DEVICES"):
-    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
-
 from enum import Enum
 import asyncio
 from functools import partial
@@ -22,6 +19,8 @@ from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
 
+if not os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = shared_config.STT_DEVICE
 logger = logger_module.get_logger('loki')
 
 class WSMessages(Enum):
