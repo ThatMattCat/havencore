@@ -58,7 +58,7 @@ speech-to-text/app/transcript_files/*
 text-to-speech/output/**
 text-to-speech/models/**
 **/certs/**
-**/*config.py
+**/shared_config.py
 **/models/**
 **/output/**
 **/*.bak

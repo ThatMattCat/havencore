@@ -128,7 +128,7 @@ class OrderedAudioProcessor:
         transcript = prefix + transcript
         trace_id = get_trace_id()
         
-        text_client = Client(f"http://{shared_config.IP_ADDRESS}:6002/")
+        text_client = Client(f"http://{shared_config.IP_ADDRESS}:6002/") #the AI Agent
         tts_client = Client(f"http://{shared_config.IP_ADDRESS}:6004/")
 
         try:

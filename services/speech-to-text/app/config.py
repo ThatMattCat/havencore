@@ -1,11 +1,6 @@
-from logging.config import dictConfig
+import os
 
-IP_ADDRESS = "CONTAINER_HOST_IP_ADDRESS"
-SOURCE_IP = "SATELLITE_IP_ADDRESS" # RPi/etc IP
-
-
-
-####### Defaults: Keep These As-Is #######
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEVICE_ID = "speech-to-text"
 DEVICE_TYPE = "AI-STT"
@@ -16,8 +11,4 @@ SAMPLE_RATE = 16000
 MIN_CHUNK_SIZE = 1
 WEBSOCKET_HOST = "0.0.0.0"
 WEBSOCKET_PORT = 6000
-SRC_LAN = "en"
-TGT_LAN = "en"
 WHISPER_MODEL = "distil-large-v3"
-
-####### End Defaults #######
