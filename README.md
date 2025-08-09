@@ -2,7 +2,7 @@
 
 Self-Hosted AI Smart Home
 
-### Overview
+## Overview
 
 This is a personal project slowly being templated for more general use. It is designed to host multiple AI models (audio, text, etc) and act as a voice-activated smart home AI. Current models/functionality:
 
@@ -22,6 +22,16 @@ It is written to use the following as tools (function calling):
 * More To Come - These are easy to add, just keeping it minimal during the initial build
 
 This project aims to avoid high-level AI libraries (LangChain,etc) in order to allow a wider variety of lower-level setups. That requires a little more boiler-plate code but allows more flexibility when choosing the local AI models & hosting solutions, especially when working in the limits of a Consumer-hosted system like a homelab.
+
+### Workflow
+
+1. Edge device sends a control message to 'speech-to-text' container to start transcribing
+2. Streamed audio is received on WebSocket port 6000 of speech-to-text container
+3. Edge device sends control message to stop transcribing (eg: After 2 seconds of silence)
+4. The speech-to-text container sends the text transcription to Agent container and receives text response
+5. Agent text response is sent to text-to-speech container, which replies with a URL to the audio generated from response
+6. Response audio URL is sent to edge device, which plays it through a speaker
+7. Tools reset state to prepare for next communication
 
 ### Requirements
 
