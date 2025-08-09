@@ -1,4 +1,7 @@
 import logging
+import os
+
+HOST_IP_ADDRESS = "YOUR_HOST_IP" # container host IP address
 
 LOG_LEVEL_APP = logging.INFO # Log level for custom code
 LOG_LEVEL_OTHERS = logging.INFO  # Log level for other loggers
@@ -6,16 +9,19 @@ LOKI_URL = 'http://HOST:PORT/loki/api/v1/push'
 
 CURRENT_LOCATION = "Citytonville, OH, USA"
 CURRENT_ZIPCODE = "12345"
-HAOS_URL = "https://YOUR_HA_URL/api"
+HAOS_URL = "https://YOUR_HAOS_URL/api"
 HAOS_TOKEN = "HA_LONG_LIVED_ACCESS_TOKEN"
-LLM_API_KEY = "OPENAI_API_KEY"
-LLM_API_BASE = "http://HOST:PORT/v1"
+LLM_API_BASE = "http://${HOST_IP_ADDRESS}:8000/v1" # Can be changed if not using built-in LLM service
 WOLFRAM_ALPHA_API_KEY = ""
 BRAVE_SEARCH_API_KEY = ""
 
 SRC_LAN = "en"
-IP_ADDRESS = "" # container host IP address
-SOURCE_IP = "" # edge device IP address
+SOURCE_IP = "EDGE_DEVICE_IP" # edge device IP address, TODO: remove this and ensure IP passed by edge devices
 
 TTS_DEVICE = "0" # GPU index to use for text-to-speech model
-STT_DEVICE = "1" # GPU index to use for speech-to-text model
+STT_DEVICE = "3" # GPU index to use for speech-to-text model
+
+
+LLM_API_KEY = os.getenv('DEV_CUSTOM_API_KEY')
+if not LLM_API_KEY:
+    LLM_API_KEY = "1234123412341234"

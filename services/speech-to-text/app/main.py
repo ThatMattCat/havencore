@@ -127,8 +127,8 @@ class OrderedAudioProcessor:
         transcript = prefix + transcript
         trace_id = get_trace_id()
         
-        text_client = Client(f"http://{shared_config.IP_ADDRESS}:6002/") #the AI Agent
-        tts_client = Client(f"http://{shared_config.IP_ADDRESS}:6004/")
+        text_client = Client(f"http://{shared_config.HOST_IP_ADDRESS}:6002/") #the AI Agent
+        tts_client = Client(f"http://{shared_config.HOST_IP_ADDRESS}:6004/")
 
         try:
             logger.debug(f"Sending transcription to text inference: {transcript}", extra={'trace_id': trace_id})
