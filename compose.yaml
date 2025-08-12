@@ -31,6 +31,7 @@ services:
       - ./shared:/app/shared:ro
     ports:
       - "6002:6002"
+      - "6006:6006" # /v1/chat/completions OpenAI-compat API
     restart: unless-stopped
   speech-to-text:
     build:

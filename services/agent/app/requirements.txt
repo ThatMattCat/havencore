@@ -4,3 +4,5 @@ HomeAssistant-API
 gradio
 wolframalpha
 nltk
+fastapi
+uvicorn
