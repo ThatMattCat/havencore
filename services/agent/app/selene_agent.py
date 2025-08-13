@@ -86,7 +86,8 @@ class SeleneAgent:
         self.tools = self._setup_tools() #OpenAI format
         self.tool_functions = self._setup_tool_functions()
         self.messages = []
-    
+        self.last_query_time = time.time()
+
     def _detect_model(self) -> str:
         """Auto-detect the loaded model from the API"""
         try:
@@ -162,13 +163,33 @@ Be concise but thorough in your responses."""
     def query(self, query: str) -> str:
         """Process a user query using chat completion with tools"""
         trace_id = get_trace_id()
-        
+        logger.debug(f"Last message time: {self.last_query_time} - Current Time: {time.time()}")
+        if self.last_query_time and time.time() - self.last_query_time > 180:
+            logger.debug("3 minutes without a message, resetting conversation")
+            # self.clear_messages()
+            system_prompt = f"""You are {self.agent_name}, a helpful AI assistant with access to various tools.
+Current date and time: {datetime.datetime.now().strftime("%d %B, %Y - %H:%M:%S")} UTC
+Current Location: {shared_config.CURRENT_LOCATION}
+Zip Code: {shared_config.CURRENT_ZIPCODE}
+
+You have access to the following tools:
+- Home Assistant controls for smart home devices
+- Web search via Brave Search
+- Computational queries via Wolfram Alpha
+
+Use these tools when needed to help answer questions or perform actions.
+Be concise but thorough in your responses."""
+                
+            self.messages = [{"role": "system", "content": system_prompt}]
+
+        self.last_query_time = time.time()
+
         try:
             self.messages.append({"role": "user", "content": query})
             
             logger.info(f"Query: {query}", extra={"trace_id": trace_id})
 
-            max_iterations = 3  #  prevent infinite loops
+            max_iterations = 5  #  prevent infinite loops
             iteration = 0
             
             while iteration < max_iterations:
@@ -264,7 +285,6 @@ Be concise but thorough in your responses."""
         trace_id = get_trace_id()
         
         try:
-            # Find the last user message
             user_content = None
             for message in reversed(messages):
                 if message.get("role") == "user" and message.get("content"):
@@ -276,7 +296,6 @@ Be concise but thorough in your responses."""
             
             logger.info(f"API Query: {user_content}", extra={"trace_id": trace_id})
             
-            # Use existing query method
             return self.query(user_content)
             
         except Exception as e:
@@ -526,7 +545,7 @@ async def main():
             inputs=gr.Textbox(label="Enter your message", lines=3),
             outputs=gr.Textbox(label="Selene's Response", lines=10),
             title="Selene Agent",
-            description="AI Assistant with tools integration. Also serving OpenAI-compatible API at :6003/v1/chat/completions",
+            description="AI Assistant with tools integration. Also serving OpenAI-compatible API at :6006/v1/chat/completions",
             theme=gr.themes.Soft()
         )
         
