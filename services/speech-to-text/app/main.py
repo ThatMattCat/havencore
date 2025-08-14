@@ -13,11 +13,14 @@ from collections import deque
 from asyncio import Queue
 import requests
 import aiohttp
-from aiohttp import ClientSession
+from aiohttp import ClientSession, web
 from gradio_client import Client
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
+import tempfile
+from typing import Optional
+import uuid
 
 if not os.environ.get("CUDA_VISIBLE_DEVICES"):
     os.environ["CUDA_VISIBLE_DEVICES"] = shared_config.STT_DEVICE
@@ -233,12 +236,200 @@ class OrderedAudioProcessor:
         self.online.init()
         self.processor_task = None
 
+    @with_trace
+    async def transcribe_file(self, audio_file_path: str, language: Optional[str] = None) -> str:
+        """
+        Transcribe an audio file using FasterWhisper.
+        This method is used for the OpenAI API endpoint.
+        """
+        trace_id = get_trace_id()
+        try:
+            file_asr = FasterWhisperASR(
+                language or shared_config.SRC_LAN, 
+                config.WHISPER_MODEL
+            )
+            
+            logger.info(f"Transcribing file: {audio_file_path}", extra={'trace_id': trace_id})
+            
+            segments = await asyncio.to_thread(
+                file_asr.transcribe, 
+                audio_file_path
+            )
+            
+            transcript_parts = []
+            for segment in segments:
+                if hasattr(segment, 'text'):
+                    transcript_parts.append(segment.text)
+                elif isinstance(segment, tuple) and len(segment) >= 3:
+                    # Format: (start, end, text)
+                    transcript_parts.append(segment[2])
+                elif isinstance(segment, str):
+                    transcript_parts.append(segment)
+                else:
+                    logger.warning(f"Unknown segment format: {type(segment)}", extra={'trace_id': trace_id})
+            
+            transcript = " ".join(transcript_parts).strip()
+            
+            logger.info(f"File transcription complete: {transcript[:100]}...", extra={'trace_id': trace_id})
+            return transcript
+            
+        except Exception as e:
+            logger.error(f"Error transcribing file: {e}", exc_info=True, extra={'trace_id': trace_id})
+            raise
+
+
+class TranscriptionAPIHandler:
+    """
+    HTTP API handler for OpenAI-compatible transcription endpoints
+    """
+    
+    def __init__(self, processor: OrderedAudioProcessor):
+        self.processor = processor
+        
+    async def handle_transcription(self, request: web.Request) -> web.Response:
+        """
+        Handle POST /v1/audio/transcriptions
+        OpenAI API compatible endpoint
+        """
+        trace_id = str(uuid.uuid4())
+        set_trace_id(trace_id)
+        
+        try:
+            reader = await request.multipart()
+            
+            audio_file = None
+            model = None
+            language = None
+            prompt = None
+            response_format = "json"
+            temperature = 0
+            
+            async for field in reader:
+                field_name = field.name
+                
+                if field_name == 'file':
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.audio') as tmp_file:
+                        while True:
+                            chunk = await field.read_chunk()
+                            if not chunk:
+                                break
+                            tmp_file.write(chunk)
+                        audio_file = tmp_file.name
+                        
+                elif field_name == 'model':
+                    model = await field.text()
+                    
+                elif field_name == 'language':
+                    language = await field.text()
+                    
+                elif field_name == 'prompt':
+                    prompt = await field.text()
+                    
+                elif field_name == 'response_format':
+                    response_format = await field.text()
+                    
+                elif field_name == 'temperature':
+                    temperature = float(await field.text())
+            
+            if not audio_file:
+                return web.json_response(
+                    {"error": {"message": "No audio file provided", "type": "invalid_request_error"}},
+                    status=400
+                )
+            
+            logger.info(f"Received transcription request - Model: {model}, Language: {language}, Format: {response_format}", 
+                       extra={'trace_id': trace_id})
+            
+            transcript = await self.processor.transcribe_file(audio_file, language)
+            
+            try:
+                os.unlink(audio_file)
+            except Exception as e:
+                logger.warning(f"Could not delete temp file {audio_file}: {e}", extra={'trace_id': trace_id})
+            
+            if response_format == "json":
+                response_data = {"text": transcript}
+            elif response_format == "text":
+                return web.Response(text=transcript, content_type='text/plain')
+            elif response_format == "srt":
+                srt_content = f"1\n00:00:00,000 --> 00:00:10,000\n{transcript}\n"
+                return web.Response(text=srt_content, content_type='text/plain')
+            elif response_format == "verbose_json":
+                response_data = {
+                    "task": "transcribe",
+                    "language": language or shared_config.SRC_LAN,
+                    "duration": None,
+                    "text": transcript,
+                    "segments": []
+                }
+            elif response_format == "vtt":
+                vtt_content = f"WEBVTT\n\n00:00:00.000 --> 00:00:10.000\n{transcript}\n"
+                return web.Response(text=vtt_content, content_type='text/vtt')
+            else:
+                response_data = {"text": transcript}
+            
+            return web.json_response(response_data)
+            
+        except Exception as e:
+            logger.error(f"Error handling transcription request: {e}", exc_info=True, extra={'trace_id': trace_id})
+            return web.json_response(
+                {"error": {"message": str(e), "type": "internal_error"}},
+                status=500
+            )
+    
+    async def handle_translations(self, request: web.Request) -> web.Response:
+        """
+        Handle POST /v1/audio/translations
+        OpenAI API compatible endpoint for translation to English
+        """
+        return web.json_response(
+            {"error": {"message": "Translation endpoint not yet implemented", "type": "not_implemented"}},
+            status=501
+        )
+
+
+async def create_http_app(processor: OrderedAudioProcessor) -> web.Application:
+    """
+    Create aiohttp application with OpenAI API compatible endpoints
+    """
+    app = web.Application()
+    handler = TranscriptionAPIHandler(processor)
+    
+    app.router.add_post('/v1/audio/transcriptions', handler.handle_transcription)
+    app.router.add_post('/v1/audio/translations', handler.handle_translations)
+    
+    async def health_check(request):
+        return web.json_response({"status": "healthy"})
+    
+    app.router.add_get('/health', health_check)
+    
+    return app
+
+
 async def main():
     processor = OrderedAudioProcessor()
-    server = await websockets.serve(processor.handle_stream, "0.0.0.0", 6000)
+    
+    ws_server = await websockets.serve(processor.handle_stream, "0.0.0.0", 6000)
+    logger.info("WebSocket server started on port 6000")
+    
+    http_app = await create_http_app(processor)
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+    
+    http_port = int(os.environ.get('HTTP_API_PORT', 6001))
+    site = web.TCPSite(runner, '0.0.0.0', http_port)
+    await site.start()
+    logger.info(f"HTTP API server started on port {http_port}")
+    logger.info(f"OpenAI API endpoint available at: http://0.0.0.0:{http_port}/v1/audio/transcriptions")
+    
+    try:
+        await asyncio.Future() 
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await ws_server.close()
+        await runner.cleanup()
 
-    logger.info("Server started. Waiting for connection...")
-    await server.wait_closed()
 
 if __name__ == "__main__":
     try:

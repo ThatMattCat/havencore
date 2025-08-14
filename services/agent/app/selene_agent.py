@@ -5,13 +5,19 @@ import traceback
 import asyncio
 from typing import Dict, List, Optional, Any
 import re
+import time
 
 import requests
 import gradio as gr
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from openai import OpenAI
 from wolframalpha import Client as WolframClient
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function
+import uvicorn
+import threading
 
 #from utils import local_config
 from utils.haos.haos import HomeAssistant
@@ -24,6 +30,37 @@ import shared.configs.shared_config as shared_config
 
 logger = logger_module.get_logger('loki')
 logger.setLevel(logging.DEBUG)
+
+
+# OpenAI API Compatible Models
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str = "selene"
+    messages: List[ChatMessage]
+    temperature: Optional[float] = 0.1
+    max_tokens: Optional[int] = 1024
+    stream: Optional[bool] = False
+
+class ChatCompletionChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: str
+
+class ChatCompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[ChatCompletionChoice]
+    usage: ChatCompletionUsage
 
 
 class SeleneAgent:
@@ -122,7 +159,6 @@ Be concise but thorough in your responses."""
         asyncio.create_task(self.init())
     
     @with_trace
-
     def query(self, query: str) -> str:
         """Process a user query using chat completion with tools"""
         trace_id = get_trace_id()
@@ -222,6 +258,31 @@ Be concise but thorough in your responses."""
                         extra={"trace_id": trace_id})
             return f"ERROR: {str(e)}"
 
+    @with_trace
+    def query_for_api(self, messages: List[Dict[str, str]]) -> str:
+        """Process messages from API endpoint - extracts the last user message"""
+        trace_id = get_trace_id()
+        
+        try:
+            # Find the last user message
+            user_content = None
+            for message in reversed(messages):
+                if message.get("role") == "user" and message.get("content"):
+                    user_content = message["content"]
+                    break
+            
+            if not user_content:
+                return "ERROR: No user message found in request"
+            
+            logger.info(f"API Query: {user_content}", extra={"trace_id": trace_id})
+            
+            # Use existing query method
+            return self.query(user_content)
+            
+        except Exception as e:
+            logger.error(f"Error in API query: {e}\n{traceback.format_exc()}", 
+                        extra={"trace_id": trace_id})
+            return f"ERROR: {str(e)}"
 
     def _extract_tool_calls_from_content(self, content: str) -> Optional[list]:
         """
@@ -328,7 +389,7 @@ Be concise but thorough in your responses."""
 
 
 class SeleneRunner:
-    """Runner class for Gradio interface"""
+    """Runner class for both Gradio interface and FastAPI server"""
     
     def __init__(self):
         self.agent = SeleneAgent()
@@ -338,11 +399,21 @@ class SeleneRunner:
     
     @with_trace
     def process_input(self, text: str, history=None) -> str:
-        """Process user input and return response"""
+        """Process user input and return response for Gradio"""
         trace_id = set_trace_id()
         
         response = self.agent.query(text)
         logger.info(f"Response: {response}", extra={"trace_id": trace_id})
+        
+        return response
+    
+    @with_trace
+    def process_api_request(self, messages: List[Dict[str, str]]) -> str:
+        """Process API request messages and return response"""
+        trace_id = set_trace_id()
+        
+        response = self.agent.query_for_api(messages)
+        logger.info(f"API Response: {response}", extra={"trace_id": trace_id})
         
         return response
     
@@ -351,10 +422,92 @@ class SeleneRunner:
         pass
 
 
+# Global runner instance
+runner = None
+
+# FastAPI app for OpenAI-compatible API
+app = FastAPI(title="Selene Agent API", version="1.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    """OpenAI-compatible chat completions endpoint"""
+    global runner
+    
+    try:
+        if not runner:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+        
+        # Extract messages and convert to dict format
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        
+        # Process through existing agent
+        response_content = runner.process_api_request(messages)
+        
+        # Create OpenAI-compatible response
+        completion_response = ChatCompletionResponse(
+            id=f"chatcmpl-{int(time.time())}",
+            created=int(time.time()),
+            model=request.model,
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=response_content),
+                    finish_reason="stop"
+                )
+            ],
+            usage=ChatCompletionUsage(
+                prompt_tokens=len(str(messages)),
+                completion_tokens=len(response_content),
+                total_tokens=len(str(messages)) + len(response_content)
+            )
+        )
+        
+        return completion_response
+        
+    except Exception as e:
+        logger.error(f"Error in chat completions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/models")
+async def list_models():
+    """List available models"""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "selene",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "selene-agent"
+            }
+        ]
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "agent": "selene"}
+
+
+def run_fastapi_server():
+    """Run FastAPI server in a separate thread"""
+    uvicorn.run(app, host="0.0.0.0", port=6006, log_level="info")
+
+
 @with_trace
 async def main():
     """Main entry point"""
     trace_id = get_trace_id()
+    global runner
     
     try:
         logger.info("Starting Selene Agent", extra={"trace_id": trace_id})
@@ -362,16 +515,22 @@ async def main():
         runner = SeleneRunner()
         await runner.init()
 
+        # Start FastAPI server in a separate thread
+        fastapi_thread = threading.Thread(target=run_fastapi_server, daemon=True)
+        fastapi_thread.start()
+        logger.info("Started FastAPI server on port 6003", extra={"trace_id": trace_id})
+
+        # Setup Gradio interface
         iface = gr.Interface(
             fn=runner.process_input,
             inputs=gr.Textbox(label="Enter your message", lines=3),
             outputs=gr.Textbox(label="Selene's Response", lines=10),
             title="Selene Agent",
-            description="AI Assistant with tools integration",
+            description="AI Assistant with tools integration. Also serving OpenAI-compatible API at :6003/v1/chat/completions",
             theme=gr.themes.Soft()
         )
         
-        logger.info("Starting Gradio Interface", extra={"trace_id": trace_id})
+        logger.info("Starting Gradio Interface on port 6002", extra={"trace_id": trace_id})
         iface.launch(server_name="0.0.0.0", server_port=6002)
         
     except Exception as e:
@@ -379,7 +538,8 @@ async def main():
                     extra={"trace_id": trace_id})
         raise
     finally:
-        runner.close()
+        if runner:
+            runner.close()
 
 
 if __name__ == "__main__":
