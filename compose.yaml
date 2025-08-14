@@ -9,7 +9,6 @@ services:
       - agent
       - text-to-speech
       - speech-to-text
-      - vllm
   agent:
     build:
       context: ./services/agent
@@ -18,7 +17,8 @@ services:
     env_file:
       - .env
     depends_on:
-      vllm:
+      llamacpp:
+      # vllm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6002/"]
@@ -88,6 +88,7 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     runtime: nvidia
+    profiles: ["vllm"]
     env_file:
       - .env
     ports:
@@ -97,6 +98,44 @@ services:
       - ./services/vllm/app:/app
     ipc: host
     command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ --served-model-name gpt-3.5-turbo -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .74
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    volumes:
+      - ./services/llamacpp/models:/models
+    profiles: ["llamacpp"]
+    ports:
+      - "8000:8000"
+    command: >
+      -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q5_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q5_K_XL-00001-of-00004.gguf
+      --threads 32
+      --ctx-size 16384
+      --temp 0.1
+      --min-p 0.0
+      --top-p 0.8
+      --top-k 20
+      --presence-penalty 0.5
+      -ngl 99
+      --no-context-shift
+      -ot "([4-9]+).ffn_.*_exps.=CPU"
+      --port 8000
+      -ts 12,16,16,14
+      --jinja
+      --api-key 1234123412341234
+      --host 0.0.0.0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
       interval: 15s
