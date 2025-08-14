@@ -40,7 +40,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "selene"
     messages: List[ChatMessage]
-    temperature: Optional[float] = 0.1
+    temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 1024
     stream: Optional[bool] = False
 
@@ -76,7 +76,7 @@ class SeleneAgent:
         self.model_name = self._detect_model()
         logger.info(f"Using model: {self.model_name}")
         
-        self.temperature = 0.1
+        self.temperature = 0.7
         self.top_p = 0.95
         self.top_k = 20
         self.max_tokens = 1024
