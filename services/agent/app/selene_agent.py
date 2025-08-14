@@ -1,6 +1,8 @@
 import json
 import logging
-import datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import traceback
 import asyncio
 from typing import Dict, List, Optional, Any
@@ -40,7 +42,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "selene"
     messages: List[ChatMessage]
-    temperature: Optional[float] = 0.7
+    temperature: Optional[float] = 0
     max_tokens: Optional[int] = 1024
     stream: Optional[bool] = False
 
@@ -75,8 +77,8 @@ class SeleneAgent:
         
         self.model_name = self._detect_model()
         logger.info(f"Using model: {self.model_name}")
-        
-        self.temperature = 0.7
+
+        self.temperature = 0
         self.top_p = 0.95
         self.top_k = 20
         self.max_tokens = 1024
@@ -140,18 +142,7 @@ class SeleneAgent:
     
     async def init(self):
         """Initialize the agent with system prompt"""
-        system_prompt = f"""You are {self.agent_name}, a helpful AI assistant with access to various tools.
-Current date and time: {datetime.datetime.now().strftime("%d %B, %Y - %H:%M:%S")}
-Current Location: {shared_config.CURRENT_LOCATION}
-Zip Code: {shared_config.CURRENT_ZIPCODE}
-
-You have access to the following tools:
-- Home Assistant controls for smart home devices
-- Web search via Brave Search
-- Computational queries via Wolfram Alpha
-
-Use these tools when needed to help answer questions or perform actions.
-Be concise but thorough in your responses."""
+        system_prompt = self.get_system_prompt()
         
         self.messages = [{"role": "system", "content": system_prompt}]
     
@@ -159,6 +150,30 @@ Be concise but thorough in your responses."""
         """Clear conversation history and reinitialize"""
         asyncio.create_task(self.init())
     
+    def get_system_prompt(self) -> str:
+        prompt = f"""You are {self.agent_name}, a friendly AI assistant with access to various tools.
+        Current date and time: {datetime.now(ZoneInfo(shared_config.CURRENT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}
+        Current Location: {shared_config.CURRENT_LOCATION}
+        Zip Code: {shared_config.CURRENT_ZIPCODE}
+
+        You have access to the following tools:
+        - Home Assistant controls for smart home devices
+        - Web search via Brave Search
+        - Computational queries via Wolfram Alpha
+        Use these tools when needed to help answer questions or perform actions.
+
+        Be concise in your responses. Respond to the user as though they are a close friend.
+        When responding to the user follow these rules:
+        - Be brief while still resolving the user's request
+        - Avoid filler words and unnecessary details
+        - Convert numbers to words, eg: "One hundred and two" instead of "102"
+        - Use simple language and short sentences
+        - Do NOT use special characters or emojis, they cannot be translated to audio properly
+
+        """
+
+        return prompt
+
     @with_trace
     def query(self, query: str) -> str:
         """Process a user query using chat completion with tools"""
@@ -167,18 +182,7 @@ Be concise but thorough in your responses."""
         if self.last_query_time and time.time() - self.last_query_time > 180:
             logger.debug("3 minutes without a message, resetting conversation")
             # self.clear_messages()
-            system_prompt = f"""You are {self.agent_name}, a helpful AI assistant with access to various tools.
-Current date and time: {datetime.datetime.now().strftime("%d %B, %Y - %H:%M:%S")} UTC
-Current Location: {shared_config.CURRENT_LOCATION}
-Zip Code: {shared_config.CURRENT_ZIPCODE}
-
-You have access to the following tools:
-- Home Assistant controls for smart home devices
-- Web search via Brave Search
-- Computational queries via Wolfram Alpha
-
-Use these tools when needed to help answer questions or perform actions.
-Be concise but thorough in your responses."""
+            system_prompt = self.get_system_prompt()
                 
             self.messages = [{"role": "system", "content": system_prompt}]
 
@@ -399,12 +403,50 @@ Be concise but thorough in your responses."""
             return f"Error searching: {str(e)}"
     
     @with_trace
-    def wolfram_alpha(self, query: str) -> str:
-        """Query Wolfram Alpha"""
-        trace_id = get_trace_id()
-        resp = self.wolfram.query(input=query)
-        logger.debug(f"Wolfram Alpha Query: {query}\nResponse: {str(resp)}", extra={"trace_id": trace_id})
-        return str(resp)
+    def wolfram_alpha(
+        self,
+        query: str,
+        max_chars: Optional[int] = 1000,
+        timeout: Optional[int] = 30
+    ) -> str:
+        """ Query the WolframAlpha LLM API."""
+        
+        url = "https://www.wolframalpha.com/api/v1/llm-api"
+        
+        params = {
+            "input": query,
+            "appid": shared_config.WOLFRAM_ALPHA_API_KEY,
+            "maxchars": max_chars
+        }
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=timeout
+            )
+            response.raise_for_status()
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP error occurred: {e}"
+            if response.status_code == 403:
+                error_msg = "Invalid API key or unauthorized access"
+            elif response.status_code == 400:
+                error_msg = "Bad request - check your query format"
+            raise ValueError(error_msg)
+        except requests.exceptions.ConnectionError:
+            raise ValueError("Failed to connect to WolframAlpha API")
+        except requests.exceptions.Timeout:
+            raise ValueError(f"Request timed out after {timeout} seconds") 
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"An error occurred: {e}")
+            
+        return response.text
+    # def wolfram_alpha(self, query: str) -> str:
+    #     """Query Wolfram Alpha"""
+    #     trace_id = get_trace_id()
+    #     resp = self.wolfram.query(input=query)
+    #     logger.debug(f"Wolfram Alpha Query: {query}\nResponse: {str(resp)}", extra={"trace_id": trace_id})
+    #     return str(resp)
 
 
 class SeleneRunner:
