@@ -11,7 +11,7 @@ This is a personal project slowly being templated for more general use. It is de
 * **Integrates** with an [Edge Device with Wake-Word Activation](https://github.com/ThatMattCat/havencore-edge/tree/main) (eg: Replacement for Alexa or Google Home)
   * New nginx-fronted endpoint on port 80 allows integration with ESP32-Box-3 and similar tools that utilize OpenAI-like
 * **Speech-To-Text** - Near Realtime Transcription using [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-* **Text-To-Speech** - Converts LLM response to audio using [Coqui xTTSv2](https://github.com/coqui-ai/TTS). Results are played back on the Edge device.
+* **Text-To-Speech** - Converts LLM response to audio using [Kokoro TTS Model](https://github.com/hexgrad/kokoro). Results are played back on the Edge device.
 * **Large Language Model** - Currently uses vLLM, although any OpenAI-like API with tool-calling should work.
 * **Nginx** - Provides a unified endpoint for OpenAI-like API requests for basic transcription, speech, and chat completion. Routes requests to appropriate container services.
   * /v1/chat/completions - Agent Service text-to-text
