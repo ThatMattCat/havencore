@@ -21,10 +21,11 @@ from openai.types.chat.chat_completion_message_tool_call import Function
 import uvicorn
 import threading
 
-#from utils import local_config
+from utils import config
 from utils.haos.haos import HomeAssistant
 import utils.haos.haos_tools_defs as haos_tools_defs
 import utils.general_tools_defs as general_tools_defs
+import utils.tools as custom_tools
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
@@ -137,7 +138,8 @@ class SeleneAgent:
             'home_assistant.get_domain_services': self.haos.get_domain_services,
             'home_assistant.execute_service': self.haos.execute_service,
             'brave_search': self.brave_search,
-            'wolfram_alpha': self.wolfram_alpha
+            'wolfram_alpha': self.wolfram_alpha,
+            'get_weather_forecast': custom_tools.get_weather_forecast
         }
     
     async def init(self):
@@ -160,6 +162,7 @@ class SeleneAgent:
         - Home Assistant controls for smart home devices
         - Web search via Brave Search
         - Computational queries via Wolfram Alpha
+        - Weather predictions via WeatherAPI that include astronomical data
         Use these tools when needed to help answer questions or perform actions.
 
         Be concise in your responses. Respond to the user as though they are a close friend.
