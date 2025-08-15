@@ -2,29 +2,26 @@ import os
 from http.server import HTTPServer, SimpleHTTPRequestHandler, BaseHTTPRequestHandler
 import threading
 import config
-from TTS.api import TTS
-import tempfile
-import logging
-from logging.config import dictConfig
-from datetime import datetime
 import time
 import gradio as gr
 import torch
 import uuid
-from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
-import shared.scripts.logger as logger_module
-import shared.configs.shared_config as shared_config
 import json
-import urllib.parse
-from io import BytesIO
+from kokoro import KPipeline
+import soundfile as sf
 
-logger = logger_module.get_logger('loki')
+if not config.SOLO:
+    from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
+    import shared.scripts.logger as logger_module
+    logger = logger_module.get_logger('loki')
+else:
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('text-to-speech')
 
 os.makedirs(config.AUDIO_DIR, exist_ok=True)
 
-device = f"cuda:{shared_config.TTS_DEVICE}" if torch.cuda.is_available() else "cpu"
-mp="./models/xtts_v2"
-tts = TTS(model_path=f"{mp}",config_path=f"{mp}/config.json",progress_bar=False).to(device)
+pipeline = KPipeline(lang_code=config.LANGUAGE, device=config.MODEL_DEVICE if torch.cuda.is_available() else 'cpu')
 
 class OpenAICompatibleHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -59,45 +56,39 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
                 self.send_error_response(400, "Invalid JSON")
                 return
 
-            # Extract required parameters
             input_text = request_data.get('input')
-            model = request_data.get('model', 'tts-1')  # OpenAI models: tts-1, tts-1-hd
-            voice = request_data.get('voice', 'alloy')  # OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
-            response_format = request_data.get('response_format', 'mp3')  # mp3, opus, aac, flac, wav, pcm
-            speed = request_data.get('speed', 1.0)  # 0.25 to 4.0
+            model = request_data.get('model', 'tts-1')
+            voice = request_data.get('voice', 'af_heart')
+            response_format = request_data.get('response_format', 'mp3')
+            speed = request_data.get('speed', 1.0)
 
             if not input_text:
                 self.send_error_response(400, "Missing required parameter 'input'")
                 return
 
-            # Map OpenAI voices to your available speakers (customize as needed)
             voice_mapping = {
-                'alloy': 'Camilla Holmström',
-                'echo': 'Camilla Holmström',
-                'fable': 'Camilla Holmström', 
-                'onyx': 'Camilla Holmström',
-                'nova': 'Camilla Holmström',
-                'shimmer': 'Camilla Holmström'
+                'alloy': 'af_heart',
+                'echo': 'af_heart',
+                'fable': 'af_heart',
+                'onyx': 'af_heart',
+                'nova': 'af_heart',
+                'shimmer': 'af_heart'
             }
-            
-            speaker = voice_mapping.get(voice, 'Camilla Holmström')
-            
-            # Generate audio using existing function
+
+            speaker = voice_mapping.get(voice, 'af_heart')
+
             logger.info(f"OpenAI API: Generating speech for text: {input_text[:100]}...")
             filepath, filename = generate_speech(
                 text=input_text,
                 speaker=speaker,
-                split_sentences=len(input_text) > 200  # Auto-split for longer texts
+                speed=speed
             )
 
-            # Read the generated audio file
             with open(filepath, 'rb') as audio_file:
                 audio_data = audio_file.read()
 
-            # Set appropriate headers
             self.send_response(200)
             
-            # Set content type based on response format
             content_type_map = {
                 'mp3': 'audio/mpeg',
                 'wav': 'audio/wav',
@@ -112,7 +103,6 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(audio_data)))
             self.end_headers()
 
-            # Send audio data
             self.wfile.write(audio_data)
             
             logger.info(f"OpenAI API: Successfully served audio for request")
@@ -133,27 +123,37 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
         }
         self.wfile.write(json.dumps(error_response).encode())
 
-    def log_message(self, format, *args):
-        # Override to use your logger instead of default logging
-        logger.info(f"OpenAI API Request: {format % args}")
-
 class RestrictedHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         return SimpleHTTPRequestHandler.do_GET(self)
 
-def generate_speech(text, speaker="Camilla Holmström", split_sentences=False):
+def generate_speech(text, speaker="af_heart", speed=1.0) -> tuple[str, str]:
     logger.info(f"Generating speech for text: {text}")
     unique_id = str(uuid.uuid4().int)[:4]
     filename = f"{int(time.time())}-{unique_id}.wav"
     filepath = os.path.join(config.AUDIO_DIR, filename)
-
-    tts.tts_to_file(text=text,
-                    file_path=filepath,
-                    speaker=speaker,
-                    language="en",
-                    split_sentences=split_sentences)
-    logger.info(f"Generated file: {filepath}")
-    return filepath, filename
+    
+    try:
+        generator = pipeline(text, voice=speaker, speed=speed)
+        
+        audio_chunks = []
+        for i, (_, _, audio) in enumerate(generator):
+            audio_chunks.append(audio)
+        
+        if len(audio_chunks) == 1:
+            sf.write(filepath, audio_chunks[0], 24000)
+            logger.info(f"Generated file: {filepath}")
+        else:
+            import numpy as np
+            concatenated_audio = np.concatenate(audio_chunks)
+            sf.write(filepath, concatenated_audio, 24000)
+            logger.info(f"Generated file: {filepath}")
+        
+        return filepath, filename
+            
+    except Exception as e:
+        logger.error(f"Error generating speech: {e}")
+        return None, None
 
 def start_server():
     os.chdir(config.AUDIO_DIR)
@@ -163,7 +163,7 @@ def start_server():
 
 def start_openai_server():
     """Start the OpenAI-compatible API server"""
-    # Use a different port for the OpenAI API (you can configure this)
+
     openai_port = getattr(config, 'OPENAI_API_PORT', 6005)
     openai_host = getattr(config, 'OPENAI_API_HOST', '0.0.0.0')
     
@@ -172,9 +172,9 @@ def start_openai_server():
     logger.info(f"Endpoint: http://{openai_host}:{openai_port}/v1/audio/speech")
     httpd.serve_forever()
 
-def generate_audio(text, speaker="Camilla Holmström", split_sentences=False):
+def generate_audio(text, speaker="af_heart"):
     logger.debug(f"Processing audio request for text: {text}")
-    filepath, filename = generate_speech(text=text, speaker=speaker, split_sentences=split_sentences)
+    filepath, filename = generate_speech(text=text, speaker=speaker)
     
     audio_url = config.BASE_URL + filename
     
@@ -183,8 +183,6 @@ def generate_audio(text, speaker="Camilla Holmström", split_sentences=False):
 
 #@with_trace
 def main():
-    # TODO: Use admin api key to load proper model/etc based on model_type
-#    trace_id = get_trace_id()
     try:
         logger.info("Starting Text-To-Speech Service")
         iface = gr.Interface(
@@ -204,7 +202,6 @@ def main():
         logger.error(f"Error in TTS main(): {e}")
         raise e
 
-# Start both servers
 server_thread = threading.Thread(target=start_server, daemon=True)
 server_thread.start()
 

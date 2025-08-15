@@ -70,8 +70,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    environment:
-      - COQUI_TOS_AGREED=1
     deploy:
       resources:
         reservations: # GPU Device to use is configured in shared_config.py
@@ -79,8 +77,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    volumes:  # TODO: why did I use individual volumes?
-      - ./services/text-to-speech/app/flagged:/app/flagged
+    volumes:
+#      - ./services/text-to-speech/app/flagged:/app/flagged
       - ./services/text-to-speech/app/output:/app/output
       - ./services/text-to-speech/app/config.py:/app/config.py
       - ./shared:/app/shared:ro
