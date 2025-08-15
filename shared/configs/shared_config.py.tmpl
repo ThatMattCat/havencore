@@ -19,8 +19,9 @@ BRAVE_SEARCH_API_KEY = ""
 SRC_LAN = "en" # language, others not tested
 SOURCE_IP = "EDGE_DEVICE_IP" # edge device IP address, TODO: remove this and ensure IP passed by edge devices
 
+TTS_LANGUAGE = "a" # Kokoro TTS AI Model language option
+TTS_VOICE = "af_heart"
 TTS_DEVICE = "cuda:0" # GPU index to use for text-to-speech model
-STT_DEVICE = "1" # GPU index to use for speech-to-text model
 
 
 LLM_API_KEY = os.getenv('DEV_CUSTOM_API_KEY')
