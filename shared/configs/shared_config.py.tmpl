@@ -8,6 +8,7 @@ LOG_LEVEL_OTHERS = logging.INFO  # Log level for other loggers
 LOKI_URL = 'http://HOST:PORT/loki/api/v1/push'
 
 CURRENT_LOCATION = "Citytonville, OH, USA"
+CURRENT_TIMEZONE = "America/Chicago" #Use timezone ID format
 CURRENT_ZIPCODE = "12345"
 HAOS_URL = "https://YOUR_HAOS_URL/api"
 HAOS_TOKEN = "HA_LONG_LIVED_ACCESS_TOKEN"
@@ -18,7 +19,7 @@ BRAVE_SEARCH_API_KEY = ""
 SRC_LAN = "en" # language, others not tested
 SOURCE_IP = "EDGE_DEVICE_IP" # edge device IP address, TODO: remove this and ensure IP passed by edge devices
 
-TTS_DEVICE = "0" # GPU index to use for text-to-speech model
+TTS_DEVICE = "cuda:0" # GPU index to use for text-to-speech model
 STT_DEVICE = "1" # GPU index to use for speech-to-text model
 
 
