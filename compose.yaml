@@ -16,10 +16,6 @@ services:
     image: agent:${VERSION:-latest}
     env_file:
       - .env
-    # depends_on:
-      # llamacpp:
-      # vllm:
-      #   condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6002/"]
       interval: 15s
@@ -45,8 +41,8 @@ services:
       - "6001:6001" # /v1/audio/transcriptions OpenAI-compat API
       - "6000:6000"
       - "5999:5999"
-    environment:
-      - CUDA_VISIBLE_DEVICES=3
+    env_file:
+      - .env
     deploy:
       resources:
         reservations:
@@ -64,6 +60,8 @@ services:
       - "6005:6005" # OpenAI API-compatible /v1/audio/speech
       - "6004:6004" # UI/API
       - "6003:6003" # Serving audio files
+    env_file:
+      - .env
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6004/"]
       interval: 30s
@@ -78,7 +76,6 @@ services:
               count: all
               capabilities: [gpu]
     volumes:
-#      - ./services/text-to-speech/app/flagged:/app/flagged
       - ./services/text-to-speech/app/output:/app/output
       - ./services/text-to-speech/app/config.py:/app/config.py
       - ./shared:/app/shared:ro
@@ -121,7 +118,7 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
   llamacpp:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
     volumes:
       - ./services/llamacpp/models:/models
     # profiles: ["llamacpp"]
@@ -130,18 +127,16 @@ services:
     command: >
       -m /models/Qwen2.5-72B-Instruct-Q6_K/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf
       -dev CUDA0,CUDA1,CUDA2
-      -md /models/Qwen2.5-7B-Instruct-Q6_K_L.gguf
+      --alias gpt-3.5-turbo
+      -md /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
       -devd CUDA3
+      --draft-max 32
+      --batch-size 1024
+      --ubatch-size 256
       -fa
       -sm layer
-      --threads 32
-      --ctx-size 16384
-      --ctx-size-draft 16384
-      --temp 0.7
-      --min-p 0.0
-      --top-p 0.8
-      --top-k 20
-      --presence-penalty 0.5
+      --ctx-size 8192
+      --ctx-size-draft 2048
       -ngl 99
       -ngld 99
       --no-context-shift
@@ -150,7 +145,7 @@ services:
       --api-key 1234123412341234
       --host 0.0.0.0
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 5s
       retries: 5
