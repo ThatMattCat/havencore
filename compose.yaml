@@ -16,10 +16,10 @@ services:
     image: agent:${VERSION:-latest}
     env_file:
       - .env
-    depends_on:
-      llamacpp:
+    # depends_on:
+      # llamacpp:
       # vllm:
-        condition: service_healthy
+      #   condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6002/"]
       interval: 15s
@@ -86,7 +86,7 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     runtime: nvidia
-    profiles: ["vllm"]
+    # profiles: ["vllm"]
     env_file:
       - .env
     ports:
@@ -95,7 +95,17 @@ services:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./services/vllm/app:/app
     ipc: host
-    command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ --served-model-name gpt-3.5-turbo -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .74
+    # command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ --served-model-name gpt-3.5-turbo -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .74
+    command: >
+      --model TechxGenus/Mistral-Large-Instruct-2411-AWQ
+      --served-model-name gpt-3.5-turbo
+      -tp 4
+      --max-model-len 16384
+      --port 8000
+      --enable-auto-tool-choice
+      --tool-call-parser mistral
+      --chat-template /app/mistral-tool-chat-template.jinja
+      --gpu-memory-utilization .74
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
       interval: 15s
@@ -114,23 +124,28 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     volumes:
       - ./services/llamacpp/models:/models
-    profiles: ["llamacpp"]
+    # profiles: ["llamacpp"]
     ports:
       - "8000:8000"
     command: >
-      -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf
-      --threads 30
+      -m /models/Qwen2.5-72B-Instruct-Q6_K/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf
+      -dev CUDA0,CUDA1,CUDA2
+      -md /models/Qwen2.5-7B-Instruct-Q6_K_L.gguf
+      -devd CUDA3
+      -fa
+      -sm layer
+      --threads 32
       --ctx-size 16384
-      --temp 0.1
+      --ctx-size-draft 16384
+      --temp 0.7
       --min-p 0.0
       --top-p 0.8
       --top-k 20
       --presence-penalty 0.5
       -ngl 99
+      -ngld 99
       --no-context-shift
-      -ot "([6-9]+).ffn_.*_exps.=CPU"
       --port 8000
-      -ts 12,16,16,14
       --jinja
       --api-key 1234123412341234
       --host 0.0.0.0
@@ -148,3 +163,59 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
+
+      # -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf
+      # --flash-attn
+      # --threads 32
+      # --ctx-size 16384
+      # --temp 0.1
+      # --min-p 0.0
+      # --top-p 0.8
+      # --top-k 20
+      # --presence-penalty 0.5
+      # -ngl 99
+      # --no-context-shift
+      # -ot "([5-9]+).ffn_.*_exps.=CPU"
+      # --port 8000
+      # -ts 12,16,16,14
+      # --jinja
+      # --api-key 1234123412341234
+      # --host 0.0.0.0
+  speaches:
+    container_name: speaches
+    image: ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3
+    build:
+      dockerfile: Dockerfile
+      context: ./services/speaches
+      platforms:
+        - linux/amd64
+      args:
+        BASE_IMAGE: nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
+    restart: unless-stopped
+    ports:
+      - 8000:6007
+    volumes:
+      - ~/.cache/huggingface/hub:/home/ubuntu/.cache/huggingface/hub
+    develop:
+      watch:
+        - action: rebuild
+          path: ./uv.lock
+        - action: sync+restart
+          path: ./src
+          target: /home/ubuntu/speaches/src
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://0.0.0.0:8000/health"] # TODO: won't work if a user changes the port
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

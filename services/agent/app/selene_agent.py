@@ -79,8 +79,8 @@ class SeleneAgent:
         self.model_name = self._detect_model()
         logger.info(f"Using model: {self.model_name}")
 
-        self.temperature = 0
-        self.top_p = 0.95
+        self.temperature = 0.7
+        self.top_p = 0.8
         self.top_k = 20
         self.max_tokens = 1024
         
