@@ -16,6 +16,7 @@ LOKI_URL = os.getenv('LOKI_URL', 'http://localhost:3100/loki/api/v1/push')
 CURRENT_LOCATION = os.getenv('CURRENT_LOCATION', "Somewhere on Earth, probably")
 CURRENT_TIMEZONE = os.getenv('CURRENT_TIMEZONE', "America/Los_Angeles")
 CURRENT_ZIPCODE = os.getenv('CURRENT_ZIPCODE', "UNKNOWN")
+AGENT_NAME = os.getenv('AGENT_NAME', "Selene") # Default agent name, can be overridden by environment variable
 HAOS_URL = os.getenv('HAOS_URL', "https://localhost:8123/api")
 HAOS_TOKEN = os.getenv('HAOS_TOKEN', "NO_TOKEN_CONFIGURED")
 
@@ -30,5 +31,25 @@ TTS_DEVICE = os.getenv('TTS_DEVICE', "cuda:0") # GPU index to use for text-to-sp
 
 STT_DEVICE = os.getenv('STT_DEVICE', "0") # GPU index to use for speech-to-text model
 
-
 LLM_API_KEY = os.getenv('DEV_CUSTOM_API_KEY', "1234")
+
+SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly AI assistant with access to various tools.
+        Current Location: {CURRENT_LOCATION}
+        Zip Code: {CURRENT_ZIPCODE}
+
+        You have access to the following tools:
+        - Home Assistant controls for smart home devices
+        - Web search via Brave Search
+        - Computational queries via Wolfram Alpha
+        - Weather predictions via WeatherAPI that include astronomical data
+        Use these tools when needed to help answer questions or perform actions.
+
+        Be concise in your responses. Respond to the user as though they are a close friend.
+        When responding to the user follow these rules:
+        - Be brief while still resolving the user's request
+        - Avoid filler words and unnecessary details
+        - Convert numbers to words, eg: "One hundred and two" instead of "102"
+        - Use simple language and short sentences
+        - Do NOT use special characters or emojis, they cannot be translated to audio properly
+
+        """
