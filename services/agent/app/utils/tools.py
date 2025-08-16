@@ -1,8 +1,10 @@
 import requests
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 from utils import config
 import pytz
+from wiki_tools import get_wikipedia_with_context,query_wikipedia
 
 def get_weather_forecast(location: str, date: Optional[str] = None, api_key: str = None) -> str:
     """

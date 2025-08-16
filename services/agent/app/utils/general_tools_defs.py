@@ -1,3 +1,23 @@
+# Wikipedia
+
+WIKIPEDIA_SEARCH = {
+    "type": "function",
+    "function": {
+        "name": "query_wikipedia",
+        "description": "Search Wikipedia for information about a topic and return a summary.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search_term": {
+                    "type": "string",
+                    "description": "The topic to search for on Wikipedia."
+                }
+            },
+            "required": ["search_term"]
+        }
+    }
+}
+
 # General tools definitions
 
 BRAVE_SEARCH = {
@@ -58,7 +78,7 @@ WEATHER_FORECAST = {
     }
 }
 
-TOOLS = [BRAVE_SEARCH, WOLFRAM_ALPHA, WEATHER_FORECAST]
+TOOLS = [BRAVE_SEARCH, WOLFRAM_ALPHA, WEATHER_FORECAST, WIKIPEDIA_SEARCH]
 
 def GeneralTools():
     return TOOLS

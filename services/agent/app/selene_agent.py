@@ -139,7 +139,8 @@ class SeleneAgent:
             'home_assistant.execute_service': self.haos.execute_service,
             'brave_search': self.brave_search,
             'wolfram_alpha': self.wolfram_alpha,
-            'get_weather_forecast': custom_tools.get_weather_forecast
+            'get_weather_forecast': custom_tools.get_weather_forecast,
+            'query_wikipedia': custom_tools.query_wikipedia
         }
     
     async def init(self):
@@ -154,7 +155,6 @@ class SeleneAgent:
     
     def get_system_prompt(self) -> str:
         prompt = f"""You are {self.agent_name}, a friendly AI assistant with access to various tools.
-        Current date and time: {datetime.now(ZoneInfo(shared_config.CURRENT_TIMEZONE)).strftime('%A, %Y-%m-%d %H:%M:%S %Z')}
         Current Location: {shared_config.CURRENT_LOCATION}
         Zip Code: {shared_config.CURRENT_ZIPCODE}
 
@@ -180,6 +180,14 @@ class SeleneAgent:
     @with_trace
     def query(self, query: str) -> str:
         """Process a user query using chat completion with tools"""
+
+        query = f"""
+### System Context
+- Current date and time: {datetime.now(ZoneInfo(shared_config.CURRENT_TIMEZONE)).strftime('%A, %Y-%m-%d %H:%M:%S %Z')}
+
+### User Message
+{query}
+"""
         trace_id = get_trace_id()
         logger.debug(f"Last message time: {self.last_query_time} - Current Time: {time.time()}")
         if self.last_query_time and time.time() - self.last_query_time > 180:
@@ -212,7 +220,8 @@ class SeleneAgent:
                     tool_choice="auto",
                     temperature=self.temperature,
                     top_p=self.top_p,
-                    max_tokens=self.max_tokens
+                    max_tokens=self.max_tokens,
+                    # extra_body={"cache_prompt": True}
                 )
 
                 assistant_message = response.choices[0].message

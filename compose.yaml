@@ -118,8 +118,8 @@ services:
     ports:
       - "8000:8000"
     command: >
-      -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q5_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q5_K_XL-00001-of-00004.gguf
-      --threads 32
+      -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf
+      --threads 30
       --ctx-size 16384
       --temp 0.1
       --min-p 0.0
@@ -128,7 +128,7 @@ services:
       --presence-penalty 0.5
       -ngl 99
       --no-context-shift
-      -ot "([4-9]+).ffn_.*_exps.=CPU"
+      -ot "([6-9]+).ffn_.*_exps.=CPU"
       --port 8000
       -ts 12,16,16,14
       --jinja
