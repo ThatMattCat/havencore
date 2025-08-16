@@ -154,7 +154,7 @@ class SeleneAgent:
     
     def get_system_prompt(self) -> str:
         prompt = f"""You are {self.agent_name}, a friendly AI assistant with access to various tools.
-        Current date and time: {datetime.now(ZoneInfo(shared_config.CURRENT_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}
+        Current date and time: {datetime.now(ZoneInfo(shared_config.CURRENT_TIMEZONE)).strftime('%A, %Y-%m-%d %H:%M:%S %Z')}
         Current Location: {shared_config.CURRENT_LOCATION}
         Zip Code: {shared_config.CURRENT_ZIPCODE}
 

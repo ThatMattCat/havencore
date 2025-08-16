@@ -45,7 +45,7 @@ class HomeAssistant:
 
             service_obj = domain_obj.services[service]
             changes = service_obj.trigger(entity_id=entity_id)
-            # BROKEN - check changes for entity_id to ensure state changed
+            # final_state BROKEN - check changes for entity_id to ensure state changed
             final_state = self.get_entity_state(entity_id)
             return f"Service {service} executed on {entity_id}"
     
