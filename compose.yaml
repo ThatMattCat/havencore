@@ -128,11 +128,11 @@ services:
       -m /models/Qwen2.5-72B-Instruct-Q6_K/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf
       -dev CUDA0,CUDA1,CUDA2
       --alias gpt-3.5-turbo
-      -md /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+      -md /models/Qwen2.5-7B-Instruct-Q6_K_L.gguf
       -devd CUDA3
-      --draft-max 32
-      --batch-size 1024
-      --ubatch-size 256
+      --draft-max 64
+      --batch-size 2048
+      --ubatch-size 512
       -fa
       -sm layer
       --ctx-size 8192

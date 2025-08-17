@@ -19,6 +19,7 @@ CURRENT_ZIPCODE = os.getenv('CURRENT_ZIPCODE', "UNKNOWN")
 AGENT_NAME = os.getenv('AGENT_NAME', "Selene") # Default agent name, can be overridden by environment variable
 HAOS_URL = os.getenv('HAOS_URL', "https://localhost:8123/api")
 HAOS_TOKEN = os.getenv('HAOS_TOKEN', "NO_TOKEN_CONFIGURED")
+HAOS_USE_SSL = True
 
 WOLFRAM_ALPHA_API_KEY = os.getenv('WOLFRAM_ALPHA_API_KEY', "NO_WOLFRAM_TOKEN_CONFIGURED")
 BRAVE_SEARCH_API_KEY = os.getenv('BRAVE_SEARCH_API_KEY', "NO_BRAVE_TOKEN_CONFIGURED")

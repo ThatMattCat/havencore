@@ -11,15 +11,14 @@ sys.path.insert(0, project_root)
 import haos.haos_tools_defs as haos_tools_defs
 import config
 import shared.scripts.logger as logger_module
-import shared.configs.shared_config as shared_config
 
 logger = logger_module.get_logger('loki')
 
 class HomeAssistant:
 
     def __init__(self):
-        self._api_url = shared_config.HAOS_URL
-        self._token = shared_config.HAOS_TOKEN
+        self._api_url = config.HAOS_URL
+        self._token = config.HAOS_TOKEN
 
     def get_domain_entity_states(self, domain: str) -> str:
         with Client(self._api_url, self._token) as client:
@@ -57,6 +56,10 @@ class HomeAssistant:
             list[dict[str, any]]: A list of dictionaries containing the definitions of tools.
         """
         return haos_tools_defs.HaosTools()
+    
+
+
+    
 
 # For testing    
 def main():

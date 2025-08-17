@@ -20,6 +20,8 @@ from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function
 import uvicorn
 import threading
+import asyncio
+import inspect
 
 from utils import config
 from utils.haos.haos import HomeAssistant
@@ -29,7 +31,9 @@ import utils.tools as custom_tools
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
+#import utils.haos.ha_media_controller as ha_media_controller
 
+# TODO: Make everything async
 
 logger = logger_module.get_logger('loki')
 logger.setLevel(logging.DEBUG)
@@ -65,11 +69,58 @@ class ChatCompletionResponse(BaseModel):
     choices: List[ChatCompletionChoice]
     usage: ChatCompletionUsage
 
+class AsyncToolExecutor:
+    """Manages a single event loop for all async tool executions"""
+    
+    def __init__(self):
+        self.loop = None
+        self.thread = None
+        self._started = False
+        self._lock = threading.Lock()
+        
+    def start(self):
+        """Start the async event loop in a separate thread"""
+        with self._lock:
+            if self._started:
+                return
+                
+            self.loop = asyncio.new_event_loop()
+            self.thread = threading.Thread(target=self._run_loop, daemon=True)
+            self.thread.start()
+            self._started = True
+            
+    def _run_loop(self):
+        """Run the event loop in a thread"""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+        
+    def stop(self):
+        """Stop the event loop"""
+        if self.loop and self._started:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
+            self._started = False
+            
+    def run_async(self, coro):
+        """Run an async coroutine in the persistent event loop"""
+        if not self._started:
+            self.start()
+            
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return future.result(timeout=30)  # 30 second timeout
+
+
 
 class SeleneAgent:
     """AI Agent that integrates with OpenAI-Compatible APIs and various tools."""
     
     def __init__(self, api_base: str = None, api_key: str = None):
+
+        self.async_executor = AsyncToolExecutor()
+        self.async_executor.start()
+        self.async_executor.run_async(self._async_init())
+
+
         self.agent_name = "Selene"
         self.client = OpenAI(
             base_url=api_base or shared_config.LLM_API_BASE,
@@ -90,6 +141,18 @@ class SeleneAgent:
         self.tool_functions = self._setup_tool_functions()
         self.messages = []
         self.last_query_time = time.time()
+
+    async def _async_init(self):
+        """Initialize async components in the event loop"""
+        from utils.haos.ha_media_controller import HaMediaController
+        
+        if config.HAOS_USE_SSL:
+            haport = 443
+        else:
+            haport=8123
+        # TODO: trace & fix config
+        self.ha_media_controller = HaMediaController(port=haport,use_ssl=config.HAOS_USE_SSL,host=config.HAOS_HOST,token=config.HAOS_TOKEN)
+        await self.ha_media_controller.connect()
 
     def _detect_model(self) -> str:
         """Auto-detect the loaded model from the API"""
@@ -125,10 +188,12 @@ class SeleneAgent:
         
     def _setup_tools(self) -> List[Dict[str, Any]]:
         """Concatenate all tool sources into one list"""
+        from utils.haos.ha_media_controller import get_tool_definitions
         tools = []
+        ha_media_tools = get_tool_definitions()
         haos_tools = haos_tools_defs.HaosTools()
         general_tools = general_tools_defs.GeneralTools()
-        tools = haos_tools + general_tools
+        tools = haos_tools + general_tools + ha_media_tools
         return tools
     
     def _setup_tool_functions(self) -> Dict[str, callable]:
@@ -140,13 +205,14 @@ class SeleneAgent:
             'brave_search': self.brave_search,
             'wolfram_alpha': self.wolfram_alpha,
             'get_weather_forecast': custom_tools.get_weather_forecast,
-            'query_wikipedia': custom_tools.query_wikipedia
+            'query_wikipedia': custom_tools.query_wikipedia,
+            'control_media': self.ha_media_controller.control_media,
+            'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
         }
     
     async def init(self):
         """Initialize the agent with system prompt"""
         system_prompt = self.get_system_prompt()
-        
         self.messages = [{"role": "system", "content": system_prompt}]
     
     def clear_messages(self):
@@ -183,7 +249,7 @@ class SeleneAgent:
             
             logger.info(f"Query: {query}", extra={"trace_id": trace_id})
 
-            max_iterations = 5  #  prevent infinite loops
+            max_iterations = 6  #  prevent infinite loops
             iteration = 0
             
             while iteration < max_iterations:
@@ -346,8 +412,16 @@ class SeleneAgent:
             logger.debug(f"Executing tool: {function_name} with args: {function_args}", 
                         extra={"trace_id": trace_id})
             
+            # if function_name in self.tool_functions:
+            #     result = self.tool_functions[function_name](**function_args)
             if function_name in self.tool_functions:
-                result = self.tool_functions[function_name](**function_args)
+                func = self.tool_functions[function_name]
+                if inspect.iscoroutinefunction(func):
+                    logger.debug(f"Running async tool: {function_name}")
+                    result = self.async_executor.run_async(func(**function_args))
+                else:
+                    logger.debug(f"Running sync tool: {function_name}")
+                    result = func(**function_args)
                 return str(result)
             else:
                 return f"ERROR: Unknown tool '{function_name}'"
@@ -432,12 +506,11 @@ class SeleneAgent:
             raise ValueError(f"An error occurred: {e}")
             
         return response.text
-    # def wolfram_alpha(self, query: str) -> str:
-    #     """Query Wolfram Alpha"""
-    #     trace_id = get_trace_id()
-    #     resp = self.wolfram.query(input=query)
-    #     logger.debug(f"Wolfram Alpha Query: {query}\nResponse: {str(resp)}", extra={"trace_id": trace_id})
-    #     return str(resp)
+    
+    def cleanup(self):
+        """Clean up resources"""
+        self.async_executor.run_async(self.ha_media_controller.disconnect())
+        self.async_executor.stop()
 
 
 class SeleneRunner:
@@ -471,6 +544,7 @@ class SeleneRunner:
     
     def close(self):
         """Cleanup if needed"""
+        self.agent.cleanup()
         pass
 
 
