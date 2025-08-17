@@ -6,3 +6,4 @@ wolframalpha
 nltk
 fastapi
 uvicorn
+pytz
