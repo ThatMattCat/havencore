@@ -9,7 +9,7 @@ if DEBUG:
     LOG_LEVEL_APP = logging.DEBUG
 else:
     LOG_LEVEL_APP = logging.INFO
-LOG_LEVEL_OTHERS = LOG_LEVEL_APP
+LOG_LEVEL_OTHERS = logging.INFO
 
 LOKI_URL = os.getenv('LOKI_URL', 'http://localhost:3100/loki/api/v1/push')
 

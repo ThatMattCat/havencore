@@ -12,3 +12,5 @@ HAOS_USE_SSL = shared_config.HAOS_USE_SSL
 
 parsed_url = urlparse(HAOS_URL)
 HAOS_HOST = parsed_url.hostname
+
+HA_WS_URL = f"ws://{HAOS_HOST}/api/websocket"
