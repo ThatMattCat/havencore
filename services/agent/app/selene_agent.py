@@ -106,7 +106,7 @@ class AsyncToolExecutor:
             self.start()
             
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        return future.result(timeout=30)  # 30 second timeout
+        return future.result(timeout=900)  # 30 second timeout
 
 
 
@@ -147,7 +147,7 @@ class SeleneAgent:
         
         # TODO: trace & fix config
         self.ha_media_controller = MediaController(config.HA_WS_URL, config.HAOS_TOKEN)
-        await self.ha_media_controller.initialize()
+        await self.ha_media_controller.initialize(["media_player.living_room_tv"])
 
     def _detect_model(self) -> str:
         """Auto-detect the loaded model from the API"""
@@ -200,8 +200,10 @@ class SeleneAgent:
             'wolfram_alpha': self.wolfram_alpha,
             'get_weather_forecast': custom_tools.get_weather_forecast,
             'query_wikipedia': custom_tools.query_wikipedia,
-            'control_media': self.ha_media_controller.control_media,
+            'control_media_player': self.ha_media_controller.control_media_player,
             'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
+            'play_media': self.ha_media_controller.play_media,
+            'find_media_items': self.ha_media_controller.find_media_items
         }
     
     async def init(self):

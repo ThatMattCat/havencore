@@ -609,7 +609,7 @@ class HAMediaLibrary:
         """
         if not device_entity_id:
             if media_item.compatible_devices:
-                device_entity_id = list(media_item.compatible_devices)[0]
+                device_entity_id = sorted(media_item.compatible_devices)[0]
             else:
                 logger.debug("No compatible devices found")
                 return False
@@ -630,8 +630,8 @@ class HAMediaLibrary:
         }
 
         
-        response = await self._send_ws_command(message)
-        response_data = json.loads(response)
+        response_data = await self._send_ws_command(message)
+    #    response_data = json.loads(response)
         
         if response_data.get("success"):
             logger.debug("✅ Playback started successfully")
@@ -949,7 +949,7 @@ class HAMediaLibrary:
     
     def get_mediaitem_by_id(self, media_id: str) -> Optional[MediaItem]:
         """Get a specific media item by ID"""
-        return self.media_items.get(media_id)
+        return self.media_items.get(media_id, None)
     
     def list_servers(self) -> List[MediaServer]:
         """List all DLNA servers"""
@@ -1498,8 +1498,7 @@ class MediaController:
             logger.warning("❌ Failed to load media library file, scanning devices...")
             await self.library_manager.scan_all_dlna_media(
                 device_entity_ids=device_ids,
-                max_depth=5,
-                max_items_per_level=5
+                max_depth=10,
             )
             await self.library_manager.scan_cameras(
                 device_entity_ids=device_ids,
@@ -1511,22 +1510,36 @@ class MediaController:
         else:
             logger.info("✅ Saved media library loaded successfully.")
 
-    async def play_media(self, media_item_id: str, playback_device_id: str) -> bool:
+    async def play_media(self, media_item_id: str, playback_device_id: str = None) -> str:
         """Play a media item on the selected device."""
 
         media_item = self.library_manager.get_mediaitem_by_id(media_item_id)
-        device = self.library_manager.devices.get(playback_device_id)
+        if not media_item:
+            search_results = self.library_manager.find_media_items(title=media_item_id, limit=1)
+            logger.debug(f"Search for '{media_item_id}' found {len(search_results)} results")
+            media_item = search_results[0] if search_results else None
+        if playback_device_id:
+            device = self.library_manager.devices.get(playback_device_id, None)
         if media_item and device:
-            success = await self.library_manager.play_media(media_item, device)
+            success = await self.library_manager.play_media(media_item, device_entity_id=device.entity_id)
             if success:
                 logger.info(f"✅ Playing: {media_item.title}")
-                return True
+                return {"status": "success", "message": f"Playing: {media_item.title}", "device": device.name}
             else:
                 logger.error(f"❌ Failed to play: {media_item.title}")
-                return False
-        return False
+                return {"status": "error", "message": f"Failed to play: {media_item.title}", "device": device.name}
+        elif media_item:
+            logger.info(f"Guessing best device to play {media_item.title} on, since no device ID was provided")
+            success = await self.library_manager.play_media(media_item)
+            if success:
+                logger.debug(f"✅ Playing: {media_item.title} on guessed device")
+                return {"status": "success", "message": f"Playing: {media_item.title} on guessed device"}
+            else:
+                logger.debug(f"❌ Failed to play: {media_item.title} on guessed device")
+                return {"status": "error", "message": f"Failed to play: {media_item.title} on guessed device"}
+        return {"status": "error", "message": "No media item found", "device": device.name}
 
-    async def find_media(self, query: str, query_type: str = None, media_type: str = None, limit: int = 5) -> str:
+    async def find_media_items(self, query: str, query_type: str = None, media_type: str = None, limit: int = 5) -> str:
         media_types = ["video", "audio", "image", "playlist"]
         query_types = ["title", "genre", "year"]
 
@@ -1563,7 +1576,7 @@ class MediaController:
             return "\n".join(result_lines)
         return f"No results found for query: \"{query}\""
     
-    async def control_media(self,
+    async def control_media_player(self,
                            action: str,
                            device: str = None,
                            value: Any = None,
@@ -1581,10 +1594,10 @@ class MediaController:
             Success status and any relevant data
             
         Examples:
-            control_media("play", "living_room_tv")
-            control_media("volume_set", "bedroom_speaker", value=50)
-            control_media("seek", "living_room_tv", value=600)  # Seek to 10 minutes
-            control_media("select_source", "living_room_tv", value="HDMI 1")
+            control_media_player("play", "living_room_tv")
+            control_media_player("volume_set", "bedroom_speaker", value=50)
+            control_media_player("seek", "living_room_tv", value=600)  # Seek to 10 minutes
+            control_media_player("select_source", "living_room_tv", value="HDMI 1")
         """
         logger.info(f"Executing action: {action} on media device: {device} with value: {value} and target_device: {target_device}")
 
@@ -1659,79 +1672,73 @@ class MediaController:
             logger.error(f"Control media error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def get_media_player_statuses(self, 
-                        device: str = None,
-                        info_type: str = "full") -> Dict[str, Any]:
+    async def get_media_player_statuses(self) -> Dict[str, Any]:
         """
-        Get status information about devices or currently playing media.
-        
-        Args:
-            device: Specific device or "all" for all devices
-            info_type: "full", "playing", "devices", "current"
-            
-        Returns:
-            Status information based on request type
-            
-        Examples:
-            get_media_player_statuses()  # Get all media players and their status
-            get_media_player_statuses("living_room_tv")  # Get specific device status
-            get_media_player_statuses(info_type="playing")  # Get all currently playing devices
+        Get status information about all media_player devices in Home Assistant.
         """
-        logger.info(f"Getting media player statuses for device: {device} with info_type: {info_type}")
+        #logger.info(f"Getting media player statuses for device: {device} with info_type: {info_type}")
         
         try:
-            if device and device.lower() != "all":
-                entity_id = await self._resolve_device(device)
-                if not entity_id:
-                    return {"success": False, "error": f"Device '{device}' not found"}
-                    
-                status = await self.library_manager.get_media_player_status(entity_id)
-                
-                if info_type == "full":
-                    state = await self.library_manager.get_entity_state(entity_id)
-                    if state:
-                        status["supported_features"] = state.get("attributes", {}).get("supported_features")
-                        status["source_list"] = state.get("attributes", {}).get("source_list")
-                        
-                return {"success": True, "device": entity_id, "status": status}
-                
-            else:
-                players = await self.library_manager.get_all_media_players()
-                
-                if info_type == "playing":
-                    if players:
-                        players = [p for p in players if p.get("state", "") in ["playing", "paused"]]
+            players = await self.library_manager.get_all_media_players()
+            return {"success": True, "players": players}
 
-                elif info_type == "devices":
-                    return {
-                        "success": True,
-                        "devices": [
-                            {
-                                "id": p.get("entity_id", ""),
-                                "name": p.get("name", ""),
-                                "state": p.get("state", ""),
-                                "type": "plex" if p.get("is_plex") else "generic"
-                            }
-                            for p in players
-                        ]
-                    }
-                    
-                return {"success": True, "players": players}
-                
         except Exception as e:
             logger.error(f"Get status error: {e}")
             return {"success": False, "error": str(e)}
 
+        # try:
+        #     if device and device.lower() != "all":
+        #         entity_id = await self._resolve_device(device)
+        #         if not entity_id:
+        #             return {"success": False, "error": f"Device '{device}' not found"}
+                    
+        #         status = await self.library_manager.get_media_player_status(entity_id)
+                
+        #         if info_type == "full":
+        #             state = await self.library_manager.get_entity_state(entity_id)
+        #             if state:
+        #                 status["supported_features"] = state.get("attributes", {}).get("supported_features")
+        #                 status["source_list"] = state.get("attributes", {}).get("source_list")
+                        
+        #         return {"success": True, "device": entity_id, "status": status}
+                
+        #     else:
+        #         players = await self.library_manager.get_all_media_players()
+                
+        #         if info_type == "playing":
+        #             if players:
+        #                 players = [p for p in players if p.get("state", "") in ["playing", "paused"]]
+
+        #         elif info_type == "devices":
+        #             return {
+        #                 "success": True,
+        #                 "devices": [
+        #                     {
+        #                         "id": p.get("entity_id", ""),
+        #                         "name": p.get("name", ""),
+        #                         "state": p.get("state", ""),
+        #                         "type": "plex" if p.get("is_plex") else "generic"
+        #                     }
+        #                     for p in players
+        #                 ]
+        #             }
+                    
+        #         return {"success": True, "players": players}
+                
+        # except Exception as e:
+        #     logger.error(f"Get status error: {e}")
+        #     return {"success": False, "error": str(e)}
+
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """
-        Tool definitions for AI function calling.
+        Tool definitions for AI function c.
         """
         return [
             {
                 "type": "function",
                 "function": {
-                    "name": "control_media",
-                    "description": "Control media playback, volume, power, and sources on any device",
+                    "name": "control_media_player",
+                    "description": "Control a media player's playback, volume, power, and sources on any device",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1745,7 +1752,7 @@ class MediaController:
                             },
                             "device": {
                                 "type": "string",
-                                "description": "Device name or entity_id (optional, auto-detects)"
+                                "description": "Media Player device name or entity_id (optional, auto-detects)"
                             },
                             "value": {
                                 "type": ["number", "string", "boolean"],
@@ -1763,17 +1770,62 @@ class MediaController:
                     "description": "Get status of media players or currently playing content",
                     "parameters": {
                         "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "play_media",
+                    "description": "Play a media item on the selected device. Can search by title if media ID is not found.",
+                    "parameters": {
+                        "type": "object",
                         "properties": {
-                            "device": {
+                            "media_item_id": {
                                 "type": "string",
-                                "description": "Specific device or 'all' for all devices"
+                                "description": "The ID(preferred) or title of the media item to play. If an ID is not found, will search for items matching this as a title."
                             },
-                            "info_type": {
+                            "playback_device_id": {
                                 "type": "string",
-                                "enum": ["full", "playing", "devices", "current"],
-                                "description": "Type of information to return"
+                                "description": "The ID(preferred) of the playback device to use. If not provided, will attempt to guess the best device."
                             }
-                        }
+                        },
+                        "required": ["media_item_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_media_items",
+                    "description": "Search for media items in the library by title, genre, or year, with optional filtering by media type",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query string (e.g., movie title, genre name, or year)"
+                            },
+                            "query_type": {
+                                "type": "string",
+                                "enum": ["title", "genre", "year"],
+                                "description": "Type of search to perform. Defaults to 'title' if not specified"
+                            },
+                            "media_type": {
+                                "type": "string",
+                                "enum": ["video", "audio", "image", "playlist"],
+                                "description": "Filter results by media type. If not specified, returns all types"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of results to return",
+                                "default": 5,
+                                "minimum": 1
+                            }
+                        },
+                        "required": ["query"]
                     }
                 }
             }
@@ -1825,13 +1877,13 @@ class MediaController:
 async def main():
     """Example usage"""
     
-    device_ids = ["media_player.living_room_tv_gcast","media_player.bedroom_speaker"]
+    device_ids = ["media_player.living_room_tv","media_player.bedroom_speaker"]
     
     controller = MediaController(config.HA_WS_URL, config.HAOS_TOKEN)
     await controller.initialize(device_ids)
 
     logger.info(f"Searching media for 'bob' titles:\n")
-    search_results = await controller.find_media("star wars")
+    search_results = await controller.find_media_items("star wars")
     logger.info(search_results)
 
     media_player_statuses = await controller.get_media_player_statuses()
@@ -1839,8 +1891,8 @@ async def main():
         logger.info(f"Media Player: {media_player['name']} ({media_player['entity_id']}) - State: {media_player['state']}")
 
     # logger.debug(f"Pausing living room tv")
-    # await controller.control_media("play", "living_room_tv")
-    await controller.control_media("unmute", device="media_player.living_room_tv_gcast")
+    # await controller.control_media_player("play", "living_room_tv")
+    await controller.control_media_player("unmute", device="media_player.living_room_tv_gcast")
 
 if __name__ == "__main__":
     asyncio.run(main())
