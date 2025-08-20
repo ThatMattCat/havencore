@@ -1191,17 +1191,18 @@ class HAMediaLibrary:
             states = result.get("result", [])
             for state in states:
                 if state["entity_id"].startswith("media_player.") and not "hideme" in state["entity_id"]:
-                    players.append({
-                        "entity_id": state["entity_id"],
-                        "name": state.get("attributes", {}).get("friendly_name"),
-                        "state": state["state"],
-                        "app_name": state.get("attributes", {}).get("app_name"),
-                        "source": state.get("attributes", {}).get("source"),
-                        "media_title": state.get("attributes", {}).get("media_title"),
-                        "volume_level": state.get("attributes", {}).get("volume_level"),
-                        "is_plex": "plex" in state["entity_id"].lower() or 
-                                  state.get("attributes", {}).get("app_name", "").lower() == "plex"
-                    })
+                    players.append(state)
+                    # players.append({
+                    #     "entity_id": state["entity_id"],
+                    #     "name": state.get("attributes", {}).get("friendly_name"),
+                    #     "state": state["state"],
+                    #     "app_name": state.get("attributes", {}).get("app_name"),
+                    #     "source": state.get("attributes", {}).get("source"),
+                    #     "media_title": state.get("attributes", {}).get("media_title"),
+                    #     "volume_level": state.get("attributes", {}).get("volume_level"),
+                    #     "is_plex": "plex" in state["entity_id"].lower() or 
+                    #               state.get("attributes", {}).get("app_name", "").lower() == "plex"
+                    # })
         return players
     
     async def get_all_cameras(self) -> List[Dict[str, Any]]:
@@ -1882,8 +1883,8 @@ async def main():
     controller = MediaController(config.HA_WS_URL, config.HAOS_TOKEN)
     await controller.initialize(device_ids)
 
-    logger.info(f"Searching media for 'bob' titles:\n")
-    search_results = await controller.find_media_items("star wars")
+    logger.info(f"Searching media for 'star' titles:\n")
+    search_results = await controller.find_media_items("star")
     logger.info(search_results)
 
     media_player_statuses = await controller.get_media_player_statuses()
@@ -1892,7 +1893,7 @@ async def main():
 
     # logger.debug(f"Pausing living room tv")
     # await controller.control_media_player("play", "living_room_tv")
-    await controller.control_media_player("unmute", device="media_player.living_room_tv_gcast")
+    # await controller.control_media_player("unmute", device="media_player.living_room_tv")
 
 if __name__ == "__main__":
     asyncio.run(main())
