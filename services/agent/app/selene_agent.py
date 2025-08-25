@@ -112,10 +112,6 @@ class AsyncToolExecutor:
         return future.result(timeout=900)  # 30 second timeout
 
 
-
-class SeleneAgent:
-    """AI Agent that integrates with OpenAI-Compatible APIs and various tools."""
-    
 class SeleneAgent:
     """AI Agent that integrates with OpenAI-Compatible APIs and various tools."""
     
