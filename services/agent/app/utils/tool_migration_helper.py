@@ -306,21 +306,26 @@ def generate_mcp_tool_wrapper(legacy_tool_def: Dict[str, Any],
     description = func_def.get("description", "")
     parameters = func_def.get("parameters", {})
     
-    # Generate the tool definition
-    mcp_code = f'''
+    # Generate the tool definition with proper imports and handler registration
+    mcp_code = f'''\
 # MCP Implementation for {tool_name}
-Tool(
+from mcp import Tool, register_handler
+from typing import Dict, Any
+
+{tool_name}_tool = Tool(
     name="{tool_name}_mcp",
     description="{description}",
     inputSchema={json.dumps(parameters, indent=8)}
 )
 
-# Handler implementation
 async def handle_{tool_name}(arguments: Dict[str, Any]) -> str:
     """MCP handler for {tool_name}"""
     # TODO: Implement the tool logic here
     # Original implementation can be referenced from the legacy version
     pass
+
+# Register the handler with the MCP server
+register_handler({tool_name}_tool, handle_{tool_name})
 '''
     
     return mcp_code
