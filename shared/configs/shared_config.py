@@ -1,6 +1,22 @@
 import logging
 import os
 
+# Add these lines to shared/configs/shared_config.py after the existing configuration
+
+# MCP Configuration
+MCP_ENABLED = os.getenv('MCP_ENABLED', 'false').lower() == 'true'
+MCP_PREFER_OVER_LEGACY = os.getenv('MCP_PREFER_OVER_LEGACY', 'false').lower() == 'true'
+
+# MCP Server Configurations (JSON format in env vars)
+# Example: MCP_SERVERS='[{"name": "example", "command": "node", "args": ["server.js"], "enabled": true}]'
+MCP_SERVERS = os.getenv('MCP_SERVERS', '[]')
+
+# Individual MCP server configs (alternative to JSON)
+# These will be parsed if MCP_SERVERS is not provided
+MCP_SERVER_EXAMPLE_ENABLED = os.getenv('MCP_SERVER_EXAMPLE_ENABLED', 'false').lower() == 'true'
+MCP_SERVER_EXAMPLE_COMMAND = os.getenv('MCP_SERVER_EXAMPLE_COMMAND', '')
+MCP_SERVER_EXAMPLE_ARGS = os.getenv('MCP_SERVER_EXAMPLE_ARGS', '')  # Comma-separated
+
 HOST_IP_ADDRESS = os.getenv('HOST_IP_ADDRESS', '127.0.0.1')
 LLM_API_BASE = f"http://{HOST_IP_ADDRESS}:8000/v1" # Can be changed if not using built-in LLM service
 
@@ -23,6 +39,7 @@ HAOS_USE_SSL = True
 
 WOLFRAM_ALPHA_API_KEY = os.getenv('WOLFRAM_ALPHA_API_KEY', "NO_WOLFRAM_TOKEN_CONFIGURED")
 BRAVE_SEARCH_API_KEY = os.getenv('BRAVE_SEARCH_API_KEY', "NO_BRAVE_TOKEN_CONFIGURED")
+WEATHER_API_KEY = os.getenv('WEATHER_API_KEY', "NO_WEATHER_TOKEN_CONFIGURED")
 
 SRC_LAN = os.getenv('SRC_LAN', "en")
 SOURCE_IP = os.getenv('SOURCE_IP', "10.0.0.100") # edge device IP address, TODO: remove this and ensure IP passed by edge devices

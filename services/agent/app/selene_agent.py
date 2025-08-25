@@ -31,6 +31,9 @@ import utils.tools as custom_tools
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
+from utils.mcp_client_manager import MCPClientManager, MCPServerConfig, ToolSource
+from utils.unified_tool_registry import UnifiedToolRegistry
+from utils.tool_migration_helper import ToolMigrationHelper
 #import utils.haos.ha_media_controller as ha_media_controller
 
 # TODO: Make everything async
@@ -109,16 +112,33 @@ class AsyncToolExecutor:
         return future.result(timeout=900)  # 30 second timeout
 
 
-
 class SeleneAgent:
     """AI Agent that integrates with OpenAI-Compatible APIs and various tools."""
     
     def __init__(self, api_base: str = None, api_key: str = None):
-
+        
+        self.haos = HomeAssistant()
+        self.wolfram = WolframClient(shared_config.WOLFRAM_ALPHA_API_KEY)
+        
+        # Initialize MCP if enabled
+        self.mcp_enabled = shared_config.MCP_ENABLED if hasattr(shared_config, 'MCP_ENABLED') else False
+        self.mcp_manager = None
+        self.tool_registry = None
+        
+        if self.mcp_enabled:
+            logger.info("MCP support is enabled")
+            self.mcp_manager = MCPClientManager()
+            self._load_mcp_server_configs()
+        else:
+            logger.info("MCP support is disabled")
+        
+        # Initialize the unified tool registry
+        self.tool_registry = UnifiedToolRegistry(self.mcp_manager)
+        self.migration_helper = ToolMigrationHelper(self.tool_registry)
+        
         self.async_executor = AsyncToolExecutor()
         self.async_executor.start()
         self.async_executor.run_async(self._async_init())
-
 
         self.agent_name = "Selene"
         self.client = OpenAI(
@@ -134,20 +154,86 @@ class SeleneAgent:
         self.top_k = 20
         self.max_tokens = 1024
         
-        self.haos = HomeAssistant()
-        self.wolfram = WolframClient(shared_config.WOLFRAM_ALPHA_API_KEY)
-        self.tools = self._setup_tools() #OpenAI format
-        self.tool_functions = self._setup_tool_functions()
+        # Setup tools will now use the registry
+        self.tools = []  # Will be populated by _setup_tools
+        self.tool_functions = {}  # Legacy compatibility
         self.messages = []
         self.last_query_time = time.time()
+
+    def _load_mcp_server_configs(self):
+        """Load MCP server configurations from environment"""
+        if not self.mcp_manager:
+            return
+            
+        # Try to load from JSON config first
+        if hasattr(shared_config, 'MCP_SERVERS'):
+            try:
+                import json
+                servers_config = json.loads(shared_config.MCP_SERVERS)
+                for server_cfg in servers_config:
+                    config = MCPServerConfig(
+                        name=server_cfg.get('name'),
+                        command=server_cfg.get('command'),
+                        args=server_cfg.get('args', []),
+                        env=server_cfg.get('env', {}),
+                        enabled=server_cfg.get('enabled', True)
+                    )
+                    self.mcp_manager.add_server(config)
+                    logger.info(f"Loaded MCP server config: {config.name}")
+            except Exception as e:
+                logger.warning(f"Could not parse MCP_SERVERS JSON: {e}")
+        
+        # Example of loading individual server configs
+        # This is a fallback method if JSON parsing fails
+        if hasattr(shared_config, 'MCP_SERVER_EXAMPLE_ENABLED'):
+            if shared_config.MCP_SERVER_EXAMPLE_ENABLED:
+                command = getattr(shared_config, 'MCP_SERVER_EXAMPLE_COMMAND', '')
+                args_str = getattr(shared_config, 'MCP_SERVER_EXAMPLE_ARGS', '')
+                args = args_str.split(',') if args_str else []
+                
+                if command:
+                    config = MCPServerConfig(
+                        name="example",
+                        command=command,
+                        args=args,
+                        enabled=True
+                    )
+                    self.mcp_manager.add_server(config)
 
     async def _async_init(self):
         """Initialize async components in the event loop"""
         from utils.haos.ha_media_controller import MediaController
         
-        # TODO: trace & fix config
+        # Initialize MCP manager if enabled
+        if self.mcp_manager:
+            try:
+                await self.mcp_manager.initialize()
+                logger.info("MCP manager initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize MCP manager: {e}")
+        
+        # Initialize media controller
         self.ha_media_controller = MediaController(config.HA_WS_URL, config.HAOS_TOKEN)
         await self.ha_media_controller.initialize(["media_player.living_room_tv"])
+        
+        # Register all tools with the registry
+        await self._register_all_tools()
+
+        self.migration_helper.auto_detect_migrations()
+        
+        # Apply tool preferences from migration helper
+        for tool_name in self.migration_helper.migrations:
+            if self.migration_helper.should_use_mcp(tool_name):
+                # This tool should use MCP
+                logger.info(f"Tool '{tool_name}' configured to use MCP version")
+        
+        # Get the final tool list
+        self.tools = await self.tool_registry.get_tools_for_llm()
+        
+        # Log tool registry status
+        status = self.tool_registry.get_registry_status()
+
+        logger.info(f"Tool Registry Status: {json.dumps(status, indent=2)}")
 
     def _detect_model(self) -> str:
         """Auto-detect the loaded model from the API"""
@@ -181,14 +267,49 @@ class SeleneAgent:
             logger.warning("Could not detect specific model, using default 'llama'")
             return "llama"
         
-    def _setup_tools(self) -> List[Dict[str, Any]]:
-        """Concatenate all tool sources into one list"""
-        tools = []
-        ha_media_tools = self.ha_media_controller.get_tool_definitions()
+    async def _register_all_tools(self):
+        """Register all legacy tools with the unified registry"""
+        
+        # Register Home Assistant tools
         haos_tools = haos_tools_defs.HaosTools()
+        haos_functions = {
+            'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
+            'home_assistant.get_domain_services': self.haos.get_domain_services,
+            'home_assistant.execute_service': self.haos.execute_service,
+        }
+        self.tool_registry.register_legacy_tools_bulk(haos_tools, haos_functions)
+        
+        # Register general tools
         general_tools = general_tools_defs.GeneralTools()
-        tools = haos_tools + general_tools + ha_media_tools
-        return tools
+        general_functions = {
+            'brave_search': self.brave_search,
+            'wolfram_alpha': self.wolfram_alpha,
+            'get_weather_forecast': custom_tools.get_weather_forecast,
+            'query_wikipedia': custom_tools.query_wikipedia,
+        }
+        self.tool_registry.register_legacy_tools_bulk(general_tools, general_functions)
+        
+        # Register media controller tools
+        media_tools = self.ha_media_controller.get_tool_definitions()
+        media_functions = {
+            'control_media_player': self.ha_media_controller.control_media_player,
+            'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
+            'play_media': self.ha_media_controller.play_media,
+            'find_media_items': self.ha_media_controller.find_media_items
+        }
+        self.tool_registry.register_legacy_tools_bulk(media_tools, media_functions)
+        
+        # Set tool preference based on config
+        if shared_config.MCP_PREFER_OVER_LEGACY:
+            self.tool_registry.set_tool_preference(shared_config.MCP_PREFER_OVER_LEGACY)
+        
+        # Keep legacy tool_functions for compatibility
+        self.tool_functions = {**haos_functions, **general_functions, **media_functions}
+
+    def _setup_tools(self) -> List[Dict[str, Any]]:
+        """This method is now replaced by the registry but kept for compatibility"""
+        # Tools are now managed by the registry and populated in _async_init
+        return self.tools
     
     def _setup_tool_functions(self) -> Dict[str, callable]:
         """Map tool names to their implementation functions"""
@@ -210,6 +331,10 @@ class SeleneAgent:
         """Initialize the agent with system prompt"""
         system_prompt = self.get_system_prompt()
         self.messages = [{"role": "system", "content": system_prompt}]
+        
+        # Refresh tools in case they've changed
+        if self.tool_registry:
+            self.tools = await self.tool_registry.get_tools_for_llm()
     
     def clear_messages(self):
         """Clear conversation history and reinitialize"""
@@ -398,7 +523,7 @@ class SeleneAgent:
     
     @with_trace
     def _execute_tool_call(self, tool_call) -> str:
-        """Execute a single tool call"""
+        """Execute a single tool call - now routes through the registry"""
         trace_id = get_trace_id()
         
         try:
@@ -408,19 +533,32 @@ class SeleneAgent:
             logger.debug(f"Executing tool: {function_name} with args: {function_args}", 
                         extra={"trace_id": trace_id})
             
-            # if function_name in self.tool_functions:
-            #     result = self.tool_functions[function_name](**function_args)
-            if function_name in self.tool_functions:
-                func = self.tool_functions[function_name]
-                if inspect.iscoroutinefunction(func):
-                    logger.debug(f"Running async tool: {function_name}")
-                    result = self.async_executor.run_async(func(**function_args))
-                else:
-                    logger.debug(f"Running sync tool: {function_name}")
-                    result = func(**function_args)
+            # Route through the unified registry
+            if self.tool_registry:
+                # Check the source for logging
+                tool_source = self.tool_registry.get_tool_source(function_name)
+                if tool_source:
+                    logger.debug(f"Tool '{function_name}' source: {tool_source.value}", 
+                               extra={"trace_id": trace_id})
+                
+                # Execute through registry (handles both legacy and MCP)
+                result = self.async_executor.run_async(
+                    self.tool_registry.execute_tool(function_name, function_args)
+                )
                 return str(result)
             else:
-                return f"ERROR: Unknown tool '{function_name}'"
+                # Fallback to legacy execution if registry not available
+                if function_name in self.tool_functions:
+                    func = self.tool_functions[function_name]
+                    if inspect.iscoroutinefunction(func):
+                        logger.debug(f"Running async tool: {function_name}")
+                        result = self.async_executor.run_async(func(**function_args))
+                    else:
+                        logger.debug(f"Running sync tool: {function_name}")
+                        result = func(**function_args)
+                    return str(result)
+                else:
+                    return f"ERROR: Unknown tool '{function_name}'"
                 
         except Exception as e:
             logger.error(f"Error executing tool {tool_call.function.name}: {e}", 
@@ -505,7 +643,12 @@ class SeleneAgent:
     
     def cleanup(self):
         """Clean up resources"""
-        self.async_executor.run_async(self.ha_media_controller.disconnect())
+        self.async_executor.run_async(self.ha_media_controller.library_manager.disconnect())
+        
+        # Clean up MCP connections if enabled
+        if self.mcp_manager:
+            self.async_executor.run_async(self.mcp_manager.cleanup())
+        
         self.async_executor.stop()
 
 
@@ -618,6 +761,101 @@ async def list_models():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "agent": "selene"}
+
+@app.get("/tools/status")
+async def get_tools_status():
+    """Get status of all registered tools"""
+    global runner
+    
+    if not runner or not runner.agent.tool_registry:
+        return {"error": "Tool registry not initialized"}
+    
+    return runner.agent.tool_registry.get_registry_status()
+
+@app.get("/mcp/status")
+async def get_mcp_status():
+    """Get status of MCP connections"""
+    global runner
+    
+    if not runner or not runner.agent.mcp_manager:
+        return {"error": "MCP not enabled or not initialized"}
+    
+    return runner.agent.mcp_manager.get_server_status()
+
+@app.post("/tools/preference")
+async def set_tool_preference(prefer_mcp: bool = False):
+    """Set tool preference when conflicts exist"""
+    global runner
+    
+    if not runner or not runner.agent.tool_registry:
+        return {"error": "Tool registry not initialized"}
+    
+    runner.agent.tool_registry.set_tool_preference(prefer_mcp)
+    return {"success": True, "prefer_mcp": prefer_mcp}
+
+@app.get("/tools/migrations")
+async def get_tool_migrations():
+    """Get tool migration status"""
+    global runner
+    
+    if not runner or not runner.agent.migration_helper:
+        return {"error": "Migration helper not initialized"}
+    
+    return runner.agent.migration_helper.get_migration_status()
+
+@app.get("/tools/migrations/{tool_name}")
+async def get_tool_migration(tool_name: str):
+    """Get migration status for a specific tool"""
+    global runner
+    
+    if not runner or not runner.agent.migration_helper:
+        return {"error": "Migration helper not initialized"}
+    
+    migration = runner.agent.migration_helper.get_tool_migration(tool_name)
+    if migration:
+        return migration.to_dict()
+    else:
+        return {"error": f"No migration found for tool '{tool_name}'"}
+
+@app.post("/tools/migrations/{tool_name}/preference")
+async def set_tool_migration_preference(tool_name: str, use_mcp: bool = False):
+    """Set preference for a specific tool"""
+    global runner
+    
+    if not runner or not runner.agent.migration_helper:
+        return {"error": "Migration helper not initialized"}
+    
+    runner.agent.migration_helper.set_tool_preference(tool_name, use_mcp)
+    
+    # Also update the registry preference for this specific tool
+    runner.agent.tool_registry.set_tool_preference(use_mcp)
+    
+    return {
+        "success": True,
+        "tool": tool_name,
+        "use_mcp": use_mcp
+    }
+
+@app.get("/tools/migrations/{tool_name}/plan")
+async def get_migration_plan(tool_name: str):
+    """Get migration plan for a specific tool"""
+    global runner
+    
+    if not runner or not runner.agent.migration_helper:
+        return {"error": "Migration helper not initialized"}
+    
+    return runner.agent.migration_helper.create_migration_plan(tool_name)
+
+@app.get("/tools/migrations/report")
+async def get_migration_report():
+    """Get human-readable migration report"""
+    global runner
+    
+    if not runner or not runner.agent.migration_helper:
+        return {"error": "Migration helper not initialized"}
+    
+    report = runner.agent.migration_helper.generate_migration_report()
+    return {"report": report}
 
 
 def run_fastapi_server():
