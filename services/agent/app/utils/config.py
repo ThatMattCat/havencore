@@ -3,7 +3,8 @@ import os
 from shared.configs import shared_config
 from urllib.parse import urlparse
 
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+WEATHER_API_KEY = shared_config.WEATHER_API_KEY
+BRAVE_SEARCH_API_KEY = shared_config.BRAVE_SEARCH_API_KEY
 TIMEZONE = shared_config.CURRENT_TIMEZONE
 
 HAOS_TOKEN = shared_config.HAOS_TOKEN

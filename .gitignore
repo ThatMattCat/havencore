@@ -62,6 +62,7 @@ text-to-speech/models/**
 **/output/**
 **/*.bak
 **/ha_media_library.json
+**/venv/
 
 .git
 services/speech-to-text/app/whisper_streaming/**
