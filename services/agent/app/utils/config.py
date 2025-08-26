@@ -3,6 +3,12 @@ import os
 from shared.configs import shared_config
 from urllib.parse import urlparse
 
+POSTGRES_HOST = shared_config.POSTGRES_HOST
+POSTGRES_PORT = shared_config.POSTGRES_PORT
+POSTGRES_DB = shared_config.POSTGRES_DB
+POSTGRES_USER = shared_config.POSTGRES_USER
+POSTGRES_PASSWORD = shared_config.POSTGRES_PASSWORD
+
 AGENT_NAME = shared_config.AGENT_NAME
 WEATHER_API_KEY = shared_config.WEATHER_API_KEY
 BRAVE_SEARCH_API_KEY = shared_config.BRAVE_SEARCH_API_KEY
@@ -27,7 +33,7 @@ EMBEDDINGS_URL = "http://embeddings:3000"
 EMBEDDING_DIM = 1024  # for bge-large or e5-large
 
 # Collection names
-COLLECTION_NAMES = ["conversations", "knowledge"]
+COLLECTION_NAMES = ["user_data"]
 
 # Optional settings
 DEFAULT_SEARCH_LIMIT = 5

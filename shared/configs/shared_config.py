@@ -1,7 +1,11 @@
 import logging
 import os
 
-# Add these lines to shared/configs/shared_config.py after the existing configuration
+POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'postgres')
+POSTGRES_PORT = os.getenv('POSTGRES_PORT', 5432)
+POSTGRES_DB = os.getenv('POSTGRES_DB', 'mydatabase')
+POSTGRES_USER = os.getenv('POSTGRES_USER', 'myuser')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'mypassword')
 
 # MCP Configuration
 MCP_ENABLED = os.getenv('MCP_ENABLED', 'false').lower() == 'true'
@@ -61,7 +65,7 @@ SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly AI assistant with access to
         - Computational queries via Wolfram Alpha
         - Weather predictions via WeatherAPI that include astronomical data
         - Searching Wikipedia
-        - Store, Delete, List, and Query "memories" using Qdrant Text Embeddings. Including user preferences, conversation history, facts, tasks, and general information
+        - Store, Delete, List, and Query "memories" using Qdrant Text Embeddings. Currently focused on user data and preferences.
         Use those tools when needed to help answer questions or perform actions.
 
         Be concise in your responses. Respond to the user as though they are a close friend.
