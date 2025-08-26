@@ -71,4 +71,4 @@ volumes/**/*
 
 !/.gitkeep
 !**/.gitkeep
-!volumes/**/.gitkeep
+!volumes/**/.gitkeeptest_env/
