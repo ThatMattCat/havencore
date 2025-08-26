@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:15-alpine
     env_file:
-      - .env`
+      - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./services/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -136,47 +136,48 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-  llamacpp:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
-    volumes:
-      - ./services/llamacpp/models:/models
-    # profiles: ["llamacpp"]
-    ports:
-      - "8000:8000"
-    command: >
-      -m /models/Qwen2.5-72B-Instruct-Q6_K/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf
-      -dev CUDA0,CUDA1,CUDA2
-      --alias gpt-3.5-turbo
-      -md /models/Qwen2.5-7B-Instruct-Q6_K_L.gguf
-      -devd CUDA3
-      --draft-max 64
-      --batch-size 2048
-      --ubatch-size 512
-      -fa
-      -sm layer
-      --ctx-size 8192
-      --ctx-size-draft 2048
-      -ngl 99
-      -ngld 99
-      --no-context-shift
-      --port 8000
-      --jinja
-      --api-key 1234123412341234
-      --host 0.0.0.0
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 300s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
+    
+  # llamacpp:
+  #   image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
+  #   volumes:
+  #     - ./services/llamacpp/models:/models
+  #   # profiles: ["llamacpp"]
+  #   ports:
+  #     - "8000:8000"
+  #   command: >
+  #     -m /models/Qwen2.5-72B-Instruct-Q6_K/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf
+  #     -dev CUDA0,CUDA1,CUDA2
+  #     --alias gpt-3.5-turbo
+  #     -md /models/Qwen2.5-7B-Instruct-Q6_K_L.gguf
+  #     -devd CUDA3
+  #     --draft-max 64
+  #     --batch-size 2048
+  #     --ubatch-size 512
+  #     -fa
+  #     -sm layer
+  #     --ctx-size 8192
+  #     --ctx-size-draft 2048
+  #     -ngl 99
+  #     -ngld 99
+  #     --no-context-shift
+  #     --port 8000
+  #     --jinja
+  #     --api-key 1234123412341234
+  #     --host 0.0.0.0
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 300s
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   restart: unless-stopped
 
       # -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf
       # --flash-attn
@@ -195,7 +196,6 @@ services:
       # --jinja
       # --api-key 1234123412341234
       # --host 0.0.0.0
- 
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -214,7 +214,6 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
-
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:1.8
     ports:
@@ -233,44 +232,6 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
- 
-  # speaches:
-  #   container_name: speaches
-  #   image: ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3
-  #   build:
-  #     dockerfile: Dockerfile
-  #     context: ./services/speaches
-  #     platforms:
-  #       - linux/amd64
-  #     args:
-  #       BASE_IMAGE: nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
-  #   restart: unless-stopped
-  #   ports:
-  #     - 8000:6007
-  #   volumes:
-  #     - ~/.cache/huggingface/hub:/home/ubuntu/.cache/huggingface/hub
-  #   develop:
-  #     watch:
-  #       - action: rebuild
-  #         path: ./uv.lock
-  #       - action: sync+restart
-  #         path: ./src
-  #         target: /home/ubuntu/speaches/src
-  #   env_file:
-  #     - path: .env
-  #       required: false
-  #   healthcheck:
-  #     test: ["CMD", "curl", "--fail", "http://0.0.0.0:8000/health"] # TODO: won't work if a user changes the port
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 5s
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
+
 volumes:
   postgres_data:
