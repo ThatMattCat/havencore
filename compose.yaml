@@ -178,23 +178,6 @@ services:
   #             capabilities: [gpu]
   #   restart: unless-stopped
 
-      # -m /models/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf
-      # --flash-attn
-      # --threads 32
-      # --ctx-size 16384
-      # --temp 0.1
-      # --min-p 0.0
-      # --top-p 0.8
-      # --top-k 20
-      # --presence-penalty 0.5
-      # -ngl 99
-      # --no-context-shift
-      # -ot "([5-9]+).ffn_.*_exps.=CPU"
-      # --port 8000
-      # -ts 12,16,16,14
-      # --jinja
-      # --api-key 1234123412341234
-      # --host 0.0.0.0
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant

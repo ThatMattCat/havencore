@@ -62,19 +62,17 @@ class QdrantTools:
     def store_memory(
         self,
         text: str,
-        category: str = "general",
-        collection: str = "knowledge",
+        collection: str = "user_data",
         importance: int = 3,
         tags: Optional[List[str]] = None,
         expires_in_days: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Store a memory/fact/conversation in the vector database
+        Store data in the vector database
         
         Args:
             text: The content to store
-            category: Type of memory (conversation, fact, preference, task)
-            collection: Which collection to use (conversations, knowledge)
+            collection: Which collection to use
             importance: Priority level 1-5
             tags: Optional list of tags for filtering
             expires_in_days: Optional expiry time in days
@@ -91,7 +89,6 @@ class QdrantTools:
             
             payload = {
                 "text": text,
-                "category": category,
                 "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                 "importance": importance,
                 "tags": tags or [],
@@ -129,8 +126,7 @@ class QdrantTools:
     def search_memories(
         self,
         query: str,
-        collection: str = "knowledge",
-        category_filter: Optional[str] = None,
+        collection: str = "user_data",
         days_back: Optional[int] = None,
         limit: int = 5
     ) -> Dict[str, Any]:
@@ -140,7 +136,6 @@ class QdrantTools:
         Args:
             query: Search query text
             collection: Which collection to search
-            category_filter: Optional category to filter by
             days_back: Optional time range filter (search last N days)
             limit: Maximum number of results
         
@@ -164,14 +159,6 @@ class QdrantTools:
                     )
                 )
             )
-
-            if category_filter:
-                filters.append(
-                    FieldCondition(
-                        key="category",
-                        match=MatchValue(value=category_filter)
-                    )
-                )
             
             if days_back:
                 cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -199,7 +186,6 @@ class QdrantTools:
                 memory = {
                     "id": result.id,
                     "text": result.payload.get("text", ""),
-                    "category": result.payload.get("category", ""),
                     "timestamp": result.payload.get("timestamp", ""),
                     "importance": result.payload.get("importance", 0),
                     "tags": result.payload.get("tags", []),
@@ -224,9 +210,8 @@ class QdrantTools:
     def update_memory(
         self,
         memory_id: str,
-        collection: str = "knowledge",
+        collection: str = "user_data",
         new_text: Optional[str] = None,
-        new_category: Optional[str] = None,
         new_importance: Optional[int] = None,
         new_tags: Optional[List[str]] = None
     ) -> Dict[str, Any]:
@@ -237,7 +222,6 @@ class QdrantTools:
             memory_id: ID of the memory to update
             collection: Which collection the memory is in
             new_text: Updated text content (will re-embed)
-            new_category: Updated category
             new_importance: Updated importance level
             new_tags: Updated tags list
         
@@ -262,8 +246,6 @@ class QdrantTools:
             payload = existing[0].payload
             
             # Update fields
-            if new_category is not None:
-                payload["category"] = new_category
             if new_importance is not None:
                 payload["importance"] = new_importance
             if new_tags is not None:
@@ -309,8 +291,7 @@ class QdrantTools:
     
     def list_recent(
         self,
-        collection: str = "knowledge",
-        category_filter: Optional[str] = None,
+        collection: str = "user_data",
         limit: int = 10,
         offset: int = 0
     ) -> Dict[str, Any]:
@@ -319,7 +300,6 @@ class QdrantTools:
         
         Args:
             collection: Which collection to query
-            category_filter: Optional category to filter by
             limit: Maximum number of results
             offset: Pagination offset
         
@@ -329,14 +309,6 @@ class QdrantTools:
         try:
             # Build filter
             filters = []
-            if category_filter:
-                filters.append(
-                    FieldCondition(
-                        key="category",
-                        match=MatchValue(value=category_filter)
-                    )
-                )
-            
             search_filter = Filter(must=filters) if filters else None
             
             # Scroll through points (no vector search, just retrieval)
@@ -355,7 +327,6 @@ class QdrantTools:
                 memory = {
                     "id": point.id,
                     "text": point.payload.get("text", ""),
-                    "category": point.payload.get("category", ""),
                     "timestamp": point.payload.get("timestamp", ""),
                     "importance": point.payload.get("importance", 0),
                     "tags": point.payload.get("tags", [])
@@ -383,8 +354,7 @@ class QdrantTools:
     def delete_memory(
         self,
         memory_id: Optional[str] = None,
-        collection: str = "knowledge",
-        category_filter: Optional[str] = None,
+        collection: str = "user_data",
         older_than_days: Optional[int] = None
     ) -> Dict[str, Any]:
         """
@@ -393,7 +363,6 @@ class QdrantTools:
         Args:
             memory_id: Specific memory ID to delete
             collection: Which collection to delete from
-            category_filter: Delete all in category
             older_than_days: Delete memories older than N days
         
         Returns:
@@ -414,13 +383,6 @@ class QdrantTools:
             
             # Build filter for bulk deletion
             filters = []
-            if category_filter:
-                filters.append(
-                    FieldCondition(
-                        key="category",
-                        match=MatchValue(value=category_filter)
-                    )
-                )
             
             if older_than_days:
                 cutoff_date = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -470,23 +432,18 @@ class QdrantTools:
                 "type": "function",
                 "function": {
                     "name": "store_memory",
-                    "description": "Store a memory, fact, conversation snippet, or information about the user or their environment in the vector database for future retrieval.",
+                    "description": "Store information about the user or their environment in the vector database for future retrieval.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "text": {
                                 "type": "string",
-                                "description": "The content to store (fact, conversation, preference, etc.)"
-                            },
-                            "category": {
-                                "type": "string",
-                                "enum": ["conversation", "fact", "preference", "task", "general"],
-                                "description": "Type of memory being stored"
+                                "description": "The content to store (data about the user, etc)"
                             },
                             "collection": {
                                 "type": "string",
-                                "enum": ["conversations", "knowledge"],
-                                "description": "Which collection to store in (conversations for chat history, knowledge for facts/info)"
+                                "enum": ["user_data"],
+                                "description": "Which collection to store in (user_data for user-specific information)"
                             },
                             "importance": {
                                 "type": "integer",
@@ -512,7 +469,7 @@ class QdrantTools:
                 "type": "function",
                 "function": {
                     "name": "search_memories",
-                    "description": "Search stored memories using semantic similarity to find relevant information, past conversations, or facts.",
+                    "description": "Search stored memories using semantic similarity to find relevant user information.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -522,13 +479,8 @@ class QdrantTools:
                             },
                             "collection": {
                                 "type": "string",
-                                "enum": ["conversations", "knowledge"],
+                                "enum": ["user_data"],
                                 "description": "Which collection to search"
-                            },
-                            "category_filter": {
-                                "type": "string",
-                                "enum": ["conversation", "fact", "preference", "task", "general"],
-                                "description": "Optional: filter results by category"
                             },
                             "days_back": {
                                 "type": "integer",
@@ -549,7 +501,7 @@ class QdrantTools:
                 "type": "function",
                 "function": {
                     "name": "update_memory",
-                    "description": "Update an existing memory's content or metadata (category, importance, tags).",
+                    "description": "Update an existing memory's content or metadata (text, importance, tags).",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -559,17 +511,12 @@ class QdrantTools:
                             },
                             "collection": {
                                 "type": "string",
-                                "enum": ["conversations", "knowledge"],
+                                "enum": ["user_data"],
                                 "description": "Which collection the memory is in"
                             },
                             "new_text": {
                                 "type": "string",
                                 "description": "Updated text content (will re-embed)"
-                            },
-                            "new_category": {
-                                "type": "string",
-                                "enum": ["conversation", "fact", "preference", "task", "general"],
-                                "description": "Updated category"
                             },
                             "new_importance": {
                                 "type": "integer",
@@ -597,13 +544,8 @@ class QdrantTools:
                         "properties": {
                             "collection": {
                                 "type": "string",
-                                "enum": ["conversations", "knowledge"],
+                                "enum": ["user_data"],
                                 "description": "Which collection to query"
-                            },
-                            "category_filter": {
-                                "type": "string",
-                                "enum": ["conversation", "fact", "preference", "task", "general"],
-                                "description": "Optional: filter by category"
                             },
                             "limit": {
                                 "type": "integer",
@@ -634,13 +576,8 @@ class QdrantTools:
                             },
                             "collection": {
                                 "type": "string",
-                                "enum": ["conversations", "knowledge"],
+                                "enum": ["user_data"],
                                 "description": "Which collection to delete from"
-                            },
-                            "category_filter": {
-                                "type": "string",
-                                "enum": ["conversation", "fact", "preference", "task", "general"],
-                                "description": "Delete all memories in this category"
                             },
                             "older_than_days": {
                                 "type": "integer",
@@ -665,14 +602,13 @@ if __name__ == "__main__":
     # Test storing a memory
     result = tools.store_memory(
         text="User prefers dark mode for all interfaces",
-        category="preference",
-        collection="knowledge",
+        collection="user_data",
         importance=4,
         tags=["ui", "settings"]
     )
     query_result = tools.search_memories(
         query="What are the user's interface preferences?",
-        collection="knowledge",
+        collection="user_data",
     )
 
     print(f"\nStore result: {result}")
