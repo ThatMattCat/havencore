@@ -136,7 +136,6 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    
   # llamacpp:
   #   image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
   #   volumes:
