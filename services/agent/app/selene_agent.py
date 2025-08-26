@@ -33,6 +33,7 @@ import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
 from utils.mcp_client_manager import MCPClientManager, MCPServerConfig, ToolSource
 from utils.unified_tool_registry import UnifiedToolRegistry
+from conversation_db import conversation_db
 from utils.tool_migration_helper import ToolMigrationHelper
 #import utils.haos.ha_media_controller as ha_media_controller
 
@@ -204,6 +205,13 @@ class SeleneAgent:
         """Initialize async components in the event loop"""
         from utils.haos.ha_media_controller import MediaController
         
+        # Initialize database connection
+        try:
+            await conversation_db.initialize()
+            logger.info("Database connection initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database connection: {e}")
+        
         # Initialize MCP manager if enabled
         if self.mcp_manager:
             try:
@@ -358,6 +366,33 @@ class SeleneAgent:
         logger.debug(f"Last message time: {self.last_query_time} - Current Time: {time.time()}")
         if self.last_query_time and time.time() - self.last_query_time > 180:
             logger.debug("3 minutes without a message, resetting conversation")
+            
+            # Store conversation history before resetting
+            if hasattr(self, 'messages') and self.messages and len(self.messages) > 1:
+                try:
+                    # Store the conversation asynchronously
+                    metadata = {
+                        'reset_reason': 'timeout_3_minutes',
+                        'message_count': len(self.messages),
+                        'last_query_time': self.last_query_time,
+                        'agent_name': getattr(self, 'agent_name', 'Selene')
+                    }
+                    
+                    # Run the async store operation
+                    async def store_conversation():
+                        await conversation_db.store_conversation_history(
+                            messages=self.messages,
+                            session_id=trace_id,
+                            metadata=metadata
+                        )
+                    
+                    # Execute the async operation
+                    self.async_executor.run_async(store_conversation())
+                    logger.info(f"Stored conversation history with {len(self.messages)} messages before reset")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to store conversation history before reset: {e}")
+            
             # self.clear_messages()
             system_prompt = self.get_system_prompt()
                 
