@@ -9,3 +9,4 @@ uvicorn
 pytz
 mcp==1.1.2
 typing-extensions>=4.0.0
+qdrant-client>=1.7.0

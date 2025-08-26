@@ -94,15 +94,17 @@ services:
     ipc: host
     # command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ --served-model-name gpt-3.5-turbo -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .74
     command: >
-      --model TechxGenus/Mistral-Large-Instruct-2411-AWQ
+      --model Qwen/Qwen2.5-72B-Instruct-AWQ
       --served-model-name gpt-3.5-turbo
-      -tp 4
+      --quantization awq_marlin
+      --max-num-seqs 1
+      --enforce-eager
+      -tp 2
       --max-model-len 16384
       --port 8000
       --enable-auto-tool-choice
-      --tool-call-parser mistral
-      --chat-template /app/mistral-tool-chat-template.jinja
-      --gpu-memory-utilization .74
+      --tool-call-parser hermes
+      --gpu-memory-utilization .95
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
       interval: 15s
@@ -176,41 +178,80 @@ services:
       # --jinja
       # --api-key 1234123412341234
       # --host 0.0.0.0
-  speaches:
-    container_name: speaches
-    image: ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3
-    build:
-      dockerfile: Dockerfile
-      context: ./services/speaches
-      platforms:
-        - linux/amd64
-      args:
-        BASE_IMAGE: nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
-    restart: unless-stopped
+ 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
     ports:
-      - 8000:6007
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC (optional)
     volumes:
-      - ~/.cache/huggingface/hub:/home/ubuntu/.cache/huggingface/hub
-    develop:
-      watch:
-        - action: rebuild
-          path: ./uv.lock
-        - action: sync+restart
-          path: ./src
-          target: /home/ubuntu/speaches/src
-    env_file:
-      - path: .env
-        required: false
+      - ./volumes/qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://0.0.0.0:8000/health"] # TODO: won't work if a user changes the port
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 40s
+    restart: unless-stopped
+
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./volumes/models:/data
+    environment:
+      - MODEL_ID=BAAI/bge-large-en-v1.5
+      - PORT=3000
+      - CUDA_VISIBLE_DEVICES=3  # Set to the GPU index you want to use (e.g., 3)
     deploy:
       resources:
-        reservations:
+        reservations: # GPU Device to use is configured in shared_config.py
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    restart: unless-stopped
+ 
+  # speaches:
+  #   container_name: speaches
+  #   image: ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3
+  #   build:
+  #     dockerfile: Dockerfile
+  #     context: ./services/speaches
+  #     platforms:
+  #       - linux/amd64
+  #     args:
+  #       BASE_IMAGE: nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
+  #   restart: unless-stopped
+  #   ports:
+  #     - 8000:6007
+  #   volumes:
+  #     - ~/.cache/huggingface/hub:/home/ubuntu/.cache/huggingface/hub
+  #   develop:
+  #     watch:
+  #       - action: rebuild
+  #         path: ./uv.lock
+  #       - action: sync+restart
+  #         path: ./src
+  #         target: /home/ubuntu/speaches/src
+  #   env_file:
+  #     - path: .env
+  #       required: false
+  #   healthcheck:
+  #     test: ["CMD", "curl", "--fail", "http://0.0.0.0:8000/health"] # TODO: won't work if a user changes the port
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 5s
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]

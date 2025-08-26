@@ -3,6 +3,7 @@ import os
 from shared.configs import shared_config
 from urllib.parse import urlparse
 
+AGENT_NAME = shared_config.AGENT_NAME
 WEATHER_API_KEY = shared_config.WEATHER_API_KEY
 BRAVE_SEARCH_API_KEY = shared_config.BRAVE_SEARCH_API_KEY
 TIMEZONE = shared_config.CURRENT_TIMEZONE
@@ -15,3 +16,20 @@ parsed_url = urlparse(HAOS_URL)
 HAOS_HOST = parsed_url.hostname
 
 HA_WS_URL = f"ws://{HAOS_HOST}/api/websocket"
+
+
+# Qdrant configuration
+QDRANT_HOST = "qdrant"
+QDRANT_PORT = 6333
+
+# Embeddings service configuration
+EMBEDDINGS_URL = "http://embeddings:3000"
+EMBEDDING_DIM = 1024  # for bge-large or e5-large
+
+# Collection names
+COLLECTION_NAMES = ["conversations", "knowledge"]
+
+# Optional settings
+DEFAULT_SEARCH_LIMIT = 5
+DEFAULT_IMPORTANCE = 3
+MAX_SEARCH_RESULTS = 20

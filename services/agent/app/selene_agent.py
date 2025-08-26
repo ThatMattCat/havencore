@@ -34,6 +34,7 @@ import shared.configs.shared_config as shared_config
 from utils.mcp_client_manager import MCPClientManager, MCPServerConfig, ToolSource
 from utils.unified_tool_registry import UnifiedToolRegistry
 from utils.tool_migration_helper import ToolMigrationHelper
+from utils.qdrant_tools import QdrantTools
 #import utils.haos.ha_media_controller as ha_media_controller
 
 # TODO: Make everything async
@@ -119,12 +120,13 @@ class SeleneAgent:
         
         self.haos = HomeAssistant()
         self.wolfram = WolframClient(shared_config.WOLFRAM_ALPHA_API_KEY)
+        self.qdrant_tools = QdrantTools()
         
         # Initialize MCP if enabled
         self.mcp_enabled = shared_config.MCP_ENABLED if hasattr(shared_config, 'MCP_ENABLED') else False
         self.mcp_manager = None
         self.tool_registry = None
-        
+
         if self.mcp_enabled:
             logger.info("MCP support is enabled")
             self.mcp_manager = MCPClientManager()
@@ -140,7 +142,7 @@ class SeleneAgent:
         self.async_executor.start()
         self.async_executor.run_async(self._async_init())
 
-        self.agent_name = "Selene"
+        self.agent_name = config.AGENT_NAME
         self.client = OpenAI(
             base_url=api_base or shared_config.LLM_API_BASE,
             api_key=api_key or shared_config.LLM_API_KEY or "dummy-key"
@@ -298,7 +300,17 @@ class SeleneAgent:
             'find_media_items': self.ha_media_controller.find_media_items
         }
         self.tool_registry.register_legacy_tools_bulk(media_tools, media_functions)
-        
+
+        qdrant_tools = self.qdrant_tools.get_tool_definitions()
+        qdrant_functions = {
+            'store_memory': self.qdrant_tools.store_memory,
+            'search_memories': self.qdrant_tools.search_memories,
+            'update_memory': self.qdrant_tools.update_memory,
+            'delete_memory': self.qdrant_tools.delete_memory,
+            'list_recent': self.qdrant_tools.list_recent
+        }
+        self.tool_registry.register_legacy_tools_bulk(qdrant_tools, qdrant_functions)
+
         # Set tool preference based on config
         if shared_config.MCP_PREFER_OVER_LEGACY:
             self.tool_registry.set_tool_preference(shared_config.MCP_PREFER_OVER_LEGACY)
@@ -487,7 +499,7 @@ class SeleneAgent:
 
     def _extract_tool_calls_from_content(self, content: str) -> Optional[list]:
         """
-        Extract tool calls from content wrapped in <tool_call> tags.
+        Failsafe to Extract tool calls from content wrapped in <tool_call> tags.
         
         Args:
             content: The response content that may contain tool calls
