@@ -1,10 +1,8 @@
 services:
   postgres:
     image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: havencore
-      POSTGRES_USER: havencore
-      POSTGRES_PASSWORD: havencore_password
+    env_file:
+      - .env`
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./services/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
