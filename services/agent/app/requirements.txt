@@ -10,3 +10,5 @@ pytz
 mcp==1.1.2
 typing-extensions>=4.0.0
 qdrant-client>=1.7.0
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.0
