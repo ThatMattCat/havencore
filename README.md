@@ -35,6 +35,28 @@ A comprehensive AI-powered smart home system designed to run entirely on your ow
 - [Contributing](#-contributing)
 - [License](#-license)
 
+## 📚 Comprehensive Documentation
+
+For detailed guides, tutorials, and advanced configuration, visit our **[HavenCore Wiki](docs/Home.md)**:
+
+### Essential Guides
+- **[Getting Started](docs/Getting-Started.md)** - Complete setup walkthrough
+- **[Configuration Guide](docs/Configuration.md)** - Environment variables and settings
+- **[Architecture Overview](docs/Architecture.md)** - System design and components
+- **[API Reference](docs/API-Reference.md)** - Complete API documentation
+
+### Integration & Development
+- **[Home Assistant Integration](docs/Home-Assistant-Integration.md)** - Smart home setup
+- **[Tool Development](docs/Tool-Development.md)** - Creating custom tools and integrations
+- **[Development Guide](docs/Development.md)** - Contributing and extending HavenCore
+- **[Service Documentation](docs/Services.md)** - Individual service details
+
+### Support & Troubleshooting
+- **[Troubleshooting Guide](docs/Troubleshooting.md)** - Common issues and solutions
+- **[FAQ](docs/FAQ.md)** - Frequently asked questions
+
+> 💡 **New to HavenCore?** Start with the [Getting Started Guide](docs/Getting-Started.md) for a comprehensive walkthrough.
+
 ## 🚀 Quick Start
 
 For experienced users who want to get started immediately:
@@ -364,7 +386,7 @@ Individual service health endpoints:
 
 ## 🔧 Troubleshooting
 
-### Common Issues
+### Quick Diagnostics
 
 #### Services Not Starting
 ```bash
@@ -392,73 +414,26 @@ huggingface-cli download TechxGenus/Mistral-Large-Instruct-2411-AWQ
 echo $HF_HUB_TOKEN
 ```
 
-#### Audio Device Problems
-- Ensure audio devices are properly configured on edge device
-- Check firewall settings for port access
-- Verify network connectivity between edge device and host
+### Comprehensive Troubleshooting
 
-#### Home Assistant Connection
-```bash
-# Test Home Assistant API access
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-     -H "Content-Type: application/json" \
-     YOUR_HAOS_URL/states
-```
+For detailed troubleshooting guides covering installation issues, runtime problems, performance optimization, and more, see our **[Troubleshooting Guide](docs/Troubleshooting.md)**.
 
-### Logging and Monitoring
-
-#### View Service Logs
-```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f agent
-
-# With timestamps
-docker compose logs -f -t
-```
-
-#### Resource Monitoring
-```bash
-# GPU usage
-nvidia-smi -l 1
-
-# Container resources
-docker stats
-
-# Disk usage
-docker system df
-```
-
-### Performance Optimization
-
-#### GPU Memory Management
-- Monitor GPU memory usage with `nvidia-smi`
-- Adjust `--gpu-memory-utilization` in vLLM config
-- Consider model quantization for lower memory usage
-
-#### Response Time Optimization
-- Use faster models for real-time interaction
-- Enable model caching
-- Optimize network latency to edge devices
+**Also helpful:**
+- [FAQ](docs/FAQ.md) - Common questions and answers
+- [Configuration Guide](docs/Configuration.md) - Environment variable issues
+- [Service Documentation](docs/Services.md) - Service-specific debugging
 
 ## 🤝 Contributing
 
-We welcome contributions to HavenCore! Here's how you can help:
+We welcome contributions from the community! Whether you're fixing bugs, adding features, improving documentation, or sharing ideas, your help makes HavenCore better for everyone.
 
-### Development Setup
+### Quick Contributing Guide
 
-1. Fork the repository
-2. Clone your fork:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/havencore.git
-   cd havencore
-   ```
-3. Create a feature branch:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+1. **Fork and clone** the repository
+2. **Set up development environment** - see [Development Guide](docs/Development.md)
+3. **Create a feature branch** for your changes
+4. **Make your improvements** with proper testing
+5. **Submit a pull request** with clear description
 
 ### Areas for Contribution
 
@@ -469,12 +444,17 @@ We welcome contributions to HavenCore! Here's how you can help:
 - 🎨 **UI/UX**: Improve web interfaces and user experience
 - 🔧 **DevOps**: Improve deployment and configuration management
 
-### Coding Standards
+### Detailed Contributing Information
 
-- Follow Python PEP 8 style guidelines
-- Add docstrings to new functions and classes
-- Include tests for new functionality
-- Update documentation for changes
+For comprehensive development setup, coding standards, testing guidelines, and contribution workflows, see our **[Development Guide](docs/Development.md)**.
+
+**Key Resources:**
+- [Development Environment Setup](docs/Development.md#development-environment-setup)
+- [Code Standards and Guidelines](docs/Development.md#code-standards)
+- [Tool Development Tutorial](docs/Tool-Development.md)
+- [Testing Framework](docs/Development.md#testing-framework)
+
+We appreciate all contributions and will review pull requests promptly!
 
 ### Submitting Changes
 
