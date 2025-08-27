@@ -140,7 +140,7 @@ class MCPClientManager:
             self.servers[config.name] = config
             logger.info(f"Added MCP server configuration: {config.name}")
     
-    async def initialize(self):
+    async def initialize(self, connection_timeout: float = 30.0):
         """Initialize connections to all configured MCP servers"""
         if self._initialized:
             logger.debug("MCP Client Manager already initialized")
@@ -148,17 +148,52 @@ class MCPClientManager:
             
         logger.info("Initializing MCP Client Manager...")
         
+        # Create connection tasks for all servers
+        connection_tasks = []
+        server_names = []
+        
         for server_name, server_config in self.servers.items():
-            try:
-                logger.info(f"Connecting to MCP server: {server_name}")
-                await self._connect_to_server(server_name, server_config)
-            except Exception as e:
-                logger.error(f"Failed to connect to MCP server {server_name}: {e}")
-                logger.debug(traceback.format_exc())
+            logger.info(f"Preparing connection to MCP server: {server_name}")
+            task = asyncio.create_task(
+                self._connect_to_server_with_timeout(server_name, server_config, connection_timeout),
+                name=f"connect_{server_name}"
+            )
+            connection_tasks.append(task)
+            server_names.append(server_name)
+        
+        # Execute all connections concurrently
+        if connection_tasks:
+            logger.info(f"Connecting to {len(connection_tasks)} MCP servers concurrently...")
+            results = await asyncio.gather(*connection_tasks, return_exceptions=True)
+            
+            # Process results
+            successful_connections = 0
+            for i, (server_name, result) in enumerate(zip(server_names, results)):
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to connect to MCP server {server_name}: {result}")
+                    logger.debug(traceback.format_exc())
+                else:
+                    successful_connections += 1
+                    logger.info(f"Successfully connected to MCP server: {server_name}")
         
         self._initialized = True
         logger.info(f"MCP Client Manager initialized with {len(self.connections)} active servers")
     
+    async def _connect_to_server_with_timeout(self, server_name: str, config: MCPServerConfig, timeout: float):
+        """Connect to a single MCP server with timeout protection"""
+        try:
+            await asyncio.wait_for(
+                self._connect_to_server(server_name, config),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            error_msg = f"Connection to MCP server {server_name} timed out after {timeout}s"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        except Exception as e:
+            logger.error(f"Error connecting to MCP server {server_name}: {e}")
+            raise
+
     async def _connect_to_server(self, server_name: str, config: MCPServerConfig):
         """Connect to a single MCP server"""
         try:
