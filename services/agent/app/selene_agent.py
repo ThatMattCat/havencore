@@ -174,15 +174,15 @@ class SeleneAgent:
                 import json
                 servers_config = json.loads(shared_config.MCP_SERVERS)
                 for server_cfg in servers_config:
-                    config = MCPServerConfig(
+                    mcp_config = MCPServerConfig(
                         name=server_cfg.get('name'),
                         command=server_cfg.get('command'),
                         args=server_cfg.get('args', []),
                         env=server_cfg.get('env', {}),
                         enabled=server_cfg.get('enabled', True)
                     )
-                    self.mcp_manager.add_server(config)
-                    logger.info(f"Loaded MCP server config: {config.name}")
+                    self.mcp_manager.add_server(mcp_config)
+                    logger.info(f"Loaded MCP server config: {mcp_config.name}")
             except Exception as e:
                 logger.warning(f"Could not parse MCP_SERVERS JSON: {e}")
         
@@ -195,13 +195,13 @@ class SeleneAgent:
                 args = args_str.split(',') if args_str else []
                 
                 if command:
-                    config = MCPServerConfig(
+                    mcp_config = MCPServerConfig(
                         name="example",
                         command=command,
                         args=args,
                         enabled=True
                     )
-                    self.mcp_manager.add_server(config)
+                    self.mcp_manager.add_server(mcp_config)
 
     async def _async_init(self):
         """Initialize async components in the event loop"""
@@ -309,15 +309,15 @@ class SeleneAgent:
         }
         self.tool_registry.register_legacy_tools_bulk(media_tools, media_functions)
 
-        qdrant_tools = self.qdrant_tools.get_tool_definitions()
-        qdrant_functions = {
-            'store_memory': self.qdrant_tools.store_memory,
-            'search_memories': self.qdrant_tools.search_memories,
-            'update_memory': self.qdrant_tools.update_memory,
-            'delete_memory': self.qdrant_tools.delete_memory,
-            'list_recent': self.qdrant_tools.list_recent
-        }
-        self.tool_registry.register_legacy_tools_bulk(qdrant_tools, qdrant_functions)
+        # qdrant_tools = self.qdrant_tools.get_tool_definitions()
+        # qdrant_functions = {
+        #     'store_memory': self.qdrant_tools.store_memory,
+        #     'search_memories': self.qdrant_tools.search_memories,
+        #     'update_memory': self.qdrant_tools.update_memory,
+        #     'delete_memory': self.qdrant_tools.delete_memory,
+        #     'list_recent': self.qdrant_tools.list_recent
+        # }
+        # self.tool_registry.register_legacy_tools_bulk(qdrant_tools, qdrant_functions)
 
         # Set tool preference based on config
         if shared_config.MCP_PREFER_OVER_LEGACY:

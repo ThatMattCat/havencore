@@ -71,9 +71,9 @@ class UnifiedTool:
 class MCPServerConnection:
     """Manages a single MCP server connection"""
     
-    def __init__(self, server_name: str, config: MCPServerConfig):
+    def __init__(self, server_name: str, mcp_config: MCPServerConfig):
         self.server_name = server_name
-        self.config = config
+        self.mcp_config = mcp_config
         self.client_session: Optional[ClientSession] = None
         self.read_stream = None
         self.write_stream = None
@@ -82,11 +82,11 @@ class MCPServerConnection:
     async def connect(self):
         """Connect to the MCP server"""
         try:
-            if "python" in self.config.command.lower() or "sys.executable" in self.config.command.lower():
-                self.config.command = sys.executable
+            # if "python" in self.mcp_config.command.lower() or "sys.executable" in self.mcp_config.command.lower():
+            #     self.mcp_config.command = sys.executable
             # set "self.config.env" to the current environment variables
-            self.config.env = dict(os.environ)
-            stdio_params = self.config.to_stdio_params()
+            self.mcp_config.env = dict(os.environ)
+            stdio_params = self.mcp_config.to_stdio_params()
             
             self._context_manager = stdio_client(stdio_params)
             
@@ -134,11 +134,11 @@ class MCPClientManager:
         self.server_tools: Dict[str, List[str]] = {}  # server_name -> [tool_names]
         self._initialized = False
         
-    def add_server(self, config: MCPServerConfig):
+    def add_server(self, mcp_config: MCPServerConfig):
         """Add an MCP server configuration"""
-        if config.enabled:
-            self.servers[config.name] = config
-            logger.info(f"Added MCP server configuration: {config.name}")
+        if mcp_config.enabled:
+            self.servers[mcp_config.name] = mcp_config
+            logger.info(f"Added MCP server configuration: {mcp_config.name}")
     
     async def initialize(self, connection_timeout: float = 30.0):
         """Initialize connections to all configured MCP servers"""
