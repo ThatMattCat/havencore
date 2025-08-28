@@ -3,6 +3,8 @@ import os
 from shared.configs import shared_config
 from urllib.parse import urlparse
 
+MCP_SERVERS = shared_config.MCP_SERVERS
+
 POSTGRES_HOST = shared_config.POSTGRES_HOST
 POSTGRES_PORT = shared_config.POSTGRES_PORT
 POSTGRES_DB = shared_config.POSTGRES_DB
