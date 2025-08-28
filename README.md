@@ -70,6 +70,9 @@ cd havencore
 cp .env.tmpl .env
 # Edit .env with your specific settings
 
+# Set up volume directories
+./scripts/setup-volumes.sh
+
 # Start the services
 docker compose up -d
 

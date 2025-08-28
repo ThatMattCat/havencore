@@ -701,6 +701,58 @@ docker compose up -d agent
 
 ### Volume Mount Issues
 
+#### Symptom: PostgreSQL fails to start with "directory exists but is not empty"
+```
+initdb: error: directory "/var/lib/postgresql/data" exists but is not empty
+initdb: detail: It contains a dot-prefixed/invisible file, perhaps due to it being a mount point.
+```
+
+**Solution**:
+```bash
+# This happens when PostgreSQL data directory contains files like .gitkeep
+# Run the volume setup script to create proper directory structure
+./scripts/setup-volumes.sh
+
+# Or manually create subdirectory structure
+mkdir -p ./volumes/postgres_data/data
+sudo chown -R 999:999 ./volumes/postgres_data/data
+
+# Update compose.yaml to use data subdirectory (already done in current version)
+# volumes:
+#   - ./volumes/postgres_data/data:/var/lib/postgresql/data
+```
+
+#### Symptom: PostgreSQL permission denied errors
+```
+FATAL: data directory "/var/lib/postgresql/data" has wrong ownership
+```
+
+**Solution**:
+```bash
+# Fix PostgreSQL directory ownership (Linux/WSL)
+sudo chown -R 999:999 ./volumes/postgres_data/data
+
+# On macOS, use permissive permissions
+chmod -R 755 ./volumes/postgres_data/data
+
+# Restart PostgreSQL service
+docker compose restart postgres
+```
+
+#### Symptom: Volume directories missing on first run
+```
+Error: Failed to create bind mount for ./volumes/postgres_data/data
+```
+
+**Solution**:
+```bash
+# Run the automated setup script
+./scripts/setup-volumes.sh
+
+# Verify directory structure was created
+ls -la ./volumes/
+```
+
 #### Symptom: Code changes not reflected
 ```
 Changes to Python files not taking effect

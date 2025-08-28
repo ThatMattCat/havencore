@@ -48,7 +48,31 @@ cd havencore
 cp .env.tmpl .env
 ```
 
-### 3. Essential Configuration
+### 3. Volume Directory Setup
+
+HavenCore uses bind mounts for persistent data storage. Before starting the services, you need to create the required directory structure:
+
+```bash
+# Run the volume setup script (automatically creates directories with proper permissions)
+./scripts/setup-volumes.sh
+```
+
+**Manual Setup Alternative:**
+If you prefer to create directories manually:
+
+```bash
+# Create volume directories
+mkdir -p ./volumes/postgres_data/data
+mkdir -p ./volumes/qdrant_storage
+mkdir -p ./volumes/models
+
+# Set PostgreSQL permissions (Linux/WSL only)
+sudo chown -R 999:999 ./volumes/postgres_data/data
+```
+
+⚠️ **Important**: PostgreSQL requires specific user permissions (UID 999) on Linux systems. The setup script handles this automatically.
+
+### 4. Essential Configuration
 
 Edit the `.env` file with these **required** settings:
 
@@ -64,7 +88,7 @@ TTS_DEVICE="cuda:0"  # GPU for text-to-speech
 STT_DEVICE="0"       # GPU for speech-to-text
 ```
 
-### 4. Start the System
+### 5. Start the System
 
 ```bash
 # Validate configuration

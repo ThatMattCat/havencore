@@ -295,13 +295,49 @@ ports:
 
 ### Volume Configuration
 
-#### Persistent Storage
+#### Persistent Storage with Bind Mounts
+
+HavenCore uses bind mounts for persistent data storage, providing direct access to data files on the host system:
+
 ```yaml
 volumes:
-  postgres_data:    # Database persistence
-  model_cache:      # AI model storage
-  audio_cache:      # Generated audio files
+  # PostgreSQL database storage
+  - ./volumes/postgres_data/data:/var/lib/postgresql/data
+  
+  # Vector database storage  
+  - ./volumes/qdrant_storage:/qdrant/storage
+  
+  # AI model cache
+  - ./volumes/models:/data
 ```
+
+**Setting Up Volume Directories:**
+
+1. **Automated Setup (Recommended):**
+   ```bash
+   ./scripts/setup-volumes.sh
+   ```
+
+2. **Manual Setup:**
+   ```bash
+   mkdir -p ./volumes/postgres_data/data
+   mkdir -p ./volumes/qdrant_storage
+   mkdir -p ./volumes/models
+   
+   # Set PostgreSQL permissions (Linux only)
+   sudo chown -R 999:999 ./volumes/postgres_data/data
+   ```
+
+**Permission Requirements:**
+- **PostgreSQL**: Requires UID 999 (postgres user in container)
+- **Qdrant**: Uses default Docker user permissions
+- **Models**: Uses default Docker user permissions
+
+**Why Bind Mounts?**
+- Direct file system access for backups
+- Easier data migration between environments
+- Better performance than named volumes
+- Simplified debugging and troubleshooting
 
 #### Bind Mounts
 ```yaml
