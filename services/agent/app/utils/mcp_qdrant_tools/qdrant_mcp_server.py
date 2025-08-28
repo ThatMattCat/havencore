@@ -41,7 +41,6 @@ except (ImportError, ValueError):
             EMBEDDING_DIM, COLLECTION_NAME
         )
     except ImportError:
-        import os
         # Fall back to environment variables or defaults
         QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
         QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
