@@ -10,6 +10,16 @@ HavenCore supports two types of tools:
 
 Both types can coexist and are managed through the Unified Tool Registry.
 
+### Built-in MCP Servers
+
+HavenCore includes several built-in MCP servers:
+
+- **General Tools MCP Server** (`mcp_server.py`): Weather, web search, calculations
+- **Home Assistant MCP Server** (`havencore_homeassistant_mcp_server.py`): Complete Home Assistant integration
+- **File Manager MCP Server** (optional): File system operations
+
+The Home Assistant MCP server consolidates all HA functionality including device control, media management, and automation tools.
+
 ## Legacy Tool Development
 
 ### Tool Architecture
