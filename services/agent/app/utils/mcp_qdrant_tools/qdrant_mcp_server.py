@@ -74,7 +74,7 @@ class QdrantMCPServer:
         try:
             self.client.get_collection(self.collection_name)
             logger.info(f"Collection '{self.collection_name}' already exists")
-        except:
+        except Exception:
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
