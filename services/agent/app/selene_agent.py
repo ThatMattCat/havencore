@@ -280,14 +280,33 @@ class SeleneAgent:
     async def _register_all_tools(self):
         """Register all legacy tools with the unified registry"""
         
-        # Register Home Assistant tools
-        haos_tools = haos_tools_defs.HaosTools()
-        haos_functions = {
-            'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
-            'home_assistant.get_domain_services': self.haos.get_domain_services,
-            'home_assistant.execute_service': self.haos.execute_service,
-        }
-        self.tool_registry.register_legacy_tools_bulk(haos_tools, haos_functions)
+        # Initialize function dictionaries
+        haos_functions = {}
+        media_functions = {}
+        
+        # Register Home Assistant tools (legacy mode or fallback)
+        if not shared_config.MCP_PREFER_OVER_LEGACY or not shared_config.MCP_ENABLED:
+            haos_tools = haos_tools_defs.HaosTools()
+            haos_functions = {
+                'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
+                'home_assistant.get_domain_services': self.haos.get_domain_services,
+                'home_assistant.execute_service': self.haos.execute_service,
+            }
+            self.tool_registry.register_legacy_tools_bulk(haos_tools, haos_functions)
+            logger.info("Registered legacy Home Assistant tools")
+            
+            # Register media controller tools (legacy mode)
+            media_tools = self.ha_media_controller.get_tool_definitions()
+            media_functions = {
+                'control_media_player': self.ha_media_controller.control_media_player,
+                'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
+                'play_media': self.ha_media_controller.play_media,
+                'find_media_items': self.ha_media_controller.find_media_items
+            }
+            self.tool_registry.register_legacy_tools_bulk(media_tools, media_functions)
+            logger.info("Registered legacy Home Assistant media tools")
+        else:
+            logger.info("Skipped legacy Home Assistant tool registration - using MCP servers")
         
         # Register general tools
         general_tools = general_tools_defs.GeneralTools()
@@ -298,16 +317,6 @@ class SeleneAgent:
             'query_wikipedia': custom_tools.query_wikipedia,
         }
         self.tool_registry.register_legacy_tools_bulk(general_tools, general_functions)
-        
-        # Register media controller tools
-        media_tools = self.ha_media_controller.get_tool_definitions()
-        media_functions = {
-            'control_media_player': self.ha_media_controller.control_media_player,
-            'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
-            'play_media': self.ha_media_controller.play_media,
-            'find_media_items': self.ha_media_controller.find_media_items
-        }
-        self.tool_registry.register_legacy_tools_bulk(media_tools, media_functions)
 
         # qdrant_tools = self.qdrant_tools.get_tool_definitions()
         # qdrant_functions = {
