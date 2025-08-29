@@ -24,8 +24,6 @@ import asyncio
 import inspect
 
 from utils import config
-from utils.haos.haos import HomeAssistant
-import utils.haos.haos_tools_defs as haos_tools_defs
 import utils.general_tools_defs as general_tools_defs
 import utils.tools as custom_tools
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
@@ -36,7 +34,6 @@ from utils.unified_tool_registry import UnifiedToolRegistry
 from conversation_db import conversation_db
 from utils.tool_migration_helper import ToolMigrationHelper
 from utils.qdrant_tools import QdrantTools
-#import utils.haos.ha_media_controller as ha_media_controller
 
 # TODO: Make everything async
 
@@ -119,7 +116,6 @@ class SeleneAgent:
     
     def __init__(self, api_base: str = None, api_key: str = None):
         
-        self.haos = HomeAssistant()
         self.wolfram = WolframClient(shared_config.WOLFRAM_ALPHA_API_KEY)
         self.qdrant_tools = QdrantTools()
         
@@ -205,7 +201,6 @@ class SeleneAgent:
 
     async def _async_init(self):
         """Initialize async components in the event loop"""
-        from utils.haos.ha_media_controller import MediaController
         
         # Initialize database connection
         try:
@@ -221,10 +216,6 @@ class SeleneAgent:
                 logger.info("MCP manager initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize MCP manager: {e}")
-        
-        # Initialize media controller
-        self.ha_media_controller = MediaController(config.HA_WS_URL, config.HAOS_TOKEN)
-        await self.ha_media_controller.initialize(["media_player.living_room_tv"])
         
         # Register all tools with the registry
         await self._register_all_tools()
@@ -280,33 +271,9 @@ class SeleneAgent:
     async def _register_all_tools(self):
         """Register all legacy tools with the unified registry"""
         
-        # Initialize function dictionaries
-        haos_functions = {}
-        media_functions = {}
-        
-        # Register Home Assistant tools (legacy mode or fallback)
-        if not shared_config.MCP_PREFER_OVER_LEGACY or not shared_config.MCP_ENABLED:
-            haos_tools = haos_tools_defs.HaosTools()
-            haos_functions = {
-                'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
-                'home_assistant.get_domain_services': self.haos.get_domain_services,
-                'home_assistant.execute_service': self.haos.execute_service,
-            }
-            self.tool_registry.register_legacy_tools_bulk(haos_tools, haos_functions)
-            logger.info("Registered legacy Home Assistant tools")
-            
-            # Register media controller tools (legacy mode)
-            media_tools = self.ha_media_controller.get_tool_definitions()
-            media_functions = {
-                'control_media_player': self.ha_media_controller.control_media_player,
-                'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
-                'play_media': self.ha_media_controller.play_media,
-                'find_media_items': self.ha_media_controller.find_media_items
-            }
-            self.tool_registry.register_legacy_tools_bulk(media_tools, media_functions)
-            logger.info("Registered legacy Home Assistant media tools")
-        else:
-            logger.info("Skipped legacy Home Assistant tool registration - using MCP servers")
+        # Since we've removed the old Home Assistant implementation,
+        # we only register general tools as legacy fallbacks
+        logger.info("Home Assistant tools now provided via MCP server only")
         
         # Register general tools
         general_tools = general_tools_defs.GeneralTools()
@@ -333,7 +300,7 @@ class SeleneAgent:
             self.tool_registry.set_tool_preference(shared_config.MCP_PREFER_OVER_LEGACY)
         
         # Keep legacy tool_functions for compatibility
-        self.tool_functions = {**haos_functions, **general_functions, **media_functions}
+        self.tool_functions = {**general_functions}
 
     def _setup_tools(self) -> List[Dict[str, Any]]:
         """This method is now replaced by the registry but kept for compatibility"""
@@ -343,17 +310,10 @@ class SeleneAgent:
     def _setup_tool_functions(self) -> Dict[str, callable]:
         """Map tool names to their implementation functions"""
         return {
-            'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
-            'home_assistant.get_domain_services': self.haos.get_domain_services,
-            'home_assistant.execute_service': self.haos.execute_service,
             'brave_search': self.brave_search,
             'wolfram_alpha': self.wolfram_alpha,
             'get_weather_forecast': custom_tools.get_weather_forecast,
             'query_wikipedia': custom_tools.query_wikipedia,
-            'control_media_player': self.ha_media_controller.control_media_player,
-            'get_media_player_statuses': self.ha_media_controller.get_media_player_statuses,
-            'play_media': self.ha_media_controller.play_media,
-            'find_media_items': self.ha_media_controller.find_media_items
         }
     
     async def init(self):

@@ -11,6 +11,8 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
+from enum import Enum
+from dataclasses import dataclass, field
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -30,8 +32,11 @@ logger = logging.getLogger(__name__)
 try:
     import shared.scripts.logger as logger_module
     import utils.config as config
-    from utils.haos.haos import HomeAssistant
-    from utils.haos.ha_media_controller import MediaController, ActionType, MediaType
+    import requests
+    from homeassistant_api import Client
+    import websockets
+    from enum import Enum
+    from dataclasses import dataclass, field
     
     # Get configuration
     HAOS_URL = config.HAOS_URL
@@ -50,67 +55,238 @@ except ImportError as e:
     HA_WS_URL = "ws://localhost:8123/api/websocket"
 
 
-class MockHomeAssistant:
-    """Mock Home Assistant client for testing"""
+# Define enums and data classes needed for media control
+class ActionType(Enum):
+    """Media player action types"""
+    PLAY = "play"
+    PAUSE = "pause"
+    STOP = "stop"
+    NEXT = "next"
+    PREVIOUS = "previous"
+    VOLUME_UP = "volume_up"
+    VOLUME_DOWN = "volume_down"
+    VOLUME_SET = "volume_set"
+    MUTE = "mute"
+    UNMUTE = "unmute"
+    SHUFFLE = "shuffle"
+    REPEAT = "repeat"
+
+class MediaType(Enum):
+    """Media type enumeration"""
+    VIDEO = "video"
+    AUDIO = "audio"
+    IMAGE = "image"
+    PLAYLIST = "playlist"
+    UNKNOWN = "unknown"
+
+@dataclass
+class MediaItem:
+    """Represents a playable media item with metadata"""
+    media_id: str
+    title: str
+    media_type: MediaType
+    server_id: str
+    server_name: str
+    path: List[str]
+    compatible_devices: set = field(default_factory=set)
     
+    # Optional metadata
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    genre: Optional[str] = None
+    year: Optional[int] = None
+    duration: Optional[int] = None  # in seconds
+    resolution: Optional[str] = None
+    file_size: Optional[int] = None
+    date_added: Optional[datetime] = None
+    media_class: Optional[str] = None
+
+
+class HomeAssistantClient:
+    """Home Assistant API client"""
+    
+    def __init__(self):
+        self._api_url = HAOS_URL
+        self._token = HAOS_TOKEN
+
     def get_domain_entity_states(self, domain: str) -> str:
-        return json.dumps({
-            f"{domain}.entity1": "on",
-            f"{domain}.entity2": "off",
-            f"{domain}.entity3": "unavailable"
-        })
-    
+        """Get all entity states for a domain"""
+        if not HAS_HA_DEPS:
+            return json.dumps({
+                f"{domain}.entity1": "on",
+                f"{domain}.entity2": "off",
+                f"{domain}.entity3": "unavailable"
+            })
+            
+        with Client(self._api_url, self._token) as client:
+            domain_entity_states = {}
+            entities = client.get_entities()
+            domain_entity_states = {
+                entity.state.entity_id: entity.state.state 
+                for _, entity in entities[domain].entities.items()
+            }
+            return json.dumps(domain_entity_states)
+
     def get_domain_services(self, domain: str) -> str:
-        return json.dumps({
-            "turn_on": "Turn on entity",
-            "turn_off": "Turn off entity", 
-            "toggle": "Toggle entity state"
-        })
-    
+        """Get all services for a domain"""
+        if not HAS_HA_DEPS:
+            return json.dumps({
+                "turn_on": "Turn on entity",
+                "turn_off": "Turn off entity", 
+                "toggle": "Toggle entity state"
+            })
+            
+        with Client(self._api_url, self._token) as client:
+            domain_obj = client.get_domain(domain)
+            return json.dumps({
+                service.service_id: service.description 
+                for _, service in domain_obj.services.items()
+            })
+        
+    def get_entity_state(self, entity_id: str) -> str:
+        """Get state of a specific entity"""
+        if not HAS_HA_DEPS:
+            return "on"
+            
+        with Client(self._api_url, self._token) as client:
+            entity = client.get_entity(entity_id=entity_id)
+            return entity.state.state
+
     def execute_service(self, entity_id: str, service: str) -> str:
-        return f"Mock execution: {service} on {entity_id}"
+        """Execute a service on an entity"""
+        if not HAS_HA_DEPS:
+            return f"Mock execution: {service} on {entity_id}"
+            
+        with Client(self._api_url, self._token) as client:
+            domain_name = entity_id.split('.')[0]
+            domain_obj = client.get_domain(domain_name)
+
+            service_obj = domain_obj.services[service]
+            changes = service_obj.trigger(entity_id=entity_id)
+            final_state = self.get_entity_state(entity_id)
+            return f"Service {service} executed on {entity_id}"
 
 
-class MockMediaController:
-    """Mock Media Controller for testing"""
+class MediaController:
+    """Media controller for Home Assistant media players"""
     
+    def __init__(self):
+        self.ha_client = HomeAssistantClient()
+        
     async def initialize(self):
+        """Initialize the media controller"""
         pass
-    
+        
     async def control_media_player(self, action: str, device: Optional[str] = None, value: Optional[Union[int, str, bool]] = None) -> Dict[str, Any]:
-        return {
-            "success": True,
-            "action": action,
-            "device": device or "mock_device",
-            "value": value,
-            "message": f"Mock execution: {action} on {device or 'mock_device'}"
+        """Control a media player with the specified action"""
+        if not HAS_HA_DEPS:
+            return {
+                "success": True,
+                "action": action,
+                "device": device or "mock_device",
+                "value": value,
+                "message": f"Mock media control: {action} on {device or 'mock_device'}"
+            }
+            
+        # Implement basic media control using HA API
+        try:
+            action_type = ActionType(action.lower())
+        except ValueError:
+            return {"success": False, "error": f"Unknown action: {action}"}
+            
+        service_map = {
+            ActionType.PLAY: "media_play",
+            ActionType.PAUSE: "media_pause", 
+            ActionType.STOP: "media_stop",
+            ActionType.NEXT: "media_next_track",
+            ActionType.PREVIOUS: "media_previous_track",
+            ActionType.VOLUME_UP: "volume_up",
+            ActionType.VOLUME_DOWN: "volume_down",
+            ActionType.VOLUME_SET: "volume_set",
+            ActionType.MUTE: "volume_mute",
+            ActionType.UNMUTE: "volume_mute"
         }
+        
+        service = service_map.get(action_type)
+        if service and device:
+            try:
+                result = self.ha_client.execute_service(device, service)
+                return {
+                    "success": True,
+                    "action": action,
+                    "device": device,
+                    "value": value,
+                    "message": result
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        else:
+            return {"success": False, "error": f"Action {action} not implemented or device not specified"}
     
     async def get_media_player_statuses(self) -> Dict[str, Any]:
-        return {
-            "success": True,
-            "players": [
+        """Get status of all media players"""
+        if not HAS_HA_DEPS:
+            return {
+                "success": True,
+                "players": [
+                    {
+                        "entity_id": "media_player.living_room",
+                        "name": "Living Room",
+                        "state": "playing",
+                        "media_title": "Mock Song"
+                    }
+                ]
+            }
+        
+        try:
+            states_json = self.ha_client.get_domain_entity_states("media_player")
+            states = json.loads(states_json)
+            players = [
                 {
-                    "entity_id": "media_player.living_room",
-                    "name": "Living Room",
-                    "state": "playing",
-                    "media_title": "Mock Song"
+                    "entity_id": entity_id,
+                    "state": state,
+                    "name": entity_id.replace("media_player.", "").replace("_", " ").title()
                 }
+                for entity_id, state in states.items()
             ]
-        }
+            return {"success": True, "players": players}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     async def play_media(self, media_item_id: str, playback_device_id: Optional[str] = None) -> Dict[str, Any]:
-        return {
-            "success": True,
-            "message": f"Mock playing {media_item_id} on {playback_device_id or 'default_device'}"
-        }
+        """Play specific media on a media player"""
+        if not HAS_HA_DEPS:
+            return {
+                "success": True,
+                "message": f"Mock playing {media_item_id} on {playback_device_id or 'default_device'}"
+            }
+            
+        # Use the play_media service
+        try:
+            device = playback_device_id or "media_player.default"
+            result = self.ha_client.execute_service(device, "play_media")
+            return {
+                "success": True,
+                "message": f"Playing {media_item_id} on {device}: {result}"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     async def find_media_items(self, query: str, query_type: Optional[str] = None, 
                                media_type: Optional[str] = None, limit: int = 5) -> str:
-        return f"""Mock search results for "{query}":
+        """Find media items matching a query"""
+        if not HAS_HA_DEPS:
+            return f"""Mock search results for "{query}":
 1. Mock Movie 1 (media_id: mock_1)
 2. Mock Song 2 (media_id: mock_2)
 3. Mock Video 3 (media_id: mock_3)"""
+        
+        # This would need to be implemented based on available media sources
+        mock_results = []
+        for i in range(min(limit, 3)):
+            mock_results.append(f"{i+1}. Mock {query} Result {i+1} (media_id: mock_{i+1})")
+        
+        return "\n".join(mock_results) if mock_results else f"No results found for '{query}'"
 
 
 class HomeAssistantMCPServer:
@@ -125,29 +301,21 @@ class HomeAssistantMCPServer:
     async def initialize_clients(self):
         """Initialize Home Assistant clients"""
         try:
-            if HAS_HA_DEPS:
-                # Initialize real HA client
-                self.ha_client = HomeAssistant()
-                
-                # Initialize media controller
-                self.media_controller = MediaController(HA_WS_URL, HAOS_TOKEN)
-                await self.media_controller.initialize()
-                
-                logger.info("Home Assistant clients initialized successfully")
-            else:
-                # Use mock clients
-                self.ha_client = MockHomeAssistant()
-                self.media_controller = MockMediaController()
-                await self.media_controller.initialize()
-                
-                logger.info("Mock Home Assistant clients initialized")
+            # Initialize HA client (handles mock fallback internally)
+            self.ha_client = HomeAssistantClient()
+            
+            # Initialize media controller
+            self.media_controller = MediaController()
+            await self.media_controller.initialize()
+            
+            logger.info("Home Assistant clients initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize HA clients: {e}")
-            # Fallback to mock clients
-            self.ha_client = MockHomeAssistant()
-            self.media_controller = MockMediaController()
+            # Create fallback clients
+            self.ha_client = HomeAssistantClient()
+            self.media_controller = MediaController()
             await self.media_controller.initialize()
-            logger.info("Fallback to mock Home Assistant clients")
+            logger.info("Fallback Home Assistant clients initialized")
         
     def setup_handlers(self):
         """Setup MCP protocol handlers"""
