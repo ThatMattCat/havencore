@@ -375,7 +375,8 @@ Astronomy:
             raise ValueError(f"Request timed out after {timeout} seconds") 
         except requests.exceptions.RequestException as e:
             raise ValueError(f"An error occurred: {e}")
-            
+        return response.text
+
 
 async def main():
     """Main entry point"""
