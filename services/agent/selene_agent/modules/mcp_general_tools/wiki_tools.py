@@ -2,7 +2,7 @@ import requests
 import json
 from typing import Optional
 
-def query_wikipedia(search_term: str, sentences: int = 3, lang: str = 'en') -> str:
+async def query_wikipedia(search_term: str, sentences: int = 7, lang: str = 'en') -> str:
     """
     Query Wikipedia API and return a summary of the search term.
     
@@ -36,7 +36,7 @@ def query_wikipedia(search_term: str, sentences: int = 3, lang: str = 'en') -> s
         
         if response.status_code == 404:
             # Try searching with the search API if direct page not found
-            return search_wikipedia_fallback(search_term, sentences, lang)
+            return await search_wikipedia_fallback(search_term, sentences, lang)
         
         response.raise_for_status()
         data = response.json()
@@ -67,7 +67,7 @@ def query_wikipedia(search_term: str, sentences: int = 3, lang: str = 'en') -> s
         return f"Unexpected error: {str(e)}"
 
 
-def search_wikipedia_fallback(search_term: str, sentences: int = 3, lang: str = 'en') -> str:
+async def search_wikipedia_fallback(search_term: str, sentences: int = 3, lang: str = 'en') -> str:
     """
     Fallback function using Wikipedia's search API when direct page lookup fails.
     
@@ -135,7 +135,7 @@ def search_wikipedia_fallback(search_term: str, sentences: int = 3, lang: str = 
         return f"Search fallback error: {str(e)}"
 
 
-def get_wikipedia_with_context(search_term: str, include_categories: bool = False) -> str:
+async def get_wikipedia_with_context(search_term: str, include_categories: bool = False) -> str:
     """
     Enhanced function that includes additional context for the AI assistant.
     
@@ -148,7 +148,7 @@ def get_wikipedia_with_context(search_term: str, include_categories: bool = Fals
     """
     
     # Get the basic summary
-    summary = query_wikipedia(search_term, sentences=5)
+    summary = await query_wikipedia(search_term, sentences=5)
     
     if summary.startswith("Error") or summary.startswith("No"):
         return summary

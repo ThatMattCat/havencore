@@ -20,19 +20,19 @@ import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
 from mcp.server.models import InitializationOptions
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
-
-import shared.scripts.logger as logger_module
-import config
+from .wiki_tools import query_wikipedia
+# import shared.scripts.logger as logger_module
+# import selene_agent.config as config
 
 # TODO: Fix logger here
 #logger = logger_module.get_logger('loki')
 logger = logging.getLogger(__name__)
 
 # Get configuration from environment
-WEATHER_API_KEY = config.WEATHER_API_KEY
-BRAVE_API_KEY = config.BRAVE_SEARCH_API_KEY
-TIMEZONE = config.TIMEZONE
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
+TIMEZONE = os.getenv("TIMEZONE")
+WOLFRAM_ALPHA_API_KEY = os.getenv("WOLFRAM_ALPHA_API_KEY")
 
 
 class GeneralToolsServer:
@@ -49,7 +49,23 @@ class GeneralToolsServer:
         async def list_tools() -> List[Tool]:
             """List available tools"""
             tools = []
-            
+
+            if WOLFRAM_ALPHA_API_KEY:
+                tools.append(Tool(
+                    name="wolfram_alpha",
+                    description="Query Wolfram Alpha for answers to factual questions",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Question to ask Wolfram Alpha"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                ))
+
             if WEATHER_API_KEY:
                 tools.append(Tool(
                     name="get_weather_forecast",
@@ -120,6 +136,25 @@ class GeneralToolsServer:
                     "required": ["message"]
                 }
             ))
+
+            tools.append(Tool(
+                name="search_wikipedia",
+                description="Search Wikipedia for information about a topic and return a summary.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "search_string": {
+                            "type": "string",
+                            "description": "Search query"
+                        },
+                        "sentences": {
+                            "type": "integer",
+                            "description": "Number of sentences to return"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            ))
             
             logger.info(f"Listing {len(tools)} tools")
             return tools
@@ -130,7 +165,11 @@ class GeneralToolsServer:
             logger.info(f"Tool called: {name} with args: {arguments}")
             
             try:
-                if name == "get_weather_forecast":
+                if name == "wolfram_alpha":
+                    result = await self.wolfram_alpha(arguments.get("query"))
+                    return [types.TextContent(type="text", text=result)]
+                
+                elif name == "get_weather_forecast":
                     result = await self.get_weather_forecast(
                         arguments.get("location"),
                         arguments.get("date")
@@ -151,8 +190,11 @@ class GeneralToolsServer:
                 elif name == "echo":
                     message = arguments.get("message", "")
                     return [types.TextContent(type="text", text=f"Echo: {message}")]
-
                 
+                elif name == "search_wikipedia":
+                    result = await query_wikipedia(arguments.get("search_string"), arguments.get("sentences", 7))
+                    return [types.TextContent(type="text", text=result)]
+
                 else:
                     return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
                     
@@ -297,6 +339,43 @@ Astronomy:
                 )
             )
 
+    async def wolfram_alpha(
+        self,
+        query: str,
+        max_chars: Optional[int] = 1000,
+        timeout: Optional[int] = 30
+    ) -> str:
+        """ Query the WolframAlpha LLM API."""
+        
+        url = "https://www.wolframalpha.com/api/v1/llm-api"
+        
+        params = {
+            "input": query,
+            "appid": WOLFRAM_ALPHA_API_KEY,
+            "maxchars": max_chars
+        }
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=timeout
+            )
+            response.raise_for_status()
+
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP error occurred: {e}"
+            if response.status_code == 403:
+                error_msg = "Invalid API key or unauthorized access"
+            elif response.status_code == 400:
+                error_msg = "Bad request - check your query format"
+            raise ValueError(error_msg)
+        except requests.exceptions.ConnectionError:
+            raise ValueError("Failed to connect to WolframAlpha API")
+        except requests.exceptions.Timeout:
+            raise ValueError(f"Request timed out after {timeout} seconds") 
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"An error occurred: {e}")
+            
 
 async def main():
     """Main entry point"""
