@@ -152,7 +152,7 @@ class GeneralToolsServer:
                             "description": "Number of sentences to return"
                         }
                     },
-                    "required": ["query"]
+                    "required": ["search_string"]
                 }
             ))
             
