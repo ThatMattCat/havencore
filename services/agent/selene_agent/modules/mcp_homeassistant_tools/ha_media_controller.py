@@ -7,13 +7,15 @@ from datetime import datetime
 from enum import Enum
 import re
 import logging
+import os
 
-import sys, os
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
-import shared.scripts.logger as logger_module
-logger = logger_module.get_logger('loki')
-import config
+# import sys, os
+# project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# sys.path.insert(0, project_root)
+# import shared.scripts.logger as logger_module
+# logger = logger_module.get_logger('loki')
+logger = logging.getLogger("ha_media_controller")
+#import config
 
 
 
@@ -1879,8 +1881,8 @@ async def main():
     """Example usage"""
     
     device_ids = ["media_player.living_room_tv","media_player.bedroom_speaker"]
-    
-    controller = MediaController(config.HA_WS_URL, config.HAOS_TOKEN)
+
+    controller = MediaController(os.getenv("HA_WS_URL"), os.getenv("HAOS_TOKEN"))
     await controller.initialize(device_ids)
 
     logger.info(f"Searching media for 'star' titles:\n")

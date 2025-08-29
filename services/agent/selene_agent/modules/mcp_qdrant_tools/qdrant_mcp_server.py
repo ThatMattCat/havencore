@@ -26,27 +26,11 @@ from mcp.types import Tool, TextContent
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('qdrant_mcp')
 
-# Try to import config, fall back to defaults if not available
-try:
-    # Try relative import first (when run as module)
-    from .config import (
-        QDRANT_HOST, QDRANT_PORT, EMBEDDINGS_URL, 
-        EMBEDDING_DIM, COLLECTION_NAME
-    )
-except (ImportError, ValueError):
-    try:
-        # Try absolute import (when run directly)
-        from config import (
-            QDRANT_HOST, QDRANT_PORT, EMBEDDINGS_URL, 
-            EMBEDDING_DIM, COLLECTION_NAME
-        )
-    except ImportError:
-        # Fall back to environment variables or defaults
-        QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
-        QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-        EMBEDDINGS_URL = os.getenv("EMBEDDINGS_URL", "http://embeddings:3000")
-        EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
-        COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "user_data")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+EMBEDDINGS_URL = os.getenv("EMBEDDINGS_URL", "http://embeddings:3000")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
+COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "user_data")
 
 
 class QdrantMCPServer:

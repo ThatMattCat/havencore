@@ -17,9 +17,7 @@ import os
 from mcp import StdioServerParameters, ClientSession, Tool
 from mcp.client.stdio import stdio_client  # Fixed import
 
-#logger = logging.getLogger(__name__)
-import shared.scripts.logger as logger_module
-logger = logger_module.get_logger('loki')
+logger = logging.getLogger(__name__)
 
 
 class ToolSource(Enum):
@@ -140,7 +138,7 @@ class MCPClientManager:
             self.servers[mcp_config.name] = mcp_config
             logger.info(f"Added MCP server configuration: {mcp_config.name}")
     
-    async def initialize(self, connection_timeout: float = 30.0):
+    async def initialize(self, connection_timeout: float = 600.0):
         """Initialize connections to all configured MCP servers"""
         if self._initialized:
             logger.debug("MCP Client Manager already initialized")

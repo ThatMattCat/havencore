@@ -1,5 +1,5 @@
 """
-Entry point for running as module: python -m utils.mcp_qdrant_tools.qdrant_mcp_server
+Entry point for running as module: python -m selene_agent.modules.mcp_qdrant_tools
 """
 import asyncio
 import sys

@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import asyncpg
-from shared.scripts.trace_id import get_trace_id
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -57,16 +57,11 @@ class ConversationHistoryDB:
             return False
         
         try:
-            trace_id = get_trace_id()
             if not session_id:
-                session_id = trace_id
-            
+                session_id = str(uuid.uuid4())
+
             if not metadata:
                 metadata = {}
-            
-            # Add trace_id to metadata if available
-            if trace_id:
-                metadata['trace_id'] = trace_id
             
             # Add timestamp to metadata
             metadata['stored_at'] = datetime.utcnow().isoformat()

@@ -38,8 +38,8 @@ services:
       retries: 3
       start_period: 15s
     volumes:
-      - ./services/agent/app:/app
-      - ./shared:/app/shared:ro
+      - ./services/agent/:/app
+      # - ./shared:/app/shared:ro
     ports:
       - "6002:6002"
       - "6006:6006" # /v1/chat/completions OpenAI-compat API
