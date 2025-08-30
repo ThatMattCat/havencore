@@ -334,7 +334,7 @@ class SeleneAgent:
                     logger.debug(f"Model requested {len(assistant_message.tool_calls)} tool calls")
 
                     for tool_call in assistant_message.tool_calls:
-                        logger.debug(f"Executing tool: {tool_call.function.name}")
+                        # logger.debug(f"Executing tool: {tool_call.function.name}")
                         result = self._execute_tool_call(tool_call)
                         logger.debug(f"Tool result: {result}")
                         self.messages.append({

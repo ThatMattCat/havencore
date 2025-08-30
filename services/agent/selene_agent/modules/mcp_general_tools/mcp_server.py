@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import asyncio
+import aiohttp
 import logging
 from typing import Any, Dict, List, Optional
 import requests
@@ -34,7 +35,6 @@ BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
 TIMEZONE = os.getenv("TIMEZONE")
 WOLFRAM_ALPHA_API_KEY = os.getenv("WOLFRAM_ALPHA_API_KEY")
 
-
 class GeneralToolsServer:
     """MCP server providing general utility tools"""
     
@@ -49,6 +49,40 @@ class GeneralToolsServer:
         async def list_tools() -> List[Tool]:
             """List available tools"""
             tools = []
+
+            tools.append(Tool(
+                name="query_multimodal_api",
+                description="Query a multimodal AI API with any combination of text, image, audio, and/or video inputs to get AI-generated responses",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The text content to send to the AI for processing"
+                        },
+                        "image_url": {
+                            "type": "string",
+                            "description": "URL or file path (file://) to an image for visual analysis. Supports common image formats like PNG, JPEG, etc."
+                        },
+                        "audio_url": {
+                            "type": "string",
+                            "description": "URL or file path (file://) to an audio file for audio analysis. Supports common audio formats like WAV, MP3, etc."
+                        },
+                        "video_url": {
+                            "type": "string",
+                            "description": "URL or file path (file://) to a video file for video analysis. Supports common video formats like MP4, AVI, etc."
+                        }
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                    "anyOf": [
+                        {"required": ["text"]},
+                        {"required": ["image_url"]},
+                        {"required": ["audio_url"]},
+                        {"required": ["video_url"]}
+                    ]
+                }
+            ))
 
             if WOLFRAM_ALPHA_API_KEY:
                 tools.append(Tool(
@@ -169,6 +203,15 @@ class GeneralToolsServer:
                     result = await self.wolfram_alpha(arguments.get("query"))
                     return [types.TextContent(type="text", text=result)]
                 
+                elif name == "query_multimodal_api":
+                    result = await self.query_multimodal_ai(
+                        text=arguments.get("text"),
+                        image_url=arguments.get("image_url"),
+                        audio_url=arguments.get("audio_url"),
+                        video_url=arguments.get("video_url")
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
                 elif name == "get_weather_forecast":
                     result = await self.get_weather_forecast(
                         arguments.get("location"),
@@ -376,6 +419,85 @@ Astronomy:
         except requests.exceptions.RequestException as e:
             raise ValueError(f"An error occurred: {e}")
         return response.text
+
+    async def query_multimodal_ai(
+        self,
+        text: Optional[str] = None,
+        image_url: Optional[str] = None,
+        audio_url: Optional[str] = None,
+        video_url: Optional[str] = None
+    ) -> str:
+        """
+        Query a multimodal AI API with text, image, audio, and/or video inputs.
+        
+        Args:
+            text: The text content to send to the AI
+            image_url: URL or file path (file://) to an image
+            audio_url: URL or file path (file://) to an audio file
+            video_url: URL or file path (file://) to a video file
+            system_prompt: System message to set AI behavior
+            
+        Returns:
+            Dict containing the API response
+            
+        Raises:
+            ValueError: If no content is provided
+            aiohttp.ClientError: If the API request fails
+        """
+        # Validate that at least one content type is provided
+        if not any([text, image_url, audio_url, video_url]):
+            raise ValueError("At least one of text, image_url, audio_url, or video_url must be provided")
+        
+        # Build the content array for the user message
+        content = []
+        system_prompt = "You are a helpful assistant."
+        
+        if text:
+            content.append({"type": "text", "text": text})
+        
+        if image_url:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": image_url}
+            })
+        
+        if audio_url:
+            content.append({
+                "type": "audio_url", 
+                "audio_url": {"url": audio_url}
+            })
+        
+        if video_url:
+            content.append({
+                "type": "video_url",
+                "video_url": {"url": video_url}
+            })
+        # Construct the request payload
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content}
+            ]
+        }
+        # logger.info(f"Multimodal API payload: {json.dumps(payload, indent=2)}")
+        
+        # Make the async HTTP request
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://nginx/iav/api",
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            ) as response:
+                if response.status != 200:
+                    response.raise_for_status()
+                data = await response.json()
+                
+                # Extract content with error handling
+                try:
+                    return data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError) as e:
+                    # Handle missing keys or empty choices array
+                    raise ValueError(f"Unexpected response structure: {e}") from e
 
 
 async def main():

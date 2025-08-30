@@ -68,6 +68,8 @@ text-to-speech/models/**
 services/speech-to-text/app/whisper_streaming/**
 volumes/**/*
 **/uploads/**
+services/mosquitto/data/**
+services/mosquitto/log/**
 
 
 !/.gitkeep
