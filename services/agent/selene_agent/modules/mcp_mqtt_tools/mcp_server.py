@@ -5,14 +5,12 @@ Provides general tools like weather and web search via MCP
 """
 
 import os
-import sys
 import json
 import asyncio
+from asyncio import Future
 import logging
 from typing import Any, Dict, List, Optional
-import requests
-from datetime import datetime
-import pytz
+import paho.mqtt.client as mqtt
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -20,30 +18,13 @@ import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
 from mcp.server.models import InitializationOptions
 
-# import shared.scripts.logger as logger_module
-# import selene_agent.config as config
-
 # TODO: Fix logger here
-#logger = logger_module.get_logger('loki')
 logger = logging.getLogger(__name__)
 
 HAOS_URL = os.getenv("HAOS_URL")
 HAOS_TOKEN = os.getenv("HAOS_TOKEN")
 MQTT_BROKER = os.getenv("MQTT_BROKER")
-MQTT_PORT = os.getenv("MQTT_PORT", 1883)
-
-import requests
-import json
-import paho.mqtt.client as mqtt
-from datetime import datetime
-import time
-import asyncio
-from asyncio import Future
-from typing import Optional
-import paho.mqtt.client as mqtt
-from datetime import datetime
-import json
-import logging
+MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 
 class HACamSnapper:
     def __init__(self, ha_url, ha_token, mqtt_broker: str = "mosquitto", mqtt_port: int = 1883):
@@ -173,8 +154,8 @@ class MQTTServer:
         self.snapshotter = HACamSnapper(
             ha_url=HAOS_URL,
             ha_token=HAOS_TOKEN,
-            mqtt_broker=MQTT_BROKER or "mosquitto",
-            mqtt_port=MQTT_PORT or 1883
+            mqtt_broker=MQTT_BROKER,
+            mqtt_port=MQTT_PORT
         )   
         self.setup_handlers()
         

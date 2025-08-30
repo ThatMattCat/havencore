@@ -34,7 +34,6 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
 TIMEZONE = os.getenv("TIMEZONE")
 WOLFRAM_ALPHA_API_KEY = os.getenv("WOLFRAM_ALPHA_API_KEY")
-HOST_IP = os.getenv("HOST_IP_ADDRESS")
 
 class GeneralToolsServer:
     """MCP server providing general utility tools"""
@@ -76,7 +75,7 @@ class GeneralToolsServer:
                     },
                     "required": [],
                     "additionalProperties": False,
-                    "oneOf": [
+                    "anyOf": [
                         {"required": ["text"]},
                         {"required": ["image_url"]},
                         {"required": ["audio_url"]},
