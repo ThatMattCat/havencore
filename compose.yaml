@@ -136,7 +136,6 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-
   iav-to-text:
       build:
         context: ./services/iav-to-text
@@ -165,6 +164,24 @@ services:
                 count: all
                 capabilities: [gpu]
       restart: unless-stopped
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "1883:1883"    # MQTT port
+      - "9001:9001"    # Websocket port (optional, useful for web clients)
+    volumes:
+      - ./services/mosquitto/config:/mosquitto/config
+      - ./services/mosquitto/data:/mosquitto/data
+      - ./services/mosquitto/log:/mosquitto/log
+    # healthcheck:
+    #   test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
 
   # llamacpp:
   #   image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
