@@ -136,6 +136,36 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
+
+  iav-to-text:
+      build:
+        context: ./services/iav-to-text
+        dockerfile: Dockerfile
+      runtime: nvidia
+      environment:
+        - CUDA_VISIBLE_DEVICES=2
+      ports:
+        - "8100:8100"  # vLLM API port
+        - "8110:8110"  # Gradio UI port
+      volumes:
+        - ~/.cache/huggingface:/root/.cache/huggingface
+        - ./services/iav-to-text/app:/app
+      ipc: host
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:8100/v1/models"]
+        interval: 15s
+        timeout: 5s
+        retries: 5
+        start_period: 300s
+      deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [gpu]
+      restart: unless-stopped
+
   # llamacpp:
   #   image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
   #   volumes:

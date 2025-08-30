@@ -1,0 +1,3 @@
+vllm[audio]
+gradio
+requests

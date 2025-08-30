@@ -67,6 +67,7 @@ text-to-speech/models/**
 .git
 services/speech-to-text/app/whisper_streaming/**
 volumes/**/*
+**/uploads/**
 
 
 !/.gitkeep
