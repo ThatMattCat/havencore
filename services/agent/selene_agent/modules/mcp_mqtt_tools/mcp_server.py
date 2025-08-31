@@ -21,9 +21,9 @@ from mcp.server.models import InitializationOptions
 # TODO: Fix logger here
 logger = logging.getLogger(__name__)
 
-HAOS_URL = os.getenv("HAOS_URL")
-HAOS_TOKEN = os.getenv("HAOS_TOKEN")
-MQTT_BROKER = os.getenv("MQTT_BROKER")
+HAOS_URL = os.getenv("HAOS_URL", "NO_HAOS_URL_SET")
+HAOS_TOKEN = os.getenv("HAOS_TOKEN", "NO_HAOS_TOKEN_SET")
+MQTT_BROKER = os.getenv("MQTT_BROKER", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 
 class HACamSnapper:
