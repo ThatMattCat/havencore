@@ -10,10 +10,16 @@ import json
 import asyncio
 import aiohttp
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import requests
 from datetime import datetime
 import pytz
+
+import asyncio
+import os
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import aiosmtplib
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -35,6 +41,12 @@ BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
 TIMEZONE = os.getenv("TIMEZONE")
 WOLFRAM_ALPHA_API_KEY = os.getenv("WOLFRAM_ALPHA_API_KEY")
 
+SENDER_EMAIL = os.environ.get('GMAIL_ADDRESS')
+EMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD')
+SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
+DEFAULT_RECIPIENT = os.environ.get('DEFAULT_RECIPIENT')
+
 class GeneralToolsServer:
     """MCP server providing general utility tools"""
     
@@ -49,6 +61,30 @@ class GeneralToolsServer:
         async def list_tools() -> List[Tool]:
             """List available tools"""
             tools = []
+
+            if EMAIL_APP_PASSWORD and SENDER_EMAIL:
+                tools.append(Tool(
+                    name="send_email",
+                    description="Send an email to the homeowner. HTML supported.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            # "to": {
+                            #     "type": "string",
+                            #     "description": "Recipient email address"
+                            # },
+                            "subject": {
+                                "type": "string",
+                                "description": "Email subject"
+                            },
+                            "body": {
+                                "type": "string",
+                                "description": "Email body with HTML support"
+                            }
+                        },
+                        "required": ["subject", "body"]
+                    }
+                ))
 
             tools.append(Tool(
                 name="query_multimodal_api",
@@ -157,21 +193,6 @@ class GeneralToolsServer:
             ))
             
             tools.append(Tool(
-                name="echo",
-                description="Echo back the input (for testing)",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Message to echo"
-                        }
-                    },
-                    "required": ["message"]
-                }
-            ))
-
-            tools.append(Tool(
                 name="search_wikipedia",
                 description="Search Wikipedia for information about a topic and return a summary.",
                 inputSchema={
@@ -203,6 +224,14 @@ class GeneralToolsServer:
                     result = await self.wolfram_alpha(arguments.get("query"))
                     return [types.TextContent(type="text", text=result)]
                 
+                elif name == "send_email":
+                    result = await self.send_email(
+                        # to=arguments.get("to"),
+                        subject=arguments.get("subject"),
+                        body=arguments.get("body")
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
                 elif name == "query_multimodal_api":
                     result = await self.query_multimodal_ai(
                         text=arguments.get("text"),
@@ -244,6 +273,77 @@ class GeneralToolsServer:
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}")
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+            
+    async def send_email(self,
+        subject: str, 
+        body: str,
+        to: Optional[Union[str, List[str]]] = None, 
+        cc: Optional[Union[str, List[str]]] = None,
+        bcc: Optional[Union[str, List[str]]] = None,
+        html: bool = True
+    ) -> str:
+        """
+        Send an email using Gmail SMTP asynchronously.
+        
+        Environment variables required:
+        - GMAIL_ADDRESS: Your Gmail address
+        - GMAIL_APP_PASSWORD: Your Gmail app-specific password
+        - SMTP_SERVER: SMTP server (default: smtp.gmail.com)
+        - SMTP_PORT: SMTP port (default: 587)
+        
+        Returns:
+            str: Success status and message
+        """
+        # Get config from environment
+        # sender_email = os.environ.get('GMAIL_ADDRESS')
+        # password = os.environ.get('GMAIL_APP_PASSWORD')
+        # smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
+        # smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+        # default_recipient = os.environ.get('DEFAULT_RECIPIENT')
+
+        if not SENDER_EMAIL or not EMAIL_APP_PASSWORD:
+            return '{"success": False,"error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
+        if not to:
+            to = DEFAULT_RECIPIENT
+
+        # Normalize recipients to lists
+        to_list = [to] if isinstance(to, str) else to
+        cc_list = [] if cc is None else ([cc] if isinstance(cc, str) else cc)
+        bcc_list = [] if bcc is None else ([bcc] if isinstance(bcc, str) else bcc)
+        
+        try:
+            # Create message
+            msg = MIMEMultipart('alternative') if html else MIMEMultipart()
+            msg['From'] = SENDER_EMAIL
+            msg['To'] = ', '.join(to_list)
+            msg['Subject'] = subject
+            
+            if cc_list:
+                msg['Cc'] = ', '.join(cc_list)
+            
+            # Add body
+            mime_type = 'html' if html else 'plain'
+            msg.attach(MIMEText(body, mime_type))
+            
+            # All recipients for sending
+            all_recipients = to_list + cc_list + bcc_list
+            
+            # Send email asynchronously
+            await aiosmtplib.send(
+                msg,
+                sender=SENDER_EMAIL,
+                recipients=all_recipients,
+                hostname=SMTP_SERVER,
+                port=SMTP_PORT,
+                start_tls=True,
+                username=SENDER_EMAIL,
+                password=EMAIL_APP_PASSWORD,
+            )
+            return_message = f"Email sent successfully to {', '.join(all_recipients)}"
+            return f'{{"success": True,"message": "{return_message}"}}'
+
+        except Exception as e:
+            return f'{{"success": false, "error": "{str(e)}"}}'
 
     async def get_weather_forecast(self, location: str, date: Optional[str] = None) -> str:
         """Get weather forecast from weatherapi.com"""
