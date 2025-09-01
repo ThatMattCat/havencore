@@ -159,7 +159,7 @@ class GeneralToolsServer:
             if BRAVE_API_KEY:
                 tools.append(Tool(
                     name="brave_search",
-                    description="Search the web using Brave Search API",
+                    description="Retrieve a list of relevant websites using Brave Search API",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -176,21 +176,6 @@ class GeneralToolsServer:
                         "required": ["query"]
                     }
                 ))
-            
-            tools.append(Tool(
-                name="calculate",
-                description="Perform basic mathematical calculations",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "expression": {
-                            "type": "string",
-                            "description": "Mathematical expression to evaluate"
-                        }
-                    },
-                    "required": ["expression"]
-                }
-            ))
             
             tools.append(Tool(
                 name="search_wikipedia",
@@ -254,15 +239,7 @@ class GeneralToolsServer:
                         arguments.get("count", 4)
                     )
                     return [types.TextContent(type="text", text=result)]
-                
-                elif name == "calculate":
-                    result = await self.calculate(arguments.get("expression"))
-                    return [types.TextContent(type="text", text=result)]
-
-                elif name == "echo":
-                    message = arguments.get("message", "")
-                    return [types.TextContent(type="text", text=f"Echo: {message}")]
-                
+    
                 elif name == "search_wikipedia":
                     result = await query_wikipedia(arguments.get("search_string"), arguments.get("sentences", 7))
                     return [types.TextContent(type="text", text=result)]
@@ -294,13 +271,6 @@ class GeneralToolsServer:
         Returns:
             str: Success status and message
         """
-        # Get config from environment
-        # sender_email = os.environ.get('GMAIL_ADDRESS')
-        # password = os.environ.get('GMAIL_APP_PASSWORD')
-        # smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-        # smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-        # default_recipient = os.environ.get('DEFAULT_RECIPIENT')
-
         if not SENDER_EMAIL or not EMAIL_APP_PASSWORD:
             return '{"success": False,"error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
         if not to:
@@ -447,20 +417,6 @@ Astronomy:
             
         except Exception as e:
             return f"Error searching: {str(e)}"
-    
-    async def calculate(self, expression: str) -> str:
-        """Safely evaluate mathematical expressions"""
-        try:
-            allowed_names = {
-                'abs': abs, 'round': round, 'min': min, 'max': max,
-                'sum': sum, 'pow': pow, 'len': len
-            }
-            
-            result = eval(expression, {"__builtins__": {}}, allowed_names)
-            return f"Result: {result}"
-            
-        except Exception as e:
-            return f"Error evaluating expression: {str(e)}"
     
     async def run(self):
         """Run the MCP server"""

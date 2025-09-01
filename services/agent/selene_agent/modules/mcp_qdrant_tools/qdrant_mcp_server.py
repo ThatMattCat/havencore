@@ -90,7 +90,7 @@ class QdrantMCPServer:
             """List available tools"""
             return [
                 Tool(
-                    name="create",
+                    name="create_memory",
                     description="Store information in the vector database for future retrieval",
                     inputSchema={
                         "type": "object",
@@ -121,8 +121,8 @@ class QdrantMCPServer:
                     }
                 ),
                 Tool(
-                    name="search",
-                    description="Search stored information using semantic similarity",
+                    name="search_memories",
+                    description="Search information stored in the vector database using semantic similarity",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -151,7 +151,7 @@ class QdrantMCPServer:
         async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             """Handle tool calls"""
             try:
-                if name == "create":
+                if name == "create_memory":
                     result = await self._create_memory(arguments)
                 elif name == "search":
                     result = await self._search_memories(arguments)
