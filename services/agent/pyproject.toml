@@ -22,7 +22,8 @@ dependencies = [
     "mcp==1.1.2",
     "requests>=2.31.0",
     "paho-mqtt>=2.1.0",
-    "aiosmtplib"
+    "aiosmtplib",
+    "websocket"
 ]
 
 [project.scripts]

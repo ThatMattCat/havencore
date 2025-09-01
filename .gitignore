@@ -60,9 +60,11 @@ text-to-speech/models/**
 **/certs/**
 **/models/**
 **/output/**
+**/input/**
 **/*.bak
 **/ha_media_library.json
 **/venv/
+services/text-to-image/*/**
 
 .git
 services/speech-to-text/app/whisper_streaming/**

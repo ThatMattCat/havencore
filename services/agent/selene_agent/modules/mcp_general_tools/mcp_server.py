@@ -15,10 +15,13 @@ import requests
 from datetime import datetime
 import pytz
 
-import asyncio
-import os
+import mimetypes
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+from email.mime.base import MIMEBase
+from email import encoders
+from pathlib import Path
 import aiosmtplib
 
 from mcp.server import Server, NotificationOptions
@@ -27,6 +30,7 @@ import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
 from mcp.server.models import InitializationOptions
 
+from .comfyui_tools import SimpleComfyAgent
 from .wiki_tools import query_wikipedia
 # import shared.scripts.logger as logger_module
 # import selene_agent.config as config
@@ -51,6 +55,7 @@ class GeneralToolsServer:
     """MCP server providing general utility tools"""
     
     def __init__(self):
+        self.comfy_agent = SimpleComfyAgent()
         self.server = Server("havencore-general-tools")
         self.setup_handlers()
         
@@ -62,10 +67,25 @@ class GeneralToolsServer:
             """List available tools"""
             tools = []
 
+            tools.append(Tool(
+                name="generate_image",
+                description="Generate an image from a text prompt and return a URL link to the image.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "The text prompt to generate an image from."
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            ))
+
             if EMAIL_APP_PASSWORD and SENDER_EMAIL:
                 tools.append(Tool(
                     name="send_email",
-                    description="Send an email to the homeowner. HTML supported.",
+                    description="Send an email to the homeowner.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -79,7 +99,14 @@ class GeneralToolsServer:
                             },
                             "body": {
                                 "type": "string",
-                                "description": "Email body with HTML support"
+                                "description": "Email body"
+                            },
+                            "attachments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "description": "URL of the attachment, will be automatically downloaded and attached."
+                                }
                             }
                         },
                         "required": ["subject", "body"]
@@ -213,7 +240,8 @@ class GeneralToolsServer:
                     result = await self.send_email(
                         # to=arguments.get("to"),
                         subject=arguments.get("subject"),
-                        body=arguments.get("body")
+                        body=arguments.get("body"),
+                        attachments=arguments.get("attachments")
                     )
                     return [types.TextContent(type="text", text=result)]
 
@@ -250,31 +278,82 @@ class GeneralToolsServer:
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}")
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-            
+
+    async def download_file(self, url: str, session: aiohttp.ClientSession) -> tuple[bytes, str]:
+        """
+        Download a file from a URL and return its content and filename.
+        Times out after 15 seconds.
+        
+        Returns:
+            tuple: (file_content, suggested_filename)
+        """
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                response.raise_for_status()
+                content = await response.read()
+                
+                # Try to get filename from Content-Disposition header
+                filename = None
+                if 'Content-Disposition' in response.headers:
+                    import re
+                    match = re.search(r'filename[^;=\n]*=(([\'"]).*?\2|[^;\n]*)', 
+                                    response.headers['Content-Disposition'])
+                    if match:
+                        filename = match.group(1).strip('"\'')
+                
+                # Fallback to URL path
+                if not filename:
+                    filename = os.path.basename(url.split('?')[0]) or 'attachment'
+                    
+                return content, filename
+        except asyncio.TimeoutError:
+            raise Exception(f"Download timed out after 15 seconds for {url}")
+
     async def send_email(self,
         subject: str, 
         body: str,
         to: Optional[Union[str, List[str]]] = None, 
         cc: Optional[Union[str, List[str]]] = None,
         bcc: Optional[Union[str, List[str]]] = None,
-        html: bool = True
+        attachments: Optional[Union[str, List[str], List[tuple]]] = None,
+        html: bool = False
     ) -> str:
         """
-        Send an email using Gmail SMTP asynchronously.
+        Send an email using Gmail SMTP asynchronously with attachment support.
+        
+        Args:
+            subject: Email subject
+            body: Email body (HTML or plain text)
+            to: Recipient email(s) - can be regular emails or SMS gateways like number@msg.fi.google.com
+            cc: CC recipient(s)
+            bcc: BCC recipient(s)
+            attachments: Can be:
+                - A single file path or URL as string
+                - A list of file paths or URLs
+                - A list of tuples: (filename, file_content_bytes)
+            html: Whether body is HTML (default: False)
         
         Environment variables required:
-        - GMAIL_ADDRESS: Your Gmail address
-        - GMAIL_APP_PASSWORD: Your Gmail app-specific password
-        - SMTP_SERVER: SMTP server (default: smtp.gmail.com)
-        - SMTP_PORT: SMTP port (default: 587)
+            - GMAIL_ADDRESS: Your Gmail address
+            - GMAIL_APP_PASSWORD: Your Gmail app-specific password
+            - SMTP_SERVER: SMTP server (default: smtp.gmail.com)
+            - SMTP_PORT: SMTP port (default: 587)
+            - DEFAULT_RECIPIENT: Default recipient if none provided
         
         Returns:
             str: Success status and message
         """
-        if not SENDER_EMAIL or not EMAIL_APP_PASSWORD:
+        # Get config from environment
+        sender_email = os.environ.get('GMAIL_ADDRESS')
+        password = os.environ.get('GMAIL_APP_PASSWORD')
+        smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+        default_recipient = os.environ.get('DEFAULT_RECIPIENT')
+
+        if not sender_email or not password:
             return '{"success": False,"error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
         if not to:
-            to = DEFAULT_RECIPIENT
+            to = default_recipient
 
         # Normalize recipients to lists
         to_list = [to] if isinstance(to, str) else to
@@ -282,18 +361,69 @@ class GeneralToolsServer:
         bcc_list = [] if bcc is None else ([bcc] if isinstance(bcc, str) else bcc)
         
         try:
-            # Create message
-            msg = MIMEMultipart('alternative') if html else MIMEMultipart()
-            msg['From'] = SENDER_EMAIL
+            # Create message - use 'mixed' for attachments
+            msg = MIMEMultipart('mixed')
+            msg['From'] = sender_email
             msg['To'] = ', '.join(to_list)
             msg['Subject'] = subject
             
             if cc_list:
                 msg['Cc'] = ', '.join(cc_list)
             
-            # Add body
+            # Create body part
+            body_part = MIMEMultipart('alternative')
             mime_type = 'html' if html else 'plain'
-            msg.attach(MIMEText(body, mime_type))
+            body_part.attach(MIMEText(body, mime_type))
+            msg.attach(body_part)
+            
+            # Handle attachments
+            if attachments:
+                # Normalize to list
+                if isinstance(attachments, str):
+                    attachments = [attachments]
+                
+                async with aiohttp.ClientSession() as session:
+                    for attachment in attachments:
+                        file_content = None
+                        filename = None
+                        
+                        # Handle different attachment types
+                        if isinstance(attachment, tuple):
+                            # Direct (filename, content) tuple
+                            filename, file_content = attachment
+                        elif isinstance(attachment, str):
+                            if attachment.startswith(('http://', 'https://')):
+                                # Download from URL
+                                try:
+                                    file_content, filename = await self.download_file(attachment, session)
+                                except Exception as e:
+                                    return(f'{{"success": False, "message": "Failed to download {attachment}: {e}"}}')
+                            else:
+                                # Local file path
+                                if os.path.exists(attachment):
+                                    with open(attachment, 'rb') as f:
+                                        file_content = f.read()
+                                    filename = os.path.basename(attachment)
+                                else:
+                                    print(f"File not found: {attachment}")
+                                    continue
+                        
+                        if file_content and filename:
+                            # Guess the content type
+                            mime_type, _ = mimetypes.guess_type(filename)
+                            
+                            if mime_type and mime_type.startswith('image/'):
+                                # Handle images specially
+                                part = MIMEImage(file_content)
+                                part.add_header('Content-Disposition', 'attachment', filename=filename)
+                            else:
+                                # Generic binary attachment
+                                part = MIMEBase('application', 'octet-stream')
+                                part.set_payload(file_content)
+                                encoders.encode_base64(part)
+                                part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                            
+                            msg.attach(part)
             
             # All recipients for sending
             all_recipients = to_list + cc_list + bcc_list
@@ -301,20 +431,21 @@ class GeneralToolsServer:
             # Send email asynchronously
             await aiosmtplib.send(
                 msg,
-                sender=SENDER_EMAIL,
+                sender=sender_email,
                 recipients=all_recipients,
-                hostname=SMTP_SERVER,
-                port=SMTP_PORT,
+                hostname=smtp_server,
+                port=smtp_port,
                 start_tls=True,
-                username=SENDER_EMAIL,
-                password=EMAIL_APP_PASSWORD,
+                username=sender_email,
+                password=password,
             )
-            return_message = f"Email sent successfully to {', '.join(all_recipients)}"
-            return f'{{"success": True,"message": "{return_message}"}}'
+
+            rtn_message=f"Email sent successfully to {', '.join(all_recipients)}"
+            return f'{{"success": True,"message": "{rtn_message}"}}'
 
         except Exception as e:
-            return f'{{"success": false, "error": "{str(e)}"}}'
-
+            return f'{{"success": False,"error": "{str(e)}"}}'
+        
     async def get_weather_forecast(self, location: str, date: Optional[str] = None) -> str:
         """Get weather forecast from weatherapi.com"""
         
