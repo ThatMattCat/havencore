@@ -153,7 +153,7 @@ class QdrantMCPServer:
             try:
                 if name == "create_memory":
                     result = await self._create_memory(arguments)
-                elif name == "search":
+                elif name == "search_memories":
                     result = await self._search_memories(arguments)
                 else:
                     result = {"error": f"Unknown tool: {name}"}

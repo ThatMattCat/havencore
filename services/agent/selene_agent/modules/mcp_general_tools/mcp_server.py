@@ -285,36 +285,6 @@ class GeneralToolsServer:
                 logger.error(f"Error executing tool {name}: {e}")
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
-    async def download_file(self, url: str, session: aiohttp.ClientSession) -> tuple[bytes, str]:
-        """
-        Download a file from a URL and return its content and filename.
-        Times out after 15 seconds.
-        
-        Returns:
-            tuple: (file_content, suggested_filename)
-        """
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                response.raise_for_status()
-                content = await response.read()
-                
-                # Try to get filename from Content-Disposition header
-                filename = None
-                if 'Content-Disposition' in response.headers:
-                    import re
-                    match = re.search(r'filename[^;=\n]*=(([\'"]).*?\2|[^;\n]*)', 
-                                    response.headers['Content-Disposition'])
-                    if match:
-                        filename = match.group(1).strip('"\'')
-                
-                # Fallback to URL path
-                if not filename:
-                    filename = os.path.basename(url.split('?')[0]) or 'attachment'
-                    
-                return content, filename
-        except asyncio.TimeoutError:
-            raise Exception(f"Download timed out after 15 seconds for {url}")
-
     async def send_email(self,
         subject: str, 
         body: str,
@@ -350,11 +320,11 @@ class GeneralToolsServer:
             str: Success status and message
         """
         # Get config from environment
-        sender_email = os.environ.get('GMAIL_ADDRESS')
-        password = os.environ.get('GMAIL_APP_PASSWORD')
-        smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-        default_recipient = os.environ.get('DEFAULT_RECIPIENT')
+        sender_email = SENDER_EMAIL
+        password = EMAIL_APP_PASSWORD
+        smtp_server = SMTP_SERVER
+        smtp_port = SMTP_PORT
+        default_recipient = DEFAULT_RECIPIENT
 
         if not sender_email or not password:
             return '{"success": false, "error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
