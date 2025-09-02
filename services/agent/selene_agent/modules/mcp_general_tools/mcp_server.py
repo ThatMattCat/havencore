@@ -15,10 +15,13 @@ import requests
 from datetime import datetime
 import pytz
 
-import asyncio
-import os
+import mimetypes
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+from email.mime.base import MIMEBase
+from email import encoders
+from pathlib import Path
 import aiosmtplib
 
 from mcp.server import Server, NotificationOptions
@@ -27,6 +30,7 @@ import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
 from mcp.server.models import InitializationOptions
 
+from .comfyui_tools import SimpleComfyUI
 from .wiki_tools import query_wikipedia
 # import shared.scripts.logger as logger_module
 # import selene_agent.config as config
@@ -62,10 +66,25 @@ class GeneralToolsServer:
             """List available tools"""
             tools = []
 
+            tools.append(Tool(
+                name="generate_image",
+                description="Generate an image from a text prompt and return the filepath and URL link to the image.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "The text prompt to generate an image from, written as tags. eg: mountain, snow, realistic"
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            ))
+
             if EMAIL_APP_PASSWORD and SENDER_EMAIL:
                 tools.append(Tool(
                     name="send_email",
-                    description="Send an email to the homeowner. HTML supported.",
+                    description="Send an email to the homeowner.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -79,7 +98,14 @@ class GeneralToolsServer:
                             },
                             "body": {
                                 "type": "string",
-                                "description": "Email body with HTML support"
+                                "description": "Email body"
+                            },
+                            "attachments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "description": "URL of the attachment, will be automatically downloaded and attached."
+                                }
                             }
                         },
                         "required": ["subject", "body"]
@@ -159,7 +185,7 @@ class GeneralToolsServer:
             if BRAVE_API_KEY:
                 tools.append(Tool(
                     name="brave_search",
-                    description="Search the web using Brave Search API",
+                    description="Retrieve a list of relevant websites using Brave Search API",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -176,21 +202,6 @@ class GeneralToolsServer:
                         "required": ["query"]
                     }
                 ))
-            
-            tools.append(Tool(
-                name="calculate",
-                description="Perform basic mathematical calculations",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "expression": {
-                            "type": "string",
-                            "description": "Mathematical expression to evaluate"
-                        }
-                    },
-                    "required": ["expression"]
-                }
-            ))
             
             tools.append(Tool(
                 name="search_wikipedia",
@@ -224,11 +235,19 @@ class GeneralToolsServer:
                     result = await self.wolfram_alpha(arguments.get("query"))
                     return [types.TextContent(type="text", text=result)]
                 
+                elif name == "generate_image":
+                    async with SimpleComfyUI("text-to-image:8188") as comfy:
+                        result = await comfy.text_to_image(
+                            prompt=arguments.get("prompt"),
+                            workflow_name="default"
+                        )
+                        return [types.TextContent(type="text", text=json.dumps(result))]
                 elif name == "send_email":
                     result = await self.send_email(
                         # to=arguments.get("to"),
                         subject=arguments.get("subject"),
-                        body=arguments.get("body")
+                        body=arguments.get("body"),
+                        attachments=arguments.get("attachments")
                     )
                     return [types.TextContent(type="text", text=result)]
 
@@ -254,15 +273,7 @@ class GeneralToolsServer:
                         arguments.get("count", 4)
                     )
                     return [types.TextContent(type="text", text=result)]
-                
-                elif name == "calculate":
-                    result = await self.calculate(arguments.get("expression"))
-                    return [types.TextContent(type="text", text=result)]
-
-                elif name == "echo":
-                    message = arguments.get("message", "")
-                    return [types.TextContent(type="text", text=f"Echo: {message}")]
-                
+    
                 elif name == "search_wikipedia":
                     result = await query_wikipedia(arguments.get("search_string"), arguments.get("sentences", 7))
                     return [types.TextContent(type="text", text=result)]
@@ -273,77 +284,254 @@ class GeneralToolsServer:
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}")
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-            
+
     async def send_email(self,
         subject: str, 
         body: str,
         to: Optional[Union[str, List[str]]] = None, 
         cc: Optional[Union[str, List[str]]] = None,
         bcc: Optional[Union[str, List[str]]] = None,
-        html: bool = True
+        attachments: Optional[Union[str, List[str], List[tuple]]] = None,
+        html: bool = False
     ) -> str:
         """
-        Send an email using Gmail SMTP asynchronously.
+        Send an email using Gmail SMTP asynchronously with attachment support.
+        
+        Args:
+            subject: Email subject
+            body: Email body (HTML or plain text)
+            to: Recipient email(s) - can be regular emails or SMS gateways like number@msg.fi.google.com
+            cc: CC recipient(s)
+            bcc: BCC recipient(s)
+            attachments: Can be:
+                - A single file path or URL as string
+                - A list of file paths or URLs
+                - A list of tuples: (filename, file_content_bytes)
+            html: Whether body is HTML (default: False)
         
         Environment variables required:
-        - GMAIL_ADDRESS: Your Gmail address
-        - GMAIL_APP_PASSWORD: Your Gmail app-specific password
-        - SMTP_SERVER: SMTP server (default: smtp.gmail.com)
-        - SMTP_PORT: SMTP port (default: 587)
+            - GMAIL_ADDRESS: Your Gmail address
+            - GMAIL_APP_PASSWORD: Your Gmail app-specific password
+            - SMTP_SERVER: SMTP server (default: smtp.gmail.com)
+            - SMTP_PORT: SMTP port (default: 587)
+            - DEFAULT_RECIPIENT: Default recipient if none provided
         
         Returns:
             str: Success status and message
         """
         # Get config from environment
-        # sender_email = os.environ.get('GMAIL_ADDRESS')
-        # password = os.environ.get('GMAIL_APP_PASSWORD')
-        # smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-        # smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-        # default_recipient = os.environ.get('DEFAULT_RECIPIENT')
+        sender_email = SENDER_EMAIL
+        password = EMAIL_APP_PASSWORD
+        smtp_server = SMTP_SERVER
+        smtp_port = SMTP_PORT
+        default_recipient = DEFAULT_RECIPIENT
 
-        if not SENDER_EMAIL or not EMAIL_APP_PASSWORD:
-            return '{"success": False,"error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
+        if not sender_email or not password:
+            return '{"success": false, "error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
+        
         if not to:
-            to = DEFAULT_RECIPIENT
+            to = default_recipient
+            if not to:
+                return '{"success": false, "error": "No recipient specified and no DEFAULT_RECIPIENT set"}'
 
         # Normalize recipients to lists
         to_list = [to] if isinstance(to, str) else to
         cc_list = [] if cc is None else ([cc] if isinstance(cc, str) else cc)
         bcc_list = [] if bcc is None else ([bcc] if isinstance(bcc, str) else bcc)
         
+        # Track attachment errors
+        attachment_errors = []
+        
         try:
-            # Create message
-            msg = MIMEMultipart('alternative') if html else MIMEMultipart()
-            msg['From'] = SENDER_EMAIL
+            # Create message - use 'mixed' for attachments
+            msg = MIMEMultipart('mixed')
+            msg['From'] = sender_email
             msg['To'] = ', '.join(to_list)
             msg['Subject'] = subject
             
             if cc_list:
                 msg['Cc'] = ', '.join(cc_list)
             
-            # Add body
+            # Create body part
+            body_part = MIMEMultipart('alternative')
             mime_type = 'html' if html else 'plain'
-            msg.attach(MIMEText(body, mime_type))
+            body_part.attach(MIMEText(body, mime_type))
+            msg.attach(body_part)
+            
+            # Handle attachments
+            if attachments:
+                # Normalize to list
+                if isinstance(attachments, str):
+                    attachments = [attachments]
+                
+                # Set timeout for HTTP operations
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    for idx, attachment in enumerate(attachments):
+                        file_content = None
+                        filename = None
+                        
+                        try:
+                            # Handle different attachment types
+                            if isinstance(attachment, tuple):
+                                # Direct (filename, content) tuple
+                                filename, file_content = attachment
+                                if not filename or not file_content:
+                                    raise ValueError("Invalid attachment tuple: missing filename or content")
+                                    
+                            elif isinstance(attachment, str):
+                                if attachment.startswith(('http://', 'https://')):
+                                    # Download from URL with error handling
+                                    try:
+                                        file_content, filename = await self.download_file_safe(attachment, session)
+                                        if not file_content or not filename:
+                                            raise ValueError(f"Failed to download: empty content or filename")
+                                    except asyncio.TimeoutError:
+                                        raise ValueError(f"Download timeout after 30 seconds")
+                                    except aiohttp.ClientError as e:
+                                        raise ValueError(f"HTTP error: {str(e)}")
+                                    except Exception as e:
+                                        raise ValueError(f"Download failed: {str(e)}")
+                                else:
+                                    # Local file path
+                                    if not os.path.exists(attachment):
+                                        raise FileNotFoundError(f"Local file not found")
+                                    try:
+                                        with open(attachment, 'rb') as f:
+                                            file_content = f.read()
+                                        filename = os.path.basename(attachment)
+                                        if not file_content:
+                                            raise ValueError("File is empty")
+                                    except IOError as e:
+                                        raise ValueError(f"Failed to read file: {str(e)}")
+                            else:
+                                raise ValueError(f"Invalid attachment type: {type(attachment)}")
+                            
+                            if file_content and filename:
+                                # Guess the content type
+                                mime_type, _ = mimetypes.guess_type(filename)
+                                
+                                if mime_type and mime_type.startswith('image/'):
+                                    # Handle images specially
+                                    part = MIMEImage(file_content)
+                                    part.add_header('Content-Disposition', 'attachment', filename=filename)
+                                else:
+                                    # Generic binary attachment
+                                    part = MIMEBase('application', 'octet-stream')
+                                    part.set_payload(file_content)
+                                    encoders.encode_base64(part)
+                                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                                
+                                msg.attach(part)
+                                
+                        except Exception as e:
+                            # Track the error but continue processing other attachments
+                            attachment_ref = attachment if isinstance(attachment, str) else f"attachment_{idx}"
+                            attachment_errors.append(f"{attachment_ref}: {str(e)}")
+                
+                # If ALL attachments failed, return error immediately
+                if attachments and len(attachment_errors) == len(attachments):
+                    return f'{{"success": false, "error": "All attachments failed", "details": {json.dumps(attachment_errors)}}}'
             
             # All recipients for sending
             all_recipients = to_list + cc_list + bcc_list
             
-            # Send email asynchronously
-            await aiosmtplib.send(
-                msg,
-                sender=SENDER_EMAIL,
-                recipients=all_recipients,
-                hostname=SMTP_SERVER,
-                port=SMTP_PORT,
-                start_tls=True,
-                username=SENDER_EMAIL,
-                password=EMAIL_APP_PASSWORD,
-            )
-            return_message = f"Email sent successfully to {', '.join(all_recipients)}"
-            return f'{{"success": True,"message": "{return_message}"}}'
+            if not all_recipients:
+                return '{"success": false, "error": "No valid recipients specified"}'
+            
+            # Send email asynchronously with timeout
+            try:
+                await asyncio.wait_for(
+                    aiosmtplib.send(
+                        msg,
+                        sender=sender_email,
+                        recipients=all_recipients,
+                        hostname=smtp_server,
+                        port=smtp_port,
+                        start_tls=True,
+                        username=sender_email,
+                        password=password,
+                    ),
+                    timeout=60  # 60 second timeout for sending
+                )
+            except asyncio.TimeoutError:
+                return '{"success": false, "error": "Email send timeout after 60 seconds"}'
+            except aiosmtplib.SMTPException as e:
+                return f'{{"success": false, "error": "SMTP error: {str(e)}"}}'
+
+            # Build success message
+            if attachment_errors:
+                # Some attachments failed but email was sent
+                return f'{{"success": true, "message": "Email sent to {", ".join(all_recipients)}", "warnings": {json.dumps(attachment_errors)}}}'
+            else:
+                return f'{{"success": true, "message": "Email sent successfully to {", ".join(all_recipients)}"}}'
 
         except Exception as e:
-            return f'{{"success": false, "error": "{str(e)}"}}'
+            # Catch-all for any unexpected errors
+            error_msg = f"Unexpected error: {str(e)}"
+            if attachment_errors:
+                return f'{{"success": false, "error": "{error_msg}", "attachment_errors": {json.dumps(attachment_errors)}}}'
+            return f'{{"success": false, "error": "{error_msg}"}}'
+
+
+    async def download_file_safe(self, url: str, session: aiohttp.ClientSession) -> tuple:
+        """
+        Safely download a file from URL with proper error handling.
+        
+        Args:
+            url: URL to download from
+            session: aiohttp session to use
+            
+        Returns:
+            tuple: (file_content_bytes, filename)
+            
+        Raises:
+            Various exceptions with descriptive messages
+        """
+        try:
+            async with session.get(url) as response:
+                # Check status
+                response.raise_for_status()
+                
+                # Get filename from URL or headers
+                filename = None
+                if 'content-disposition' in response.headers:
+                    cd = response.headers['content-disposition']
+                    import re
+                    fname_match = re.search(r'filename="?([^"]+)"?', cd)
+                    if fname_match:
+                        filename = fname_match.group(1)
+                
+                if not filename:
+                    # Extract from URL
+                    from urllib.parse import urlparse
+                    path = urlparse(url).path
+                    filename = os.path.basename(path) if path else 'attachment'
+                    if not filename or filename == '/':
+                        filename = 'attachment'
+                
+                # Read content with size limit (e.g., 50MB)
+                max_size = 50 * 1024 * 1024  # 50MB
+                content = b''
+                bytes_read = 0
+                
+                async for chunk in response.content.iter_chunked(8192):
+                    bytes_read += len(chunk)
+                    if bytes_read > max_size:
+                        raise ValueError(f"File too large: exceeds {max_size/1024/1024:.1f}MB limit")
+                    content += chunk
+                
+                if not content:
+                    raise ValueError("Downloaded file is empty")
+                    
+                return content, filename
+                
+        except aiohttp.ClientError as e:
+            raise ValueError(f"HTTP error downloading {url}: {str(e)}")
+        except asyncio.TimeoutError:
+            raise ValueError(f"Timeout downloading {url}")
+        except Exception as e:
+            raise ValueError(f"Failed to download {url}: {str(e)}")
 
     async def get_weather_forecast(self, location: str, date: Optional[str] = None) -> str:
         """Get weather forecast from weatherapi.com"""
@@ -447,20 +635,6 @@ Astronomy:
             
         except Exception as e:
             return f"Error searching: {str(e)}"
-    
-    async def calculate(self, expression: str) -> str:
-        """Safely evaluate mathematical expressions"""
-        try:
-            allowed_names = {
-                'abs': abs, 'round': round, 'min': min, 'max': max,
-                'sum': sum, 'pow': pow, 'len': len
-            }
-            
-            result = eval(expression, {"__builtins__": {}}, allowed_names)
-            return f"Result: {result}"
-            
-        except Exception as e:
-            return f"Error evaluating expression: {str(e)}"
     
     async def run(self):
         """Run the MCP server"""

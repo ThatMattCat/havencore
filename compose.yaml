@@ -183,6 +183,53 @@ services:
     #   timeout: 10s
     #   retries: 3
 
+  text-to-image:
+    build:
+      context: ./services/text-to-image
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8188:8188"  # UI and API port
+    volumes:
+      # Model directories - mount your existing models here
+      - ./services/text-to-image/models:/app/models
+      - ./services/text-to-image/output:/app/output
+      - ./services/text-to-image/input:/app/input
+      - ./services/text-to-image/custom_nodes:/app/custom_nodes
+      # - ./services/text-to-image/cache:/root/.cache
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Optional: Set GPU memory limit (in MB)
+      # - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      
+      # Optional: Enable xformers for memory efficiency
+      # - COMMANDLINE_ARGS=--use-pytorch-cross-attention
+      
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8188/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  comfyui-manager-installer:
+    image: alpine:latest
+    container_name: comfyui-manager-installer
+    volumes:
+      - ./services/text-to-image/custom_nodes:/custom_nodes
+    entrypoint: /bin/sh
+    command: -c "apk add --no-cache git && if [ ! -d /custom_nodes/ComfyUI-Manager ]; then git clone https://github.com/ltdrdata/ComfyUI-Manager.git /custom_nodes/ComfyUI-Manager; fi"
+
   # llamacpp:
   #   image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
   #   volumes:

@@ -1513,7 +1513,7 @@ class MediaController:
         else:
             logger.info("✅ Saved media library loaded successfully.")
 
-    async def play_media(self, media_item_id: str, playback_device_id: str = None) -> str:
+    async def stream_media(self, media_item_id: str, playback_device_id: str = None) -> str:
         """Play a media item on the selected device."""
 
         media_item = self.library_manager.get_mediaitem_by_id(media_item_id)
@@ -1688,49 +1688,6 @@ class MediaController:
         except Exception as e:
             logger.error(f"Get status error: {e}")
             return {"success": False, "error": str(e)}
-
-        # try:
-        #     if device and device.lower() != "all":
-        #         entity_id = await self._resolve_device(device)
-        #         if not entity_id:
-        #             return {"success": False, "error": f"Device '{device}' not found"}
-                    
-        #         status = await self.library_manager.get_media_player_status(entity_id)
-                
-        #         if info_type == "full":
-        #             state = await self.library_manager.get_entity_state(entity_id)
-        #             if state:
-        #                 status["supported_features"] = state.get("attributes", {}).get("supported_features")
-        #                 status["source_list"] = state.get("attributes", {}).get("source_list")
-                        
-        #         return {"success": True, "device": entity_id, "status": status}
-                
-        #     else:
-        #         players = await self.library_manager.get_all_media_players()
-                
-        #         if info_type == "playing":
-        #             if players:
-        #                 players = [p for p in players if p.get("state", "") in ["playing", "paused"]]
-
-        #         elif info_type == "devices":
-        #             return {
-        #                 "success": True,
-        #                 "devices": [
-        #                     {
-        #                         "id": p.get("entity_id", ""),
-        #                         "name": p.get("name", ""),
-        #                         "state": p.get("state", ""),
-        #                         "type": "plex" if p.get("is_plex") else "generic"
-        #                     }
-        #                     for p in players
-        #                 ]
-        #             }
-                    
-        #         return {"success": True, "players": players}
-                
-        # except Exception as e:
-        #     logger.error(f"Get status error: {e}")
-        #     return {"success": False, "error": str(e)}
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """

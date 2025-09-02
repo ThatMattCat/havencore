@@ -47,54 +47,6 @@ if TEST_MODE:
     HAOS_TOKEN = "mock_token"
     HA_WS_URL = "ws://localhost:8123/api/websocket"
 
-
-# Define enums and data classes needed for media control
-# class ActionType(Enum):
-#     """Media player action types"""
-#     PLAY = "play"
-#     PAUSE = "pause"
-#     STOP = "stop"
-#     NEXT = "next"
-#     PREVIOUS = "previous"
-#     VOLUME_UP = "volume_up"
-#     VOLUME_DOWN = "volume_down"
-#     VOLUME_SET = "volume_set"
-#     MUTE = "mute"
-#     UNMUTE = "unmute"
-#     SHUFFLE = "shuffle"
-#     REPEAT = "repeat"
-
-# class MediaType(Enum):
-#     """Media type enumeration"""
-#     VIDEO = "video"
-#     AUDIO = "audio"
-#     IMAGE = "image"
-#     PLAYLIST = "playlist"
-#     UNKNOWN = "unknown"
-
-# @dataclass
-# class MediaItem:
-#     """Represents a playable media item with metadata"""
-#     media_id: str
-#     title: str
-#     media_type: MediaType
-#     server_id: str
-#     server_name: str
-#     path: List[str]
-#     compatible_devices: set = field(default_factory=set)
-    
-#     # Optional metadata
-#     artist: Optional[str] = None
-#     album: Optional[str] = None
-#     genre: Optional[str] = None
-#     year: Optional[int] = None
-#     duration: Optional[int] = None  # in seconds
-#     resolution: Optional[str] = None
-#     file_size: Optional[int] = None
-#     date_added: Optional[datetime] = None
-#     media_class: Optional[str] = None
-
-
 class HomeAssistantClient:
     """Home Assistant API client"""
     
@@ -159,130 +111,6 @@ class HomeAssistantClient:
             #final_state = self.get_entity_state(entity_id)
             return f"Service {service} executed on {entity_id}"
 
-
-# class MediaController:
-#     """Media controller for Home Assistant media players"""
-    
-#     def __init__(self):
-#         self.ha_client = HomeAssistantClient()
-        
-#     async def initialize(self):
-#         """Initialize the media controller"""
-#         pass
-        
-#     async def control_media_player(self, action: str, device: Optional[str] = None, value: Optional[Union[int, str, bool]] = None) -> Dict[str, Any]:
-#         """Control a media player with the specified action"""
-#         if TEST_MODE:
-#             return {
-#                 "success": True,
-#                 "action": action,
-#                 "device": device or "mock_device",
-#                 "value": value,
-#                 "message": f"Mock media control: {action} on {device or 'mock_device'}"
-#             }
-            
-#         # Implement basic media control using HA API
-#         try:
-#             action_type = ActionType(action.lower())
-#         except ValueError:
-#             return {"success": False, "error": f"Unknown action: {action}"}
-
-#         # Double look-up lets AI see cleaner options    
-#         service_map = {
-#             ActionType.PLAY: "media_play",
-#             ActionType.PAUSE: "media_pause", 
-#             ActionType.STOP: "media_stop",
-#             ActionType.NEXT: "media_next_track",
-#             ActionType.PREVIOUS: "media_previous_track",
-#             ActionType.VOLUME_UP: "volume_up",
-#             ActionType.VOLUME_DOWN: "volume_down",
-#             ActionType.VOLUME_SET: "volume_set",
-#             ActionType.MUTE: "volume_mute",
-#             ActionType.UNMUTE: "volume_mute"
-#         }
-        
-#         service = service_map.get(action_type)
-#         if service and device:
-#             try:
-#                 result = self.ha_client.execute_service(device, service)
-#                 return {
-#                     "success": True,
-#                     "action": action,
-#                     "device": device,
-#                     "value": value,
-#                     "message": result
-#                 }
-#             except Exception as e:
-#                 return {"success": False, "error": str(e)}
-#         else:
-#             return {"success": False, "error": f"Action {action} not implemented or device not specified"}
-    
-#     async def get_media_player_statuses(self) -> Dict[str, Any]:
-#         """Get status of all media players"""
-#         if TEST_MODE:
-#             return {
-#                 "success": True,
-#                 "players": [
-#                     {
-#                         "entity_id": "media_player.living_room",
-#                         "name": "Living Room",
-#                         "state": "playing",
-#                         "media_title": "Mock Song"
-#                     }
-#                 ]
-#             }
-        
-#         try:
-#             states_json = self.ha_client.get_domain_entity_states("media_player")
-#             states = json.loads(states_json)
-#             players = [
-#                 {
-#                     "entity_id": entity_id,
-#                     "state": state,
-#                     "name": entity_id.replace("media_player.", "").replace("_", " ").title()
-#                 }
-#                 for entity_id, state in states.items()
-#             ]
-#             return {"success": True, "players": players}
-#         except Exception as e:
-#             return {"success": False, "error": str(e)}
-    
-#     async def play_media(self, media_item_id: str, playback_device_id: Optional[str] = None) -> Dict[str, Any]:
-#         """Play specific media on a media player"""
-#         if TEST_MODE:
-#             return {
-#                 "success": True,
-#                 "message": f"Mock playing {media_item_id} on {playback_device_id or 'default_device'}"
-#             }
-            
-#         # Use the play_media service
-#         try:
-#             device = playback_device_id or "media_player.default"
-#             result = self.ha_client.execute_service(device, "play_media")
-#             return {
-#                 "success": True,
-#                 "message": f"Playing {media_item_id} on {device}: {result}"
-#             }
-#         except Exception as e:
-#             return {"success": False, "error": str(e)}
-    
-#     async def find_media_items(self, query: str, query_type: Optional[str] = None, 
-#                                media_type: Optional[str] = None, limit: int = 5) -> str:
-#         """Find media items matching a query"""
-#         if TEST_MODE:
-#             return f"""Mock search results for "{query}":
-# 1. Mock Movie 1 (media_id: mock_1)
-# 2. Mock Song 2 (media_id: mock_2)
-# 3. Mock Video 3 (media_id: mock_3)"""
-        
-#         # This would need to be implemented based on available media sources
-#         mock_results = []
-#         for i in range(min(limit, 3)):
-#             mock_results.append(f"{i+1}. Mock {query} Result {i+1} (media_id: mock_{i+1})")
-        
-#         return "\n".join(mock_results) if mock_results else f"No results found for '{query}'"
-
-
 class HomeAssistantMCPServer:
     """MCP server providing comprehensive Home Assistant tools"""
     
@@ -318,13 +146,13 @@ class HomeAssistantMCPServer:
             tools.extend([
                 Tool(
                     name="ha_get_domain_entity_states",
-                    description="Get the current states of all entities in a Home Assistant domain (e.g., light, switch, sensor)",
+                    description="Get the current states of all entities in a Home Assistant domain (e.g., media_player, light, switch, sensor)",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "domain": {
                                 "type": "string",
-                                "description": "The Home Assistant domain (e.g., 'light', 'switch', 'sensor', 'climate')"
+                                "description": "The Home Assistant domain (e.g., 'media_player', 'light', 'switch', 'sensor', 'climate')"
                             }
                         },
                         "required": ["domain"]
@@ -402,18 +230,18 @@ class HomeAssistantMCPServer:
                     }
                 ),
                 Tool(
-                    name="ha_play_media",
-                    description="Play a specific media item on a device from the media library",
+                    name="ha_stream_media",
+                    description="Stream a specific media item to a device from the media library",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "media_item_id": {
                                 "type": "string",
-                                "description": "The ID or title of the media item to play"
+                                "description": "The media ID of the media item to stream"
                             },
                             "playback_device_id": {
                                 "type": "string",
-                                "description": "The device ID to play on (optional, will auto-select if not provided)"
+                                "description": "The device ID to stream on (optional, will auto-select if not provided)"
                             }
                         },
                         "required": ["media_item_id"]
@@ -421,13 +249,13 @@ class HomeAssistantMCPServer:
                 ),
                 Tool(
                     name="ha_find_media_items",
-                    description="Search for media items in the Home Assistant media library",
+                    description="Get the media ID and other information for media items in the Home Assistant media library",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Search query (movie title, song name, etc.)"
+                                "description": "Search query (camera, movie title, song name, etc.)"
                             },
                             "query_type": {
                                 "type": "string",
@@ -466,6 +294,10 @@ class HomeAssistantMCPServer:
                 
                 # Basic Home Assistant API Operations
                 if name == "ha_get_domain_entity_states":
+                    dmn = arguments.get("domain")
+                    if 'media_player' in dmn:
+                        result = await self._get_media_player_statuses()
+                        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
                     result = await self._get_domain_entity_states(arguments.get("domain"))
                     return [types.TextContent(type="text", text=result)]
                 
@@ -489,12 +321,12 @@ class HomeAssistantMCPServer:
                     )
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
                 
-                elif name == "ha_get_media_player_statuses":
-                    result = await self._get_media_player_statuses()
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+                # elif name == "ha_get_media_player_statuses":
+                #     result = await self._get_media_player_statuses()
+                #     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
                 
-                elif name == "ha_play_media":
-                    result = await self._play_media(
+                elif name == "ha_stream_media":
+                    result = await self._stream_media(
                         arguments.get("media_item_id"),
                         arguments.get("playback_device_id")
                     )
@@ -564,13 +396,13 @@ class HomeAssistantMCPServer:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    async def _play_media(self, media_item_id: str, playback_device_id: Optional[str] = None) -> Dict[str, Any]:
+    async def _stream_media(self, media_item_id: str, playback_device_id: Optional[str] = None) -> Dict[str, Any]:
         """Play media item"""
         if not self.media_controller:
             return {"success": False, "error": "Media controller not available"}
         
         try:
-            result = await self.media_controller.play_media(media_item_id, playback_device_id)
+            result = await self.media_controller.stream_media(media_item_id, playback_device_id)
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}
