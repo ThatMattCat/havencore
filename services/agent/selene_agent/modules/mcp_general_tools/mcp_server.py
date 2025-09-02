@@ -68,13 +68,13 @@ class GeneralToolsServer:
 
             tools.append(Tool(
                 name="generate_image",
-                description="Generate an image from a text prompt and return a URL link to the image.",
+                description="Generate an image from a text prompt and return the filepath and URL link to the image.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "prompt": {
                             "type": "string",
-                            "description": "The text prompt to generate an image from."
+                            "description": "The text prompt to generate an image from, written as tags. eg: mountain, snow, realistic"
                         }
                     },
                     "required": ["prompt"]
@@ -357,14 +357,20 @@ class GeneralToolsServer:
         default_recipient = os.environ.get('DEFAULT_RECIPIENT')
 
         if not sender_email or not password:
-            return '{"success": False,"error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
+            return '{"success": false, "error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
+        
         if not to:
             to = default_recipient
+            if not to:
+                return '{"success": false, "error": "No recipient specified and no DEFAULT_RECIPIENT set"}'
 
         # Normalize recipients to lists
         to_list = [to] if isinstance(to, str) else to
         cc_list = [] if cc is None else ([cc] if isinstance(cc, str) else cc)
         bcc_list = [] if bcc is None else ([bcc] if isinstance(bcc, str) else bcc)
+        
+        # Track attachment errors
+        attachment_errors = []
         
         try:
             # Create message - use 'mixed' for attachments
@@ -388,70 +394,175 @@ class GeneralToolsServer:
                 if isinstance(attachments, str):
                     attachments = [attachments]
                 
-                async with aiohttp.ClientSession() as session:
-                    for attachment in attachments:
+                # Set timeout for HTTP operations
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    for idx, attachment in enumerate(attachments):
                         file_content = None
                         filename = None
                         
-                        # Handle different attachment types
-                        if isinstance(attachment, tuple):
-                            # Direct (filename, content) tuple
-                            filename, file_content = attachment
-                        elif isinstance(attachment, str):
-                            if attachment.startswith(('http://', 'https://')):
-                                # Download from URL
-                                try:
-                                    file_content, filename = await self.download_file(attachment, session)
-                                except Exception as e:
-                                    return(f'{{"success": False, "message": "Failed to download {attachment}: {e}"}}')
-                            else:
-                                # Local file path
-                                if os.path.exists(attachment):
-                                    with open(attachment, 'rb') as f:
-                                        file_content = f.read()
-                                    filename = os.path.basename(attachment)
+                        try:
+                            # Handle different attachment types
+                            if isinstance(attachment, tuple):
+                                # Direct (filename, content) tuple
+                                filename, file_content = attachment
+                                if not filename or not file_content:
+                                    raise ValueError("Invalid attachment tuple: missing filename or content")
+                                    
+                            elif isinstance(attachment, str):
+                                if attachment.startswith(('http://', 'https://')):
+                                    # Download from URL with error handling
+                                    try:
+                                        file_content, filename = await self.download_file_safe(attachment, session)
+                                        if not file_content or not filename:
+                                            raise ValueError(f"Failed to download: empty content or filename")
+                                    except asyncio.TimeoutError:
+                                        raise ValueError(f"Download timeout after 30 seconds")
+                                    except aiohttp.ClientError as e:
+                                        raise ValueError(f"HTTP error: {str(e)}")
+                                    except Exception as e:
+                                        raise ValueError(f"Download failed: {str(e)}")
                                 else:
-                                    print(f"File not found: {attachment}")
-                                    continue
-                        
-                        if file_content and filename:
-                            # Guess the content type
-                            mime_type, _ = mimetypes.guess_type(filename)
-                            
-                            if mime_type and mime_type.startswith('image/'):
-                                # Handle images specially
-                                part = MIMEImage(file_content)
-                                part.add_header('Content-Disposition', 'attachment', filename=filename)
+                                    # Local file path
+                                    if not os.path.exists(attachment):
+                                        raise FileNotFoundError(f"Local file not found")
+                                    try:
+                                        with open(attachment, 'rb') as f:
+                                            file_content = f.read()
+                                        filename = os.path.basename(attachment)
+                                        if not file_content:
+                                            raise ValueError("File is empty")
+                                    except IOError as e:
+                                        raise ValueError(f"Failed to read file: {str(e)}")
                             else:
-                                # Generic binary attachment
-                                part = MIMEBase('application', 'octet-stream')
-                                part.set_payload(file_content)
-                                encoders.encode_base64(part)
-                                part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                                raise ValueError(f"Invalid attachment type: {type(attachment)}")
                             
-                            msg.attach(part)
+                            if file_content and filename:
+                                # Guess the content type
+                                mime_type, _ = mimetypes.guess_type(filename)
+                                
+                                if mime_type and mime_type.startswith('image/'):
+                                    # Handle images specially
+                                    part = MIMEImage(file_content)
+                                    part.add_header('Content-Disposition', 'attachment', filename=filename)
+                                else:
+                                    # Generic binary attachment
+                                    part = MIMEBase('application', 'octet-stream')
+                                    part.set_payload(file_content)
+                                    encoders.encode_base64(part)
+                                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                                
+                                msg.attach(part)
+                                
+                        except Exception as e:
+                            # Track the error but continue processing other attachments
+                            attachment_ref = attachment if isinstance(attachment, str) else f"attachment_{idx}"
+                            attachment_errors.append(f"{attachment_ref}: {str(e)}")
+                
+                # If ALL attachments failed, return error immediately
+                if attachments and len(attachment_errors) == len(attachments):
+                    return f'{{"success": false, "error": "All attachments failed", "details": {json.dumps(attachment_errors)}}}'
             
             # All recipients for sending
             all_recipients = to_list + cc_list + bcc_list
             
-            # Send email asynchronously
-            await aiosmtplib.send(
-                msg,
-                sender=sender_email,
-                recipients=all_recipients,
-                hostname=smtp_server,
-                port=smtp_port,
-                start_tls=True,
-                username=sender_email,
-                password=password,
-            )
+            if not all_recipients:
+                return '{"success": false, "error": "No valid recipients specified"}'
+            
+            # Send email asynchronously with timeout
+            try:
+                await asyncio.wait_for(
+                    aiosmtplib.send(
+                        msg,
+                        sender=sender_email,
+                        recipients=all_recipients,
+                        hostname=smtp_server,
+                        port=smtp_port,
+                        start_tls=True,
+                        username=sender_email,
+                        password=password,
+                    ),
+                    timeout=60  # 60 second timeout for sending
+                )
+            except asyncio.TimeoutError:
+                return '{"success": false, "error": "Email send timeout after 60 seconds"}'
+            except aiosmtplib.SMTPException as e:
+                return f'{{"success": false, "error": "SMTP error: {str(e)}"}}'
 
-            rtn_message=f"Email sent successfully to {', '.join(all_recipients)}"
-            return f'{{"success": True,"message": "{rtn_message}"}}'
+            # Build success message
+            if attachment_errors:
+                # Some attachments failed but email was sent
+                return f'{{"success": true, "message": "Email sent to {", ".join(all_recipients)}", "warnings": {json.dumps(attachment_errors)}}}'
+            else:
+                return f'{{"success": true, "message": "Email sent successfully to {", ".join(all_recipients)}"}}'
 
         except Exception as e:
-            return f'{{"success": False,"error": "{str(e)}"}}'
+            # Catch-all for any unexpected errors
+            error_msg = f"Unexpected error: {str(e)}"
+            if attachment_errors:
+                return f'{{"success": false, "error": "{error_msg}", "attachment_errors": {json.dumps(attachment_errors)}}}'
+            return f'{{"success": false, "error": "{error_msg}"}}'
+
+
+    async def download_file_safe(self, url: str, session: aiohttp.ClientSession) -> tuple:
+        """
+        Safely download a file from URL with proper error handling.
         
+        Args:
+            url: URL to download from
+            session: aiohttp session to use
+            
+        Returns:
+            tuple: (file_content_bytes, filename)
+            
+        Raises:
+            Various exceptions with descriptive messages
+        """
+        try:
+            async with session.get(url) as response:
+                # Check status
+                response.raise_for_status()
+                
+                # Get filename from URL or headers
+                filename = None
+                if 'content-disposition' in response.headers:
+                    cd = response.headers['content-disposition']
+                    import re
+                    fname_match = re.search(r'filename="?([^"]+)"?', cd)
+                    if fname_match:
+                        filename = fname_match.group(1)
+                
+                if not filename:
+                    # Extract from URL
+                    from urllib.parse import urlparse
+                    path = urlparse(url).path
+                    filename = os.path.basename(path) if path else 'attachment'
+                    if not filename or filename == '/':
+                        filename = 'attachment'
+                
+                # Read content with size limit (e.g., 50MB)
+                max_size = 50 * 1024 * 1024  # 50MB
+                content = b''
+                bytes_read = 0
+                
+                async for chunk in response.content.iter_chunked(8192):
+                    bytes_read += len(chunk)
+                    if bytes_read > max_size:
+                        raise ValueError(f"File too large: exceeds {max_size/1024/1024:.1f}MB limit")
+                    content += chunk
+                
+                if not content:
+                    raise ValueError("Downloaded file is empty")
+                    
+                return content, filename
+                
+        except aiohttp.ClientError as e:
+            raise ValueError(f"HTTP error downloading {url}: {str(e)}")
+        except asyncio.TimeoutError:
+            raise ValueError(f"Timeout downloading {url}")
+        except Exception as e:
+            raise ValueError(f"Failed to download {url}: {str(e)}")
+
     async def get_weather_forecast(self, location: str, date: Optional[str] = None) -> str:
         """Get weather forecast from weatherapi.com"""
         

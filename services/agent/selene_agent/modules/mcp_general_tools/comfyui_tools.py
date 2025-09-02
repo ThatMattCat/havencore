@@ -12,6 +12,7 @@ import aiohttp
 import aiofiles
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
+import os
 
 
 @dataclass
@@ -20,7 +21,7 @@ class ComfyUIConfig:
     server: str = "text-to-image"
     port: int = 8188
     workflow_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/modules/mcp_general_tools/comfyui_workflows"))
-    output_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/modules/mcp_general_tools/outputs"))
+    output_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/outputs"))
     timeout: int = 120
     
     def __post_init__(self):
@@ -150,6 +151,7 @@ class ComfyUIClient:
             
             downloaded.append({
                 "path": str(output_path),
+                "url": f"http://{os.getenv('HOST_IP_ADDRESS')}:6006/outputs/{img['filename']}",
                 "filename": img['filename']
             })
         

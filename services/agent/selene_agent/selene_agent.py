@@ -13,6 +13,9 @@ import requests
 import gradio as gr
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
 from pydantic import BaseModel
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageToolCall
@@ -479,6 +482,14 @@ runner = None
 
 # FastAPI app for OpenAI-compatible API
 app = FastAPI(title="Selene Agent API", version="1.0.0")
+
+# Mount static files directory
+outputs_dir = "/app/selene_agent/outputs"
+if os.path.exists(outputs_dir):
+    app.mount("/outputs", StaticFiles(directory=outputs_dir), name="outputs")
+    logger.info(f"Mounted static files from {outputs_dir} at /outputs")
+else:
+    logger.warning(f"Outputs directory {outputs_dir} does not exist")
 
 # Add CORS middleware
 app.add_middleware(
