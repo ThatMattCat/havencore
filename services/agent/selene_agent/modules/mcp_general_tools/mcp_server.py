@@ -30,7 +30,7 @@ import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
 from mcp.server.models import InitializationOptions
 
-from .comfyui_tools import SimpleComfyAgent
+from .comfyui_tools import SimpleComfyUI
 from .wiki_tools import query_wikipedia
 # import shared.scripts.logger as logger_module
 # import selene_agent.config as config
@@ -55,7 +55,6 @@ class GeneralToolsServer:
     """MCP server providing general utility tools"""
     
     def __init__(self):
-        self.comfy_agent = SimpleComfyAgent()
         self.server = Server("havencore-general-tools")
         self.setup_handlers()
         
@@ -236,6 +235,13 @@ class GeneralToolsServer:
                     result = await self.wolfram_alpha(arguments.get("query"))
                     return [types.TextContent(type="text", text=result)]
                 
+                elif name == "generate_image":
+                    async with SimpleComfyUI("text-to-image:8188") as comfy:
+                        result = await comfy.text_to_image(
+                            prompt=arguments.get("prompt"),
+                            workflow_name="default"
+                        )
+                        return [types.TextContent(type="text", text=json.dumps(result))]
                 elif name == "send_email":
                     result = await self.send_email(
                         # to=arguments.get("to"),

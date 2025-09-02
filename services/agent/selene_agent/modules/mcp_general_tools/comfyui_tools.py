@@ -1,359 +1,366 @@
 """
-ComfyUI Workflow Template System
-Load saved workflows and use them as templates with dynamic prompts
+Simplified ComfyUI Client - Cleaner async implementation
 """
 
 import json
-import urllib.request
-import urllib.parse
+import asyncio
 import uuid
 import time
-import os
-from typing import Dict, Any, Optional, List
 from pathlib import Path
+from typing import Dict, Any, Optional, List, Tuple
+import aiohttp
+import aiofiles
+from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
 
-class ComfyUIWorkflowClient:
-    def __init__(self, server_address: str = "127.0.0.1:8188", workflow_dir: str = "./workflows"):
-        self.server_address = server_address
-        self.client_id = str(uuid.uuid4())
-        self.workflow_dir = Path(workflow_dir)
+
+@dataclass
+class ComfyUIConfig:
+    """Configuration for ComfyUI client"""
+    server: str = "text-to-image"
+    port: int = 8188
+    workflow_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/modules/mcp_general_tools/comfyui_workflows"))
+    output_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/modules/mcp_general_tools/outputs"))
+    timeout: int = 120
+    
+    def __post_init__(self):
         self.workflow_dir.mkdir(exist_ok=True)
-        
-    def queue_prompt(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
-        """Queue a prompt for execution"""
-        p = {"prompt": prompt, "client_id": self.client_id}
-        data = json.dumps(p).encode('utf-8')
-        req = urllib.request.Request(f"http://{self.server_address}/prompt", data=data)
-        return json.loads(urllib.request.urlopen(req).read())
+        self.output_dir.mkdir(exist_ok=True)
+        self.base_url = f"http://{self.server}:{self.port}"
+
+
+class ComfyUIClient:
+    """Simplified ComfyUI client with better async handling"""
     
-    def get_image(self, filename: str, subfolder: str, folder_type: str) -> bytes:
-        """Retrieve generated image"""
-        data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
-        url_values = urllib.parse.urlencode(data)
-        with urllib.request.urlopen(f"http://{self.server_address}/view?{url_values}") as response:
-            return response.read()
+    def __init__(self, config: Optional[ComfyUIConfig] = None):
+        self.config = config or ComfyUIConfig()
+        self.client_id = str(uuid.uuid4())
+        self._session: Optional[aiohttp.ClientSession] = None
     
-    def get_history(self, prompt_id: str) -> Dict[str, Any]:
-        """Get execution history for a prompt"""
-        with urllib.request.urlopen(f"http://{self.server_address}/history/{prompt_id}") as response:
-            return json.loads(response.read())
+    @asynccontextmanager
+    async def session(self):
+        """Context manager for aiohttp session"""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        try:
+            yield self._session
+        finally:
+            # Don't close here, let __aexit__ handle it
+            pass
     
-    def wait_for_completion(self, prompt_id: str, timeout: int = 120) -> Dict[str, Any]:
-        """Wait for a prompt to complete and return the results"""
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            history = self.get_history(prompt_id)
-            if prompt_id in history:
-                return history[prompt_id]
-            time.sleep(0.5)
-        
-        raise TimeoutError(f"Prompt {prompt_id} did not complete within {timeout} seconds")
+    async def __aenter__(self):
+        self._session = aiohttp.ClientSession()
+        return self
     
-    def save_workflow(self, workflow: Dict[str, Any], name: str):
-        """Save a workflow to disk for reuse"""
-        filepath = self.workflow_dir / f"{name}.json"
-        with open(filepath, 'w') as f:
-            json.dump(workflow, f, indent=2)
-        print(f"Workflow saved to {filepath}")
+    async def __aexit__(self, *args):
+        if self._session:
+            await self._session.close()
+            self._session = None
     
-    def load_workflow(self, name: str) -> Dict[str, Any]:
-        """Load a saved workflow from disk"""
-        filepath = self.workflow_dir / f"{name}.json"
-        with open(filepath, 'r') as f:
-            return json.load(f)
+    # Core API Methods
+    async def queue_prompt(self, workflow: Dict[str, Any]) -> str:
+        """Queue a workflow for execution, returns prompt_id"""
+        async with self.session() as session:
+            payload = {
+                "prompt": workflow,
+                "client_id": self.client_id
+            }
+            async with session.post(f"{self.config.base_url}/prompt", json=payload) as resp:
+                result = await resp.json()
+                return result.get('prompt_id')
     
-    def find_node_by_class(self, workflow: Dict[str, Any], class_type: str) -> List[str]:
-        """Find all node IDs of a specific class type in the workflow"""
-        nodes = []
-        for node_id, node_data in workflow.items():
-            if node_data.get("class_type") == class_type:
-                nodes.append(node_id)
-        return nodes
+    async def get_status(self, prompt_id: str) -> Optional[Dict[str, Any]]:
+        """Check if a prompt has completed"""
+        async with self.session() as session:
+            async with session.get(f"{self.config.base_url}/history/{prompt_id}") as resp:
+                history = await resp.json()
+                return history.get(prompt_id)
     
-    def update_workflow_prompts(self, 
-                               workflow: Dict[str, Any], 
-                               positive_prompt: str,
-                               negative_prompt: Optional[str] = None,
-                               seed: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Update a workflow with new prompts and optional parameters
-        This works with most standard ComfyUI workflows
-        """
-        # Deep copy to avoid modifying original
-        import copy
-        workflow = copy.deepcopy(workflow)
+    async def wait_for_completion(self, prompt_id: str) -> Dict[str, Any]:
+        """Wait for prompt completion with exponential backoff"""
+        start = time.time()
+        backoff = 0.5
         
-        # Find and update positive prompt nodes (CLIPTextEncode)
-        positive_nodes = []
-        negative_nodes = []
+        while time.time() - start < self.config.timeout:
+            result = await self.get_status(prompt_id)
+            if result:
+                return result
+            
+            await asyncio.sleep(min(backoff, 5))
+            backoff *= 1.5
         
-        for node_id, node_data in workflow.items():
-            if node_data.get("class_type") == "CLIPTextEncode":
-                # Check if this is likely a positive or negative prompt
-                # Usually negative prompts have "negative" in their connections or lower node numbers
-                if "inputs" in node_data and "text" in node_data["inputs"]:
-                    current_text = node_data["inputs"]["text"].lower()
-                    
-                    # Simple heuristic: if current text has negative words, it's probably negative
-                    negative_keywords = ["bad", "ugly", "worst", "low quality", "blurry", "negative"]
-                    if any(keyword in current_text for keyword in negative_keywords):
-                        negative_nodes.append(node_id)
-                    else:
-                        positive_nodes.append(node_id)
+        raise TimeoutError(f"Prompt {prompt_id} timed out after {self.config.timeout}s")
+    
+    async def download_image(self, filename: str, subfolder: str = "", folder_type: str = "output") -> bytes:
+        """Download a generated image"""
+        async with self.session() as session:
+            params = {
+                "filename": filename,
+                "subfolder": subfolder,
+                "type": folder_type
+            }
+            async with session.get(f"{self.config.base_url}/view", params=params) as resp:
+                return await resp.read()
+    
+    # Workflow Management
+    async def save_workflow(self, workflow: Dict[str, Any], name: str):
+        """Save workflow to disk"""
+        filepath = self.config.workflow_dir / f"{name}.json"
+        async with aiofiles.open(filepath, 'w') as f:
+            await f.write(json.dumps(workflow, indent=2))
+    
+    async def load_workflow(self, name: str) -> Dict[str, Any]:
+        """Load workflow from disk"""
+        filepath = self.config.workflow_dir / f"{name}.json"
+        try:
+            async with aiofiles.open(filepath, 'r') as f:
+                return json.loads(await f.read())
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Workflow file '{filepath}' not found.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load workflow '{filepath}': {e}")
+    
+    # High-level Methods
+    async def generate(self, 
+                      workflow: Dict[str, Any],
+                      wait: bool = True) -> Dict[str, Any]:
+        """Generate images from workflow"""
+        prompt_id = await self.queue_prompt(workflow)
         
-        # Update positive prompt (usually the first CLIPTextEncode or the one without negative terms)
-        if positive_nodes:
-            workflow[positive_nodes[0]]["inputs"]["text"] = positive_prompt
+        if not wait:
+            return {"prompt_id": prompt_id, "status": "queued"}
         
-        # Update negative prompt if provided
-        if negative_prompt is not None and negative_nodes:
-            workflow[negative_nodes[0]]["inputs"]["text"] = negative_prompt
+        result = await self.wait_for_completion(prompt_id)
+        
+        # Extract and download images
+        images = self._extract_image_info(result)
+        downloaded = []
+        
+        for img in images:
+            data = await self.download_image(
+                img['filename'], 
+                img.get('subfolder', ''),
+                img.get('type', 'output')
+            )
+            
+            # Save locally
+            output_path = self.config.output_dir / img['filename']
+            async with aiofiles.open(output_path, 'wb') as f:
+                await f.write(data)
+            
+            downloaded.append({
+                "path": str(output_path),
+                "filename": img['filename']
+            })
+        
+        return {
+            "prompt_id": prompt_id,
+            "images": downloaded,
+            "history": result
+        }
+    
+    @staticmethod
+    def _extract_image_info(history: Dict[str, Any]) -> List[Dict[str, str]]:
+        """Extract image information from history"""
+        images = []
+        outputs = history.get('outputs', {})
+        
+        for node_output in outputs.values():
+            if 'images' in node_output:
+                images.extend(node_output['images'])
+        
+        return images
+
+
+class WorkflowBuilder:
+    """Simplified workflow manipulation"""
+    
+    @staticmethod
+    def update_prompts(workflow: Dict[str, Any],
+                      positive: str,
+                      negative: Optional[str] = None,
+                      seed: Optional[int] = None) -> Dict[str, Any]:
+        """Update common workflow parameters"""
+        # Work on a copy
+        workflow = json.loads(json.dumps(workflow))
+        
+        # Find text encode nodes and categorize them
+        text_nodes = []
+        for node_id, node in workflow.items():
+            if node.get("class_type") == "CLIPTextEncode":
+                text_nodes.append((node_id, node))
+        
+        # Sort by node ID (usually positive comes first)
+        text_nodes.sort(key=lambda x: int(x[0]) if x[0].isdigit() else float('inf'))
+        
+        # Update prompts
+        if text_nodes and positive:
+            text_nodes[0][1]["inputs"]["text"] = positive
+        
+        if len(text_nodes) > 1 and negative:
+            text_nodes[1][1]["inputs"]["text"] = negative
         
         # Update seed if provided
         if seed is not None:
-            sampler_nodes = self.find_node_by_class(workflow, "KSampler")
-            for node_id in sampler_nodes:
-                if "seed" in workflow[node_id]["inputs"]:
-                    workflow[node_id]["inputs"]["seed"] = seed
+            for node in workflow.values():
+                if node.get("class_type") == "KSampler" and "inputs" in node:
+                    node["inputs"]["seed"] = seed
         
         return workflow
     
-    def update_workflow_advanced(self, 
-                                workflow: Dict[str, Any],
-                                updates: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Advanced workflow updates with node ID mapping
+    @staticmethod
+    def update_node(workflow: Dict[str, Any], 
+                   node_id: str, 
+                   updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Update specific node inputs"""
+        workflow = json.loads(json.dumps(workflow))
         
-        Example updates dict:
-        {
-            "6": {"text": "new positive prompt"},  # Node 6 inputs
-            "7": {"text": "new negative prompt"},  # Node 7 inputs
-            "3": {"seed": 12345, "steps": 30}      # KSampler settings
-        }
-        """
-        import copy
-        workflow = copy.deepcopy(workflow)
+        if node_id in workflow and "inputs" in workflow[node_id]:
+            workflow[node_id]["inputs"].update(updates)
         
-        for node_id, input_updates in updates.items():
+        return workflow
+    
+    @staticmethod
+    def batch_update(workflow: Dict[str, Any],
+                    updates: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Update multiple nodes at once"""
+        workflow = json.loads(json.dumps(workflow))
+        
+        for node_id, node_updates in updates.items():
             if node_id in workflow and "inputs" in workflow[node_id]:
-                workflow[node_id]["inputs"].update(input_updates)
+                workflow[node_id]["inputs"].update(node_updates)
         
         return workflow
+
+
+class SimpleComfyUI:
+    """High-level interface for common operations"""
     
-    def generate_from_workflow(self,
-                              workflow_name: str,
-                              positive_prompt: str,
-                              negative_prompt: Optional[str] = None,
-                              seed: Optional[int] = None,
-                              wait: bool = True) -> Dict[str, Any]:
-        """
-        High-level function to generate an image from a saved workflow
-        """
-        # Load the workflow
-        workflow = self.load_workflow(workflow_name)
+    def __init__(self, server: str = "text-to-image:8188"):
+        host, port = server.split(':') if ':' in server else (server, "8188")
+        self.config = ComfyUIConfig(server=host, port=int(port))
+        self.client = ComfyUIClient(self.config)
+        self.builder = WorkflowBuilder()
         
-        # Update with new prompts
-        workflow = self.update_workflow_prompts(
-            workflow, 
-            positive_prompt,
-            negative_prompt,
-            seed
+        # Default negative prompt for quality
+        self.default_negative = (
+            "lowres, bad anatomy, bad hands, text, error, missing fingers, "
+            "extra digit, cropped, worst quality, low quality, jpeg artifacts, "
+            "signature, watermark, blurry"
+        )
+    
+    async def __aenter__(self):
+        await self.client.__aenter__()
+        return self
+    
+    async def __aexit__(self, *args):
+        await self.client.__aexit__(*args)
+    
+    async def text_to_image(self,
+                          prompt: str,
+                          workflow_name: str = "default",
+                          negative: Optional[str] = None,
+                          seed: Optional[int] = None,
+                          **kwargs) -> Dict[str, Any]:
+        """Simple text-to-image generation"""
+        # Load workflow
+        workflow = await self.client.load_workflow(workflow_name)
+        
+        # Update with prompts
+        workflow = self.builder.update_prompts(
+            workflow,
+            positive=prompt,
+            negative=negative or self.default_negative,
+            seed=seed
         )
         
-        # Queue the generation
-        result = self.queue_prompt(workflow)
-        prompt_id = result['prompt_id']
+        # Apply any additional node updates
+        if kwargs:
+            workflow = self.builder.batch_update(workflow, kwargs)
         
-        if wait:
-            # Wait for completion and return results
-            return self.wait_for_completion(prompt_id)
-        else:
-            return {"prompt_id": prompt_id}
+        # Generate
+        return await self.client.generate(workflow)
     
-    def extract_images_from_history(self, history: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract image information from completion history"""
-        images = []
+    async def import_workflow(self, 
+                            source_path: str, 
+                            save_as: str,
+                            analyze: bool = True) -> Dict[str, Any]:
+        """Import a workflow from ComfyUI export"""
+        async with aiofiles.open(source_path, 'r') as f:
+            workflow = json.loads(await f.read())
         
-        if 'outputs' in history:
-            for node_id, node_output in history['outputs'].items():
-                if 'images' in node_output:
-                    for image in node_output['images']:
-                        images.append({
-                            'filename': image['filename'],
-                            'subfolder': image['subfolder'],
-                            'type': image['type'],
-                            'node_id': node_id
-                        })
+        await self.client.save_workflow(workflow, save_as)
         
-        return images
-    
-    def save_image_from_history(self, history: Dict[str, Any], output_path: str) -> List[str]:
-        """Save all images from a generation history"""
-        saved_paths = []
-        images = self.extract_images_from_history(history)
-        
-        for i, image_info in enumerate(images):
-            image_data = self.get_image(
-                image_info['filename'],
-                image_info['subfolder'],
-                image_info['type']
-            )
-            
-            # Create output filename
-            if len(images) > 1:
-                base, ext = os.path.splitext(output_path)
-                filepath = f"{base}_{i}{ext}"
-            else:
-                filepath = output_path
-            
-            with open(filepath, 'wb') as f:
-                f.write(image_data)
-            
-            saved_paths.append(filepath)
-            print(f"Saved image to {filepath}")
-        
-        return saved_paths
-
-
-# Example workflow templates with sensible defaults
-class WorkflowTemplates:
-    """Pre-configured workflow templates with default values"""
+        if analyze:
+            return self.analyze_workflow(workflow)
+        return workflow
     
     @staticmethod
-    def create_from_ui_export(api_format_json_path: str) -> Dict[str, Any]:
-        """
-        Load a workflow exported from ComfyUI in API format
+    def analyze_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze workflow structure"""
+        analysis = {
+            "nodes": {},
+            "connections": [],
+            "prompts": [],
+            "samplers": []
+        }
         
-        In ComfyUI:
-        1. Create your workflow
-        2. Click "Save (API Format)" in the menu
-        3. Save the JSON file
-        4. Use this method to load it
-        """
-        with open(api_format_json_path, 'r') as f:
-            return json.load(f)
-    
-    @staticmethod
-    def identify_prompt_nodes(workflow: Dict[str, Any]) -> Dict[str, str]:
-        """
-        Analyze a workflow to identify which nodes handle prompts
-        Returns a mapping of node purposes
-        """
-        prompt_nodes = {}
-        
-        for node_id, node_data in workflow.items():
-            class_type = node_data.get("class_type", "")
+        for node_id, node in workflow.items():
+            class_type = node.get("class_type", "Unknown")
+            analysis["nodes"][node_id] = class_type
             
             if class_type == "CLIPTextEncode":
-                # Try to identify if it's positive or negative
-                text = node_data.get("inputs", {}).get("text", "").lower()
-                
-                if any(word in text for word in ["negative", "bad", "ugly", "worst"]):
-                    prompt_nodes[node_id] = "negative_prompt"
-                else:
-                    prompt_nodes[node_id] = "positive_prompt"
-            
+                text = node.get("inputs", {}).get("text", "")
+                analysis["prompts"].append({
+                    "id": node_id,
+                    "preview": text[:50] + "..." if len(text) > 50 else text
+                })
             elif class_type == "KSampler":
-                prompt_nodes[node_id] = "sampler"
-            
-            elif class_type == "CheckpointLoaderSimple":
-                prompt_nodes[node_id] = "model_loader"
+                analysis["samplers"].append(node_id)
         
-        return prompt_nodes
+        return analysis
 
-class SimpleComfyAgent:
-    """Simplified interface for AI agents to use ComfyUI"""
-    
-    def __init__(self, server: str = "text-to-image:8188", workflow_dir: str = "./comfyui_workflows"):
-        self.client = ComfyUIWorkflowClient(server, workflow_dir)
-        self.default_negative = "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
 
-    def setup_workflow_from_ui(self, ui_export_path: str, save_as: str):
-        """
-        One-time setup: Import a workflow from ComfyUI
-        
-        Steps:
-        1. Design your workflow in ComfyUI web interface
-        2. Save it using "Save (API Format)" 
-        3. Run this method to import it
-        """
-        workflow = WorkflowTemplates.create_from_ui_export(ui_export_path)
-        self.client.save_workflow(workflow, save_as)
-        
-        # Analyze the workflow
-        nodes = WorkflowTemplates.identify_prompt_nodes(workflow)
-        print(f"Workflow '{save_as}' imported successfully!")
-        print(f"Identified nodes: {json.dumps(nodes, indent=2)}")
-        
-        return nodes
-    
-    def generate(self, 
-                prompt: str, 
-                workflow: str = "default",
-                negative: Optional[str] = None,
-                seed: int = -1) -> str:
-        """
-        Simple generation interface for agents
-        Returns path to generated image
-        """
-        if negative is None:
-            negative = self.default_negative
-        
-        if seed == -1:
-            import random
-            seed = random.randint(0, 0xffffffffffffffff)
-        
-        # Generate the image
-        history = self.client.generate_from_workflow(
-            workflow_name=workflow,
-            positive_prompt=prompt,
-            negative_prompt=negative,
-            seed=seed,
-            wait=True
+# Example usage
+async def example_simple():
+    """Simple usage example"""
+    async with SimpleComfyUI("localhost:8188") as comfy:
+        # Generate an image
+        result = await comfy.text_to_image(
+            prompt="a beautiful sunset over mountains, digital art",
+            workflow_name="default",
+            seed=42
         )
         
-        # Save and return the image path
-        output_path = f"/tmp/comfyui_{uuid.uuid4().hex[:8]}.png"
-        saved_files = self.client.save_image_from_history(history, output_path)
-        
-        return saved_files[0] if saved_files else None
+        print(f"Generated {len(result['images'])} images")
+        for img in result['images']:
+            print(f"  - {img['path']}")
 
 
-# Example script to set up and use workflows
-if __name__ == "__main__":
-    # Initialize the agent interface
-    agent = SimpleComfyAgent(server="localhost:8188")
-    
-    # ONE-TIME SETUP: Import a workflow from ComfyUI
-    # Uncomment and run once after exporting from ComfyUI:
-    # agent.setup_workflow_from_ui(
-    #     ui_export_path="./my_workflow_api.json",
-    #     save_as="my_custom_workflow"
-    # )
-    
-    # USAGE: Generate images with simple prompts
-    image_path = agent.generate(
-        prompt="a majestic mountain landscape at sunset, digital art",
-        workflow="default",  # Use your saved workflow name
-        negative=None,  # Uses default negative prompt
-        seed=-1  # Random seed
+async def example_advanced():
+    """Advanced usage example"""
+    config = ComfyUIConfig(
+        server="localhost",
+        port=8188,
+        timeout=180
     )
     
-    print(f"Generated image: {image_path}")
-    
-    # # Advanced usage: Direct workflow manipulation
-    # client = ComfyUIWorkflowClient("localhost:8188")
-    
-    # # Load and modify workflow with specific node IDs
-    # workflow = client.load_workflow("default")
-    
-    # # If you know the exact node IDs from your workflow:
-    # workflow = client.update_workflow_advanced(workflow, {
-    #     "6": {"text": "beautiful landscape, high quality, 8k"},  # Positive prompt node
-    #     "7": {"text": "ugly, blurry"},                          # Negative prompt node  
-    #     "3": {"seed": 42, "steps": 25, "cfg": 7.5}             # KSampler node
-    # })
-    
-    # result = client.queue_prompt(workflow)
-    # print(f"Queued with ID: {result['prompt_id']}")
+    async with ComfyUIClient(config) as client:
+        # Load and customize workflow
+        workflow = await client.load_workflow("my_workflow")
+        
+        # Direct node manipulation
+        workflow = WorkflowBuilder.update_node(
+            workflow,
+            node_id="3",
+            updates={"steps": 30, "cfg": 8.0}
+        )
+        
+        # Generate
+        result = await client.generate(workflow)
+        print(f"Completed: {result['prompt_id']}")
+
+
+if __name__ == "__main__":
+    # Run simple example
+    asyncio.run(example_simple())

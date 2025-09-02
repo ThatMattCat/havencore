@@ -60,6 +60,7 @@ text-to-speech/models/**
 **/certs/**
 **/models/**
 **/output/**
+**/outputs/**
 **/input/**
 **/*.bak
 **/ha_media_library.json
