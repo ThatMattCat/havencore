@@ -189,37 +189,38 @@ class SeleneAgent:
             self.tools.append(tmp.to_openai_format())
 
 
-    def _detect_model(self) -> str:
-        """Auto-detect the loaded model from the API"""
-        try:
-            models_response = self.client.models.list()
-            
-            if models_response and hasattr(models_response, 'data') and models_response.data:
-                detected_model = models_response.data[0].id
-                return detected_model
+    def _detect_model(self, max_retries: int = 30, retry_interval: int = 30) -> str:
+        """Auto-detect the loaded model from the API, retrying until the LLM backend is ready."""
+        for attempt in range(1, max_retries + 1):
+            # Try the OpenAI SDK first
+            try:
+                models_response = self.client.models.list()
+                if models_response and hasattr(models_response, 'data') and models_response.data:
+                    detected_model = models_response.data[0].id
+                    return detected_model
+            except Exception as e:
+                logger.debug(f"Standard model detection failed (attempt {attempt}/{max_retries}): {e}")
 
-        except Exception as e:
-            logger.debug(f"Standard model detection failed: {e}")
-
+            # Fallback: direct HTTP request
             try:
                 base_url = str(self.client.base_url).rstrip('/')
                 models_url = f"{base_url}/models"
-                
                 response = requests.get(models_url, timeout=5)
                 response.raise_for_status()
-                
                 data = response.json()
-
                 if 'data' in data and data['data']:
                     return data['data'][0]['id']
                 elif 'models' in data and data['models']:
                     return data['models'][0]['name']
-                    
             except Exception as e2:
-                logger.debug(f"Direct request also failed: {e2}")
-            
-            logger.warning("Could not detect specific model, using default 'llama'")
-            return "llama"
+                logger.debug(f"Direct request also failed (attempt {attempt}/{max_retries}): {e2}")
+
+            if attempt < max_retries:
+                logger.info(f"LLM backend not ready, retrying in {retry_interval}s (attempt {attempt}/{max_retries})")
+                time.sleep(retry_interval)
+
+        logger.error("Could not detect model after all retries — LLM backend may be down")
+        return "llama"
     
     async def init(self):
         """Initialize the agent with system prompt"""
