@@ -220,15 +220,15 @@ class HomeAssistantMCPServer:
                         "required": ["action"]
                     }
                 ),
-                Tool(
-                    name="ha_get_media_player_statuses",
-                    description="Get status information about Home Assistant media players",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                ),
+                # Tool(
+                #     name="ha_get_media_player_statuses",
+                #     description="Get status information about Home Assistant media players",
+                #     inputSchema={
+                #         "type": "object",
+                #         "properties": {},
+                #         "required": []
+                #     }
+                # ),
                 Tool(
                     name="ha_stream_media",
                     description="Stream a specific media item to a device from the media library",
@@ -402,7 +402,7 @@ class HomeAssistantMCPServer:
             return {"success": False, "error": "Media controller not available"}
         
         try:
-            result = await self.media_controller.stream_media(media_item_id, playback_device_id)
+            result = await self.media_controller.stream_media(media_item_id=media_item_id, playback_device_id=playback_device_id)
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}

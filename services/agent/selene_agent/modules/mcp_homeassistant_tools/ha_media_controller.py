@@ -218,6 +218,7 @@ class HAMediaLibrary:
             "entity_id": entity_id
         }
         
+        # Must send both, or neither
         if media_content_id is not None:
             message["media_content_id"] = media_content_id
             message["media_content_type"] = media_content_type if media_content_type is not None else ""
@@ -1689,107 +1690,107 @@ class MediaController:
             logger.error(f"Get status error: {e}")
             return {"success": False, "error": str(e)}
 
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """
-        Tool definitions for AI function c.
-        """
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "control_media_player",
-                    "description": "Control a media player's playback, volume, power, and sources on any device",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["play", "pause", "stop", "toggle", "next", "previous", 
-                                        "seek", "shuffle", "repeat", "volume_set", "volume_up", 
-                                        "volume_down", "mute", "unmute", "turn_on", "turn_off", 
-                                        "select_source"],
-                                "description": "Action to perform"
-                            },
-                            "device": {
-                                "type": "string",
-                                "description": "Media Player device name or entity_id (optional, auto-detects)"
-                            },
-                            "value": {
-                                "type": ["number", "string", "boolean"],
-                                "description": "Value for the action (volume level 0-100, seek position in seconds, source name, etc.)"
-                            }
-                        },
-                        "required": ["action"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_media_player_statuses",
-                    "description": "Get status of media players or currently playing content",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "play_media",
-                    "description": "Play a media item on the selected device. Can search by title if media ID is not found.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "media_item_id": {
-                                "type": "string",
-                                "description": "The ID(preferred) or title of the media item to play. If an ID is not found, will search for items matching this as a title."
-                            },
-                            "playback_device_id": {
-                                "type": "string",
-                                "description": "The ID(preferred) of the playback device to use. If not provided, will attempt to guess the best device."
-                            }
-                        },
-                        "required": ["media_item_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "find_media_items",
-                    "description": "Search for media items in the library by title, genre, or year, with optional filtering by media type",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query string (e.g., movie title, genre name, or year)"
-                            },
-                            "query_type": {
-                                "type": "string",
-                                "enum": ["title", "genre", "year"],
-                                "description": "Type of search to perform. Defaults to 'title' if not specified"
-                            },
-                            "media_type": {
-                                "type": "string",
-                                "enum": ["video", "audio", "image", "playlist"],
-                                "description": "Filter results by media type. If not specified, returns all types"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results to return",
-                                "default": 5,
-                                "minimum": 1
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                }
-            }
-        ]
+    # def get_tool_definitions(self) -> List[Dict[str, Any]]:
+    #     """
+    #     Tool definitions for AI function c.
+    #     """
+    #     return [
+    #         {
+    #             "type": "function",
+    #             "function": {
+    #                 "name": "control_media_player",
+    #                 "description": "Control a media player's playback, volume, power, and sources on any device",
+    #                 "parameters": {
+    #                     "type": "object",
+    #                     "properties": {
+    #                         "action": {
+    #                             "type": "string",
+    #                             "enum": ["play", "pause", "stop", "toggle", "next", "previous", 
+    #                                     "seek", "shuffle", "repeat", "volume_set", "volume_up", 
+    #                                     "volume_down", "mute", "unmute", "turn_on", "turn_off", 
+    #                                     "select_source"],
+    #                             "description": "Action to perform"
+    #                         },
+    #                         "device": {
+    #                             "type": "string",
+    #                             "description": "Media Player device name or entity_id (optional, auto-detects)"
+    #                         },
+    #                         "value": {
+    #                             "type": ["number", "string", "boolean"],
+    #                             "description": "Value for the action (volume level 0-100, seek position in seconds, source name, etc.)"
+    #                         }
+    #                     },
+    #                     "required": ["action"]
+    #                 }
+    #             }
+    #         },
+    #         {
+    #             "type": "function",
+    #             "function": {
+    #                 "name": "get_media_player_statuses",
+    #                 "description": "Get status of media players or currently playing content",
+    #                 "parameters": {
+    #                     "type": "object",
+    #                     "properties": {},
+    #                     "required": []
+    #                 }
+    #             }
+    #         },
+    #         {
+    #             "type": "function",
+    #             "function": {
+    #                 "name": "play_media",
+    #                 "description": "Play a media item on the selected device. Can search by title if media ID is not found.",
+    #                 "parameters": {
+    #                     "type": "object",
+    #                     "properties": {
+    #                         "media_item_id": {
+    #                             "type": "string",
+    #                             "description": "The ID(preferred) or title of the media item to play. If an ID is not found, will search for items matching this as a title."
+    #                         },
+    #                         "playback_device_id": {
+    #                             "type": "string",
+    #                             "description": "The ID(preferred) of the playback device to use. If not provided, will attempt to guess the best device."
+    #                         }
+    #                     },
+    #                     "required": ["media_item_id"]
+    #                 }
+    #             }
+    #         },
+    #         {
+    #             "type": "function",
+    #             "function": {
+    #                 "name": "find_media_items",
+    #                 "description": "Search for media items in the library by title, genre, or year, with optional filtering by media type",
+    #                 "parameters": {
+    #                     "type": "object",
+    #                     "properties": {
+    #                         "query": {
+    #                             "type": "string",
+    #                             "description": "The search query string (e.g., movie title, genre name, or year)"
+    #                         },
+    #                         "query_type": {
+    #                             "type": "string",
+    #                             "enum": ["title", "genre", "year"],
+    #                             "description": "Type of search to perform. Defaults to 'title' if not specified"
+    #                         },
+    #                         "media_type": {
+    #                             "type": "string",
+    #                             "enum": ["video", "audio", "image", "playlist"],
+    #                             "description": "Filter results by media type. If not specified, returns all types"
+    #                         },
+    #                         "limit": {
+    #                             "type": "integer",
+    #                             "description": "Maximum number of results to return",
+    #                             "default": 5,
+    #                             "minimum": 1
+    #                         }
+    #                     },
+    #                     "required": ["query"]
+    #                 }
+    #             }
+    #         }
+    #     ]
 
 
 ######## Internal Helpers #########
