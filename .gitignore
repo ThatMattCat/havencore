@@ -74,6 +74,9 @@ volumes/**/*
 services/mosquitto/data/**
 services/mosquitto/log/**
 
+CLAUDE.md
+.claude/*
+
 
 !/.gitkeep
 !**/.gitkeep
