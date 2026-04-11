@@ -22,9 +22,9 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('qdrant_mcp')
+from selene_agent.utils.logger import get_logger
+
+logger = get_logger('loki')
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))

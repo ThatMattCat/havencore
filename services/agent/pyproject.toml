@@ -8,7 +8,6 @@ version = "0.1.0"
 dependencies = [
     "openai",
     "HomeAssistant-API",
-    "gradio",
     "wolframalpha",
     "nltk",
     "fastapi",
@@ -23,7 +22,10 @@ dependencies = [
     "requests>=2.31.0",
     "paho-mqtt>=2.1.0",
     "aiosmtplib",
-    "websocket"
+    "websocket",
+    "websockets",
+    "aiofiles",
+    "aiohttp"
 ]
 
 [project.scripts]

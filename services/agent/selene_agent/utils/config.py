@@ -38,12 +38,12 @@ HA_WS_URL = f"ws://{HAOS_HOST}/api/websocket"
 
 
 # Qdrant configuration
-QDRANT_HOST = "qdrant"
-QDRANT_PORT = 6333
+QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
 # Embeddings service configuration
-EMBEDDINGS_URL = "http://embeddings:3000"
-EMBEDDING_DIM = 1024  # for bge-large or e5-large
+EMBEDDINGS_URL = os.getenv("EMBEDDINGS_URL", "http://embeddings:3000")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 
 # Collection names
 COLLECTION_NAMES = ["user_data"]
@@ -52,6 +52,9 @@ COLLECTION_NAMES = ["user_data"]
 DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_IMPORTANCE = 3
 MAX_SEARCH_RESULTS = 20
+
+CONVERSATION_TIMEOUT = int(os.getenv("CONVERSATION_TIMEOUT", "180"))
+TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
 
 CURRENT_LOCATION = os.getenv("CURRENT_LOCATION", "New York, NY")
 CURRENT_ZIPCODE = os.getenv("CURRENT_ZIPCODE", "10001")

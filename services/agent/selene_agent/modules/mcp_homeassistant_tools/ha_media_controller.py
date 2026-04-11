@@ -9,13 +9,9 @@ import re
 import logging
 import os
 
-# import sys, os
-# project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-# sys.path.insert(0, project_root)
-# import shared.scripts.logger as logger_module
-# logger = logger_module.get_logger('loki')
-logger = logging.getLogger("ha_media_controller")
-#import config
+from selene_agent.utils.logger import get_logger
+
+logger = get_logger('loki')
 
 
 

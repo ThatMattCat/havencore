@@ -21,13 +21,9 @@ from mcp.types import Tool, TextContent
 from mcp.server.models import InitializationOptions
 from . import ha_media_controller
 
-# # Add project paths
-# sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
-# sys.path.append(os.path.join(os.path.dirname(__file__), '../../../shared/'))
+from selene_agent.utils.logger import get_logger
 
-# Setup logging first
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+logger = get_logger('loki')
 
 import requests
 from homeassistant_api import Client

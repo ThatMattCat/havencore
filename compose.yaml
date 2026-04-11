@@ -36,7 +36,7 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6002/"]
+      test: ["CMD", "curl", "-f", "http://localhost:6002/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -45,8 +45,7 @@ services:
       - ./services/agent/:/app
       # - ./shared:/app/shared:ro
     ports:
-      - "6002:6002"
-      - "6006:6006" # /v1/chat/completions OpenAI-compat API
+      - "6002:6002" # FastAPI: UI, API, and OpenAI-compat endpoints
     depends_on:
       postgres:
         condition: service_healthy
