@@ -34,7 +34,9 @@ LOKI_URL = os.getenv("LOKI_URL", "")
 parsed_url = urlparse(HAOS_URL)
 HAOS_HOST = parsed_url.hostname
 
-HA_WS_URL = f"ws://{HAOS_HOST}/api/websocket"
+_ws_scheme = "wss" if parsed_url.scheme == "https" else "ws"
+_ws_netloc = parsed_url.netloc or HAOS_HOST or ""
+HA_WS_URL = f"{_ws_scheme}://{_ws_netloc}/api/websocket" if _ws_netloc else ""
 
 
 # Qdrant configuration

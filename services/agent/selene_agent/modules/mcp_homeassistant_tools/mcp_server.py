@@ -4,130 +4,141 @@ Home Assistant MCP Server for HavenCore
 Provides unified Home Assistant tools via MCP including device control, media management, and automation
 """
 
-import os
-import sys
 import json
 import asyncio
-import logging
 from typing import Any, Dict, List, Optional, Union
-from datetime import datetime
-from enum import Enum
-from dataclasses import dataclass, field
+
+import aiohttp
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
 import mcp.types as types
-from mcp.types import Tool, TextContent
+from mcp.types import Tool
 from mcp.server.models import InitializationOptions
 from . import ha_media_controller
 
 from selene_agent.utils.logger import get_logger
+from selene_agent.utils import config as agent_config
 
 logger = get_logger('loki')
 
-import requests
-from homeassistant_api import Client
-import websockets
-from enum import Enum
-from dataclasses import dataclass, field
+HAOS_URL = agent_config.HAOS_URL
+HAOS_TOKEN = agent_config.HAOS_TOKEN
+HA_WS_URL = agent_config.HA_WS_URL
 
-HAOS_URL = os.getenv("HAOS_URL", "TEST")
-HAOS_TOKEN = os.getenv("HAOS_TOKEN", "TEST")
-HA_WS_URL = HAOS_URL.replace('/api', '').replace('https://', 'wss://').replace('http://', 'ws://') + '/api/websocket'
-
-TEST_MODE = True if (HAOS_URL in [None, "TEST"] and HAOS_TOKEN in [None, "TEST"]) else False
+TEST_MODE = not HAOS_URL or not HAOS_TOKEN
 if TEST_MODE:
-    # Mock configuration
-    logger.warning("Running in TEST MODE with mock Home Assistant data")
+    logger.warning("Running in TEST MODE with mock Home Assistant data (HAOS_URL/HAOS_TOKEN not set)")
     HAOS_URL = "http://localhost:8123/api"
     HAOS_TOKEN = "mock_token"
     HA_WS_URL = "ws://localhost:8123/api/websocket"
 
-class HomeAssistantClient:
-    """Home Assistant API client"""
-    
-    def __init__(self):
-        self._api_url = HAOS_URL
-        self._token = HAOS_TOKEN
 
-    def get_domain_entity_states(self, domain: str) -> str:
-        """Get all entity states for a domain"""
+class HomeAssistantClient:
+    """Async Home Assistant REST API client using aiohttp."""
+
+    def __init__(self):
+        base = HAOS_URL.rstrip("/")
+        if base.endswith("/api"):
+            base = base[:-4]
+        self._base = base
+        self._headers = {
+            "Authorization": f"Bearer {HAOS_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        self._timeout = aiohttp.ClientTimeout(total=15)
+
+    async def _get(self, path: str) -> Any:
+        async with aiohttp.ClientSession(timeout=self._timeout, headers=self._headers) as session:
+            async with session.get(f"{self._base}{path}") as resp:
+                resp.raise_for_status()
+                return await resp.json()
+
+    async def _post(self, path: str, payload: Dict[str, Any]) -> Any:
+        async with aiohttp.ClientSession(timeout=self._timeout, headers=self._headers) as session:
+            async with session.post(f"{self._base}{path}", json=payload) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+
+    async def get_domain_entity_states(self, domain: str) -> str:
         if TEST_MODE:
             return json.dumps({
                 f"{domain}.entity1": "on",
                 f"{domain}.entity2": "off",
-                f"{domain}.entity3": "unavailable"
+                f"{domain}.entity3": "unavailable",
             })
-            
-        with Client(self._api_url, self._token) as client:
-            domain_entity_states = {}
-            entities = client.get_entities()
-            domain_entity_states = {
-                entity.state.entity_id: entity.state.state 
-                for _, entity in entities[domain].entities.items()
-            }
-            return json.dumps(domain_entity_states)
+        states = await self._get("/api/states")
+        prefix = f"{domain}."
+        filtered = {
+            s["entity_id"]: s["state"]
+            for s in states
+            if s.get("entity_id", "").startswith(prefix)
+        }
+        return json.dumps(filtered)
 
-    def get_domain_services(self, domain: str) -> str:
-        """Get all services for a domain"""
+    async def get_domain_services(self, domain: str) -> str:
         if TEST_MODE:
             return json.dumps({
                 "turn_on": "Turn on entity",
-                "turn_off": "Turn off entity", 
-                "toggle": "Toggle entity state"
+                "turn_off": "Turn off entity",
+                "toggle": "Toggle entity state",
             })
-            
-        with Client(self._api_url, self._token) as client:
-            domain_obj = client.get_domain(domain)
-            return json.dumps({
-                service.service_id: service.description 
-                for _, service in domain_obj.services.items()
-            })
-        
-    def get_entity_state(self, entity_id: str) -> str:
-        """Get state of a specific entity"""
+        services = await self._get("/api/services")
+        for entry in services:
+            if entry.get("domain") == domain:
+                return json.dumps({
+                    name: meta.get("description", "")
+                    for name, meta in entry.get("services", {}).items()
+                })
+        return json.dumps({})
+
+    async def get_entity_state(self, entity_id: str) -> str:
         if TEST_MODE:
             return "on"
-            
-        with Client(self._api_url, self._token) as client:
-            entity = client.get_entity(entity_id=entity_id)
-            return entity.state.state
+        data = await self._get(f"/api/states/{entity_id}")
+        return data.get("state", "unknown")
 
-    def execute_service(self, entity_id: str, service: str, **service_data) -> str:
-        """Execute a service on an entity"""
+    async def execute_service(
+        self,
+        entity_id: Optional[str],
+        service: str,
+        domain: Optional[str] = None,
+        **service_data,
+    ) -> str:
+        if entity_id and not domain:
+            domain = entity_id.split(".")[0]
+        if not domain:
+            raise ValueError("execute_service requires entity_id or explicit domain")
         if TEST_MODE:
-            return f"Mock execution: {service} on {entity_id}"
-            
-        with Client(self._api_url, self._token) as client:
-            domain_name = entity_id.split('.')[0]
-            domain_obj = client.get_domain(domain_name)
-
-            service_obj = domain_obj.services[service]
-            changes = service_obj.trigger(entity_id=entity_id, **service_data)
-            #final_state = self.get_entity_state(entity_id)
-            return f"Service {service} executed on {entity_id}"
+            target = entity_id or f"{domain}.*"
+            return f"Mock execution: {domain}.{service} on {target}"
+        payload = {**service_data}
+        if entity_id:
+            payload["entity_id"] = entity_id
+        await self._post(f"/api/services/{domain}/{service}", payload)
+        suffix = f" on {entity_id}" if entity_id else ""
+        return f"Service {domain}.{service} executed{suffix}"
 
 class HomeAssistantMCPServer:
     """MCP server providing comprehensive Home Assistant tools"""
     
     def __init__(self):
         self.server = Server("havencore-homeassistant")
-        self.ha_client = None
-        self.media_controller = None
+        self.ha_client: Optional[HomeAssistantClient] = None
+        self.media_controller: Optional[ha_media_controller.MediaController] = None
+        self.init_error: Optional[str] = None
         self.setup_handlers()
-        
+
     async def initialize_clients(self):
-        """Initialize Home Assistant clients"""
+        """Initialize Home Assistant clients. Records init_error on failure."""
         try:
-            # Initialize HA client (handles mock fallback internally)
             self.ha_client = HomeAssistantClient()
-            
-            # Initialize media controller
             self.media_controller = ha_media_controller.MediaController(ha_url=HA_WS_URL, ha_token=HAOS_TOKEN)
-            await self.media_controller.initialize(["media_player.living_room_tv"])
-            
+            await self.media_controller.initialize()
+            self.init_error = None
             logger.info("Home Assistant clients initialized successfully")
         except Exception as e:
+            self.init_error = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to initialize HA clients: {e}")
         
     def setup_handlers(self):
@@ -170,7 +181,12 @@ class HomeAssistantMCPServer:
                 ),
                 Tool(
                     name="ha_execute_service",
-                    description="Execute a Home Assistant service on an entity",
+                    description=(
+                        "Execute a Home Assistant service on an entity. "
+                        "Use service_data to pass service parameters such as brightness, color, "
+                        "temperature, volume, etc. Example: service='turn_on' with "
+                        "service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -180,7 +196,16 @@ class HomeAssistantMCPServer:
                             },
                             "service": {
                                 "type": "string",
-                                "description": "The service name to execute (e.g., 'turn_on', 'turn_off', 'toggle')"
+                                "description": "The service name to execute (e.g., 'turn_on', 'turn_off', 'toggle', 'set_temperature')"
+                            },
+                            "service_data": {
+                                "type": "object",
+                                "description": (
+                                    "Optional service-specific parameters as a JSON object. "
+                                    "Common examples: {'brightness_pct': 50}, {'color_name': 'red'}, "
+                                    "{'temperature': 72, 'hvac_mode': 'heat'}, {'volume_level': 0.5}."
+                                ),
+                                "additionalProperties": True
                             }
                         },
                         "required": ["entity_id", "service"]
@@ -188,19 +213,201 @@ class HomeAssistantMCPServer:
                 )
             ])
             
+            # Device & Automation Control Tools
+            tools.extend([
+                Tool(
+                    name="ha_control_light",
+                    description=(
+                        "Turn a light on/off/toggle with optional brightness, color, and color "
+                        "temperature. Only include optional fields when the user requested that "
+                        "attribute; turn_off and toggle ignore brightness/color."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Light entity ID (e.g. 'light.living_room_lamp')"
+                            },
+                            "state": {
+                                "type": "string",
+                                "enum": ["on", "off", "toggle"],
+                                "description": "Desired state"
+                            },
+                            "brightness_pct": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 100,
+                                "description": "Brightness percentage 0-100 (on only)"
+                            },
+                            "color_name": {
+                                "type": "string",
+                                "description": "CSS color name, e.g. 'red', 'warm_white' (on only)"
+                            },
+                            "color_temp_kelvin": {
+                                "type": "integer",
+                                "description": "Color temperature in Kelvin, e.g. 2700-6500 (on only)"
+                            }
+                        },
+                        "required": ["entity_id", "state"]
+                    }
+                ),
+                Tool(
+                    name="ha_control_climate",
+                    description=(
+                        "Control a climate entity (thermostat). Supply any combination of "
+                        "temperature, hvac_mode, and fan_mode — each issued as a separate "
+                        "HA service call."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Climate entity ID (e.g. 'climate.living_room')"
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "description": "Target temperature (unit matches the entity's configured unit)"
+                            },
+                            "hvac_mode": {
+                                "type": "string",
+                                "enum": ["off", "heat", "cool", "auto", "heat_cool", "dry", "fan_only"],
+                                "description": "HVAC mode"
+                            },
+                            "fan_mode": {
+                                "type": "string",
+                                "description": "Fan mode (entity-specific, e.g. 'auto', 'low', 'high')"
+                            }
+                        },
+                        "required": ["entity_id"]
+                    }
+                ),
+                Tool(
+                    name="ha_activate_scene",
+                    description="Activate a Home Assistant scene (scene.turn_on).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "scene_entity": {
+                                "type": "string",
+                                "description": "Scene entity ID (e.g. 'scene.movie_night')"
+                            }
+                        },
+                        "required": ["scene_entity"]
+                    }
+                ),
+                Tool(
+                    name="ha_trigger_script",
+                    description=(
+                        "Run a Home Assistant script (script.turn_on). Optional 'variables' "
+                        "object is passed as script variables."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "script_entity": {
+                                "type": "string",
+                                "description": "Script entity ID (e.g. 'script.bedtime')"
+                            },
+                            "variables": {
+                                "type": "object",
+                                "description": "Optional script variables",
+                                "additionalProperties": True
+                            }
+                        },
+                        "required": ["script_entity"]
+                    }
+                ),
+                Tool(
+                    name="ha_trigger_automation",
+                    description=(
+                        "Manually trigger a Home Assistant automation (automation.trigger). "
+                        "Use ha_toggle_automation to enable/disable instead."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "automation_entity": {
+                                "type": "string",
+                                "description": "Automation entity ID (e.g. 'automation.goodnight')"
+                            }
+                        },
+                        "required": ["automation_entity"]
+                    }
+                ),
+                Tool(
+                    name="ha_toggle_automation",
+                    description=(
+                        "Enable or disable a Home Assistant automation (automation.turn_on/turn_off). "
+                        "This controls whether the automation runs on its triggers; it does NOT "
+                        "manually fire the automation — use ha_trigger_automation for that."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Automation entity ID"
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "true = turn_on (enable), false = turn_off (disable)"
+                            }
+                        },
+                        "required": ["entity_id", "enabled"]
+                    }
+                ),
+                Tool(
+                    name="ha_send_notification",
+                    description=(
+                        "Send a notification through a Home Assistant notify.* service. "
+                        "Call ha_get_domain_services with domain='notify' to discover the "
+                        "available service names on this HA instance."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "service": {
+                                "type": "string",
+                                "description": "notify service name, e.g. 'mobile_app_pixel_7' (without the 'notify.' prefix)"
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "Notification body"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Optional notification title"
+                            },
+                            "target": {
+                                "type": ["string", "array"],
+                                "items": {"type": "string"},
+                                "description": "Optional target(s) — string or array, service-dependent"
+                            }
+                        },
+                        "required": ["service", "message"]
+                    }
+                )
+            ])
+
             # Media Player Control Tools
             tools.extend([
                 Tool(
                     name="ha_control_media_player",
-                    description="Control media player playback, volume, power, and sources",
+                    description=(
+                        "Control a media player: playback (play/pause/stop/next/previous/seek), "
+                        "volume, power, or input source. The 'value' field is required for "
+                        "volume_set, seek, and select_source; ignored otherwise."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["play", "pause", "stop", "toggle", "next", "previous", 
-                                        "seek", "shuffle", "repeat", "volume_set", "volume_up", 
-                                        "volume_down", "mute", "unmute", "turn_on", "turn_off", 
+                                "enum": ["play", "pause", "stop", "toggle", "next", "previous",
+                                        "seek", "shuffle", "repeat", "volume_set", "volume_up",
+                                        "volume_down", "mute", "unmute", "turn_on", "turn_off",
                                         "select_source"],
                                 "description": "Action to perform on the media player"
                             },
@@ -210,21 +417,18 @@ class HomeAssistantMCPServer:
                             },
                             "value": {
                                 "type": ["number", "string", "boolean"],
-                                "description": "Value for the action (volume level 0-100, seek position in seconds, source name, etc.)"
+                                "description": (
+                                    "Value for the action. Units by action: "
+                                    "volume_set = integer 0-100 (percent); "
+                                    "seek = integer seconds from start; "
+                                    "select_source = source name string (e.g. 'HDMI 1'); "
+                                    "shuffle/repeat = boolean or 'off'/'all'/'one'."
+                                )
                             }
                         },
                         "required": ["action"]
                     }
                 ),
-                # Tool(
-                #     name="ha_get_media_player_statuses",
-                #     description="Get status information about Home Assistant media players",
-                #     inputSchema={
-                #         "type": "object",
-                #         "properties": {},
-                #         "required": []
-                #     }
-                # ),
                 Tool(
                     name="ha_stream_media",
                     description="Stream a specific media item to a device from the media library",
@@ -245,7 +449,10 @@ class HomeAssistantMCPServer:
                 ),
                 Tool(
                     name="ha_find_media_items",
-                    description="Get the media ID and other information for media items in the Home Assistant media library",
+                    description=(
+                        "Search the Home Assistant media library. Returns media items including "
+                        "their media IDs, which can be passed to ha_stream_media as media_item_id."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -282,12 +489,12 @@ class HomeAssistantMCPServer:
         async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.BaseModel]:
             """Execute a Home Assistant tool"""
             logger.info(f"Home Assistant tool called: {name} with args: {arguments}")
-            
+
+            if self.init_error or not self.ha_client:
+                msg = self.init_error or "Home Assistant clients not initialized"
+                return [types.TextContent(type="text", text=f"Home Assistant unavailable: {msg}")]
+
             try:
-                # Ensure clients are initialized
-                if not self.ha_client:
-                    await self.initialize_clients()
-                
                 # Basic Home Assistant API Operations
                 if name == "ha_get_domain_entity_states":
                     dmn = arguments.get("domain")
@@ -304,10 +511,62 @@ class HomeAssistantMCPServer:
                 elif name == "ha_execute_service":
                     result = await self._execute_service(
                         arguments.get("entity_id"),
-                        arguments.get("service")
+                        arguments.get("service"),
+                        arguments.get("service_data") or {},
                     )
                     return [types.TextContent(type="text", text=result)]
                 
+                # Device & Automation Control Operations
+                elif name == "ha_control_light":
+                    result = await self._control_light(
+                        arguments.get("entity_id"),
+                        arguments.get("state"),
+                        arguments.get("brightness_pct"),
+                        arguments.get("color_name"),
+                        arguments.get("color_temp_kelvin"),
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_control_climate":
+                    result = await self._control_climate(
+                        arguments.get("entity_id"),
+                        arguments.get("temperature"),
+                        arguments.get("hvac_mode"),
+                        arguments.get("fan_mode"),
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_activate_scene":
+                    result = await self._activate_scene(arguments.get("scene_entity"))
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_trigger_script":
+                    result = await self._trigger_script(
+                        arguments.get("script_entity"),
+                        arguments.get("variables") or {},
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_trigger_automation":
+                    result = await self._trigger_automation(arguments.get("automation_entity"))
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_toggle_automation":
+                    result = await self._toggle_automation(
+                        arguments.get("entity_id"),
+                        bool(arguments.get("enabled")),
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_send_notification":
+                    result = await self._send_notification(
+                        arguments.get("service"),
+                        arguments.get("message"),
+                        arguments.get("title"),
+                        arguments.get("target"),
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
                 # Media Player Control Operations
                 elif name == "ha_control_media_player":
                     result = await self._control_media_player(
@@ -316,11 +575,7 @@ class HomeAssistantMCPServer:
                         arguments.get("value")
                     )
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
-                
-                # elif name == "ha_get_media_player_statuses":
-                #     result = await self._get_media_player_statuses()
-                #     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
-                
+
                 elif name == "ha_stream_media":
                     result = await self._stream_media(
                         arguments.get("media_item_id"),
@@ -348,26 +603,127 @@ class HomeAssistantMCPServer:
     async def _get_domain_entity_states(self, domain: str) -> str:
         """Get entity states for a domain"""
         try:
-            result = self.ha_client.get_domain_entity_states(domain)
+            result = await self.ha_client.get_domain_entity_states(domain)
             return f"Entity states for domain '{domain}':\n{result}"
         except Exception as e:
             return f"Error getting entity states for domain '{domain}': {str(e)}"
-    
+
     async def _get_domain_services(self, domain: str) -> str:
         """Get services for a domain"""
         try:
-            result = self.ha_client.get_domain_services(domain)
+            result = await self.ha_client.get_domain_services(domain)
             return f"Services for domain '{domain}':\n{result}"
         except Exception as e:
             return f"Error getting services for domain '{domain}': {str(e)}"
-    
-    async def _execute_service(self, entity_id: str, service: str) -> str:
-        """Execute a service on an entity"""
+
+    async def _execute_service(self, entity_id: str, service: str, service_data: Optional[Dict[str, Any]] = None) -> str:
+        """Execute a service on an entity, optionally with service_data parameters."""
+        service_data = service_data or {}
         try:
-            result = self.ha_client.execute_service(entity_id, service)
+            result = await self.ha_client.execute_service(entity_id, service, **service_data)
             return f"Service '{service}' executed on '{entity_id}': {result}"
         except Exception as e:
             return f"Error executing service '{service}' on '{entity_id}': {str(e)}"
+
+    # Device & Automation Control Methods
+    async def _control_light(
+        self,
+        entity_id: str,
+        state: str,
+        brightness_pct: Optional[int] = None,
+        color_name: Optional[str] = None,
+        color_temp_kelvin: Optional[int] = None,
+    ) -> str:
+        state = (state or "").lower()
+        if state not in ("on", "off", "toggle"):
+            return f"Error: invalid state '{state}' (expected on/off/toggle)"
+        service = {"on": "turn_on", "off": "turn_off", "toggle": "toggle"}[state]
+        extras: Dict[str, Any] = {}
+        if state == "on":
+            if brightness_pct is not None:
+                extras["brightness_pct"] = brightness_pct
+            if color_name is not None:
+                extras["color_name"] = color_name
+            if color_temp_kelvin is not None:
+                extras["color_temp_kelvin"] = color_temp_kelvin
+        try:
+            return await self.ha_client.execute_service(entity_id, service, **extras)
+        except Exception as e:
+            return f"Error controlling light '{entity_id}': {e}"
+
+    async def _control_climate(
+        self,
+        entity_id: str,
+        temperature: Optional[float] = None,
+        hvac_mode: Optional[str] = None,
+        fan_mode: Optional[str] = None,
+    ) -> str:
+        if temperature is None and hvac_mode is None and fan_mode is None:
+            return "Error: ha_control_climate requires at least one of temperature, hvac_mode, fan_mode"
+        results: List[str] = []
+        try:
+            if hvac_mode is not None:
+                results.append(
+                    await self.ha_client.execute_service(entity_id, "set_hvac_mode", hvac_mode=hvac_mode)
+                )
+            if temperature is not None:
+                results.append(
+                    await self.ha_client.execute_service(entity_id, "set_temperature", temperature=temperature)
+                )
+            if fan_mode is not None:
+                results.append(
+                    await self.ha_client.execute_service(entity_id, "set_fan_mode", fan_mode=fan_mode)
+                )
+            return "; ".join(results)
+        except Exception as e:
+            return f"Error controlling climate '{entity_id}': {e}"
+
+    async def _activate_scene(self, scene_entity: str) -> str:
+        try:
+            return await self.ha_client.execute_service(scene_entity, "turn_on")
+        except Exception as e:
+            return f"Error activating scene '{scene_entity}': {e}"
+
+    async def _trigger_script(self, script_entity: str, variables: Dict[str, Any]) -> str:
+        try:
+            return await self.ha_client.execute_service(script_entity, "turn_on", **variables)
+        except Exception as e:
+            return f"Error triggering script '{script_entity}': {e}"
+
+    async def _trigger_automation(self, automation_entity: str) -> str:
+        try:
+            return await self.ha_client.execute_service(automation_entity, "trigger")
+        except Exception as e:
+            return f"Error triggering automation '{automation_entity}': {e}"
+
+    async def _toggle_automation(self, entity_id: str, enabled: bool) -> str:
+        service = "turn_on" if enabled else "turn_off"
+        try:
+            return await self.ha_client.execute_service(entity_id, service)
+        except Exception as e:
+            verb = "enable" if enabled else "disable"
+            return f"Error trying to {verb} automation '{entity_id}': {e}"
+
+    async def _send_notification(
+        self,
+        service: str,
+        message: str,
+        title: Optional[str] = None,
+        target: Optional[Union[str, List[str]]] = None,
+    ) -> str:
+        if not service or not message:
+            return "Error: ha_send_notification requires 'service' and 'message'"
+        data: Dict[str, Any] = {"message": message}
+        if title is not None:
+            data["title"] = title
+        if target is not None:
+            data["target"] = target
+        try:
+            return await self.ha_client.execute_service(
+                entity_id=None, service=service, domain="notify", **data
+            )
+        except Exception as e:
+            return f"Error sending notification via 'notify.{service}': {e}"
 
     # Media Player Control Methods
     async def _control_media_player(self, action: str, device: Optional[str] = None, value: Optional[Union[int, str, bool]] = None) -> Dict[str, Any]:

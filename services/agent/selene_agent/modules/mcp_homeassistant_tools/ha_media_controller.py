@@ -109,6 +109,14 @@ class HAMediaLibrary:
         """
         self.ha_url = ha_url
         self.ha_token = ha_token
+        # HTTP base URL derived from the WebSocket URL, used for camera proxy / local file / dashboard cast URLs.
+        self.base_url = (
+            ha_url
+            .replace("/api/websocket", "")
+            .replace("wss://", "https://")
+            .replace("ws://", "http://")
+        )
+        self.token = ha_token
         self.websocket = None
         self.message_id = 1
         self._connected = False
@@ -132,6 +140,11 @@ class HAMediaLibrary:
             'errors': 0,
             'last_scan_duration': 0
         }
+
+        # Short-lived cache for media-player enumeration.
+        self._media_players_cache: Optional[List[Dict[str, Any]]] = None
+        self._media_players_cache_ts: float = 0.0
+        self._media_players_cache_ttl: float = 10.0
     
     async def connect(self):
         """Connect to Home Assistant WebSocket API"""
@@ -165,24 +178,33 @@ class HAMediaLibrary:
         """Check if the WebSocket connection is active."""
         return self._connected and self.websocket
 
-    async def _send_ws_command(self, command: Dict[str, Any], 
+    async def _send_ws_command(self, command: Dict[str, Any],
                               timeout: int = 30) -> Dict[str, Any]:
         """
-        Send command with timeout and reconnection logic.
+        Send command with timeout and one-shot reconnection on broken connections.
+        If the send/recv fails with a connection-related error, reconnect and retry once.
         """
-        # TODO: Replace with aiohttp and enhanced response logic checks/etc
-        # Ensure we're connected
         if not await self.is_connected():
             await self.connect()
-        
-        command["id"] = self.message_id
-        self.message_id += 1
 
-        try:
-            await self.websocket.send(json.dumps(command))
-            response = await self.websocket.recv()
+        async def _send_once(cmd: Dict[str, Any]) -> Dict[str, Any]:
+            cmd["id"] = self.message_id
+            self.message_id += 1
+            await self.websocket.send(json.dumps(cmd))
+            response = await asyncio.wait_for(self.websocket.recv(), timeout=timeout)
             return json.loads(response)
 
+        try:
+            return await _send_once(command)
+        except (websockets.ConnectionClosed, ConnectionError, asyncio.TimeoutError) as e:
+            logger.warning(f"WebSocket send failed ({type(e).__name__}: {e}); reconnecting and retrying once")
+            self._connected = False
+            try:
+                await self.connect()
+            except Exception as reconnect_err:
+                logger.error(f"Reconnect failed: {reconnect_err}")
+                raise
+            return await _send_once(command)
         except Exception as e:
             logger.error(f"Unexpected error sending command: {e}")
             raise
@@ -223,12 +245,12 @@ class HAMediaLibrary:
             message["media_content_id"] = ""
         
         return await self._send_ws_command(message)
-        # await self.websocket.send(json.dumps(message))
-        # self.message_id += 1
-        
-        # response = await self.websocket.recv()
-        # return json.loads(response)
-    
+
+    async def browse_media(self, entity_id: str, media_content_type: Optional[str] = None,
+                           media_content_id: Optional[str] = None) -> Dict[str, Any]:
+        """Public wrapper around _browse_media for callers outside this class."""
+        return await self._browse_media(entity_id, media_content_type, media_content_id)
+
     def _determine_media_type(self, item: Dict[str, Any]) -> MediaType:
         """Determine media type from item data"""
         media_content_type = item.get("media_content_type", "").lower()
@@ -849,26 +871,6 @@ class HAMediaLibrary:
             target={"entity_id": entity_id}
         )
     
-    async def queue_media(self, media_player_entity: str,
-                         media_content_id: str,
-                         media_content_type: str,
-                         enqueue: str = "add") -> Dict[str, Any]:
-        """
-        Add media to queue instead of playing immediately.
-        
-        Args:
-            media_player_entity: Entity ID
-            media_content_id: Content to queue
-            media_content_type: Type of content
-            enqueue: "add" (end of queue), "next" (play next), "play" (play now)
-        """
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=media_content_id,
-            media_content_type=media_content_type,
-            extra={"enqueue": enqueue}
-        )
-    
     async def turn_on_display(self, entity_id: str) -> Dict[str, Any]:
         """Turn on a media player/display."""
         return await self._call_service(
@@ -1062,101 +1064,12 @@ class HAMediaLibrary:
         return True
 
 
-############## TO TEST AND INTEGRATE ##################
-
-    # ========== Camera Controls ==========
-    
-    async def stream_camera(self, media_player_entity: str, 
-                           camera_entity: str) -> Dict[str, Any]:
-        """
-        Stream a camera feed to a media player.
-        
-        Args:
-            media_player_entity: Entity ID of the media player
-            camera_entity: Entity ID of the camera
-        """
-        stream_url = await self.get_camera_stream_url(camera_entity)
-        
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=stream_url,
-            media_content_type="video"
-        )
-    
-    async def get_camera_stream_url(self, camera_entity: str) -> str:
-        """Get the stream URL for a camera entity."""
-        result = await self._send_ws_command({
-            "type": "camera/stream",
-            "entity_id": camera_entity
-        })
-        
-        if result.get("success"):
-            return result.get("result", {}).get("url", "")
-        else:
-            return f"{self.base_url}/api/camera_proxy_stream/{camera_entity}?token={self.token}"
-    
-    async def create_camera_snapshot(self, camera_entity: str,
-                                    filename: str = None) -> str:
-        """Create a snapshot from a camera and get its URL."""
-        if not filename:
-            filename = f"snapshot_{camera_entity}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        
-        result = await self._call_service(
-            "camera",
-            "snapshot",
-            service_data={
-                "filename": f"/config/www/{filename}"
-            },
-            target={"entity_id": camera_entity}
-        )
-        
-        return f"{self.base_url}/local/{filename}"
-    
-    # ========== Image Casting ==========
-    
-    async def cast_image_url(self, media_player_entity: str, 
-                            image_url: str,
-                            title: str = "AI Generated Image",
-                            duration: int = None) -> Dict[str, Any]:
-        """
-        Cast an image from a URL to a media player/display.
-        
-        Args:
-            media_player_entity: Entity ID of the display/media player
-            image_url: URL of the image
-            title: Optional title for the image
-            duration: Display duration in seconds (if supported)
-        """
-        extra = {"title": title}
-        if duration:
-            extra["duration"] = duration
-            
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=image_url,
-            media_content_type="image",
-            extra=extra
-        )
-    
-    async def cast_local_image(self, media_player_entity: str,
-                              image_path: str,
-                              title: str = "Local Image") -> Dict[str, Any]:
-        """Cast a local image file through Home Assistant's media source."""
-        media_content_id = f"media-source://media_source/local/{image_path}"
-        
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=media_content_id,
-            media_content_type="image",
-            extra={"title": title}
-        )
-    
     # ========== Source/Input Management ==========
-    
+
     async def select_source(self, entity_id: str, source: str) -> Dict[str, Any]:
         """
         Select input source on a media player.
-        
+
         Args:
             entity_id: Media player entity ID
             source: Source name (must be in source_list)
@@ -1167,48 +1080,40 @@ class HAMediaLibrary:
             service_data={"source": source},
             target={"entity_id": entity_id}
         )
-    
-    async def select_sound_mode(self, entity_id: str, 
-                               sound_mode: str) -> Dict[str, Any]:
-        """Select sound mode (if supported by device)."""
-        return await self._call_service(
-            "media_player",
-            "select_sound_mode",
-            service_data={"sound_mode": sound_mode},
-            target={"entity_id": entity_id}
-        )
-    
+
     # ========== Device Discovery ==========
-    
-    async def get_all_media_players(self) -> List[Dict[str, Any]]:
-        """Get all media player entities with their current states."""
+
+    async def get_all_media_players(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Get all media player entities with their current states.
+
+        Results are cached for a few seconds to avoid a WS round-trip per device resolve.
+        Pass force_refresh=True to bypass the cache.
+        """
+        now = asyncio.get_event_loop().time()
+        if (not force_refresh
+                and self._media_players_cache is not None
+                and (now - self._media_players_cache_ts) < self._media_players_cache_ttl):
+            return self._media_players_cache
+
         command = {"type": "get_states"}
         result = await self._send_ws_command(command)
-        
+
         players = []
         if result.get("success"):
             states = result.get("result", [])
             for state in states:
-                if state["entity_id"].startswith("media_player.") and not "hideme" in state["entity_id"]:
+                if state["entity_id"].startswith("media_player.") and "hideme" not in state["entity_id"]:
                     players.append(state)
-                    # players.append({
-                    #     "entity_id": state["entity_id"],
-                    #     "name": state.get("attributes", {}).get("friendly_name"),
-                    #     "state": state["state"],
-                    #     "app_name": state.get("attributes", {}).get("app_name"),
-                    #     "source": state.get("attributes", {}).get("source"),
-                    #     "media_title": state.get("attributes", {}).get("media_title"),
-                    #     "volume_level": state.get("attributes", {}).get("volume_level"),
-                    #     "is_plex": "plex" in state["entity_id"].lower() or 
-                    #               state.get("attributes", {}).get("app_name", "").lower() == "plex"
-                    # })
+
+        self._media_players_cache = players
+        self._media_players_cache_ts = now
         return players
-    
+
     async def get_all_cameras(self) -> List[Dict[str, Any]]:
         """Get all camera entities."""
         command = {"type": "get_states"}
         result = await self._send_ws_command(command)
-        
+
         cameras = []
         if result.get("success"):
             states = result.get("result", [])
@@ -1223,233 +1128,6 @@ class HAMediaLibrary:
                         "is_streaming": state.get("attributes", {}).get("is_streaming", False)
                     })
         return cameras
-    
-    # ========== TTS and Notifications ==========
-    # TODO: implement Selene's TTS or figure out how to add that to HA
-    async def send_tts_message(self, media_player_entity: str,
-                              message: str,
-                              language: str = "en-US",
-                              announce: bool = True) -> Dict[str, Any]:
-        """Send a text-to-speech message to a media player."""
-        return await self._call_service(
-            "tts",
-            "cloud_say",  # or "google_translate_say"
-            service_data={
-                "entity_id": media_player_entity,
-                "message": message,
-                "language": language,
-                "options": {"announce": announce}
-            }
-        )
-    
-    async def send_image_notification(self, image_url: str,
-                                     message: str,
-                                     title: str = "Notification",
-                                     target: str = None) -> Dict[str, Any]:
-        """Send a notification with an image."""
-        service_data = {
-            "message": message,
-            "title": title,
-            "data": {"image": image_url}
-        }
-        
-        return await self._call_service(
-            "notify",
-            target or "notify",
-            service_data=service_data
-        )
-    
-    # ========== Helper Methods ==========
-    
-    async def _find_plex_media_player(self) -> Optional[str]:
-        """Auto-detect a Plex media player entity."""
-        players = await self.get_all_media_players()
-        for player in players:
-            if player.get("is_plex"):
-                return player["entity_id"]
-        return None
-    
-    def _matches_media_type(self, item: Dict[str, Any], 
-                           media_types: List[MediaType]) -> bool:
-        """Check if an item matches any of the specified media types."""
-        item_type = item.get("media_class", item.get("media_content_type", ""))
-        for media_type in media_types:
-            if media_type.value in item_type.lower():
-                return True
-        return False
-    
-    def _matches_search(self, item: Dict[str, Any], query: str) -> bool:
-        """Check if an item matches a search query."""
-        query_lower = query.lower()
-        title = item.get("title", "").lower()
-        
-        if query_lower in title:
-            return True
-            
-        for key in ["media_artist", "media_album_name", "media_series_title"]:
-            if key in item and query_lower in str(item[key]).lower():
-                return True
-                
-        return False
-    
-    def _matches_episode(self, item: Dict[str, Any], 
-                        season: int = None, 
-                        episode: int = None) -> bool:
-        """Check if an item matches specific season/episode."""
-        if season and item.get("media_season") != season:
-            return False
-        if episode and item.get("media_episode") != episode:
-            return False
-        return True
-    
-    # ========== Playlist Management ==========
-    
-    async def get_current_playlist(self, entity_id: str) -> List[Dict[str, Any]]:
-        """
-        Get the current playlist/queue for a media player.
-        
-        Returns:
-            List of items in the queue with metadata
-        """
-        browse_result = await self.browse_media(
-            entity_id,
-            media_content_type="playlist",
-            media_content_id="current"
-        )
-        
-        if browse_result.get("success"):
-            return browse_result.get("result", {}).get("children", [])
-        
-        state = await self.get_entity_state(entity_id)
-        if state:
-            return state.get("attributes", {}).get("media_playlist", [])
-            
-        return []
-    
-    async def create_playlist(self, name: str, 
-                            items: List[str],
-                            media_player_entity: str = None) -> Dict[str, Any]:
-        """
-        Create a new playlist.
-        
-        Args:
-            name: Playlist name
-            items: List of media content IDs
-            media_player_entity: Target media player
-        """
-        if not media_player_entity:
-            media_player_entity = await self._find_plex_media_player()
-            
-        return await self._call_service(
-            "media_player",
-            "create_playlist",
-            service_data={
-                "name": name,
-                "items": items
-            },
-            target={"entity_id": media_player_entity}
-        )
-    
-    # ========== Advanced Plex Features ==========
-    
-    async def get_plex_library_sections(self, 
-                                       media_player_entity: str = None) -> List[Dict[str, Any]]:
-        """
-        Get all Plex library sections (Movies, TV Shows, Music, etc.).
-        
-        Returns:
-            List of library sections with their IDs and types
-        """
-        if not media_player_entity:
-            media_player_entity = await self._find_plex_media_player()
-            
-        browse_result = await self.browse_media(
-            media_player_entity,
-            media_content_type="",
-            media_content_id=""
-        )
-        
-        sections = []
-        if browse_result.get("success"):
-            children = browse_result.get("result", {}).get("children", [])
-            for child in children:
-                sections.append({
-                    "title": child.get("title"),
-                    "library_id": child.get("media_content_id"),
-                    "type": child.get("media_content_type"),
-                    "can_play": child.get("can_play", False),
-                    "can_expand": child.get("can_expand", True)
-                })
-                
-        return sections
-    
-    async def get_plex_on_deck(self, media_player_entity: str = None) -> List[Dict[str, Any]]:
-        """Get Plex 'On Deck' items (continue watching)."""
-        if not media_player_entity:
-            media_player_entity = await self._find_plex_media_player()
-            
-        browse_result = await self.browse_media(
-            media_player_entity,
-            media_content_type="on_deck",
-            media_content_id="on_deck"
-        )
-        
-        if browse_result.get("success"):
-            return browse_result.get("result", {}).get("children", [])
-        return []
-    
-    async def mark_plex_watched(self, media_content_id: str,
-                               media_player_entity: str = None) -> Dict[str, Any]:
-        """Mark Plex content as watched."""
-        if not media_player_entity:
-            media_player_entity = await self._find_plex_media_player()
-            
-        return await self._call_service(
-            "plex",
-            "mark_watched",
-            service_data={"media_content_id": media_content_id},
-            target={"entity_id": media_player_entity}
-        )
-    
-    # ========== Smart TV / Display Controls ==========
-    
-    async def cast_dashboard(self, media_player_entity: str,
-                           dashboard_path: str,
-                           view_path: str = None) -> Dict[str, Any]:
-        """Cast a Home Assistant dashboard to a display."""
-        url = f"{self.base_url}/{dashboard_path}"
-        if view_path:
-            url += f"/{view_path}"
-            
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=url,
-            media_content_type="url"
-        )
-    
-    # ========== Chromecast Specific ==========
-    
-    async def cast_youtube(self, media_player_entity: str,
-                          video_id: str) -> Dict[str, Any]:
-        """Cast a YouTube video to a Chromecast device."""
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=video_id,
-            media_content_type="cast",
-            extra={"app_name": "youtube"}
-        )
-    
-    async def cast_spotify(self, media_player_entity: str,
-                          spotify_uri: str) -> Dict[str, Any]:
-        """Cast Spotify content to a device."""
-        return await self.play_media(
-            media_player_entity=media_player_entity,
-            media_content_id=spotify_uri,
-            media_content_type="music",
-            extra={"app_name": "spotify"}
-        )
-
-########### END TEST SECTION ###############
 
 
 class ActionType(Enum):
@@ -1510,7 +1188,7 @@ class MediaController:
         else:
             logger.info("✅ Saved media library loaded successfully.")
 
-    async def stream_media(self, media_item_id: str, playback_device_id: str = None) -> str:
+    async def stream_media(self, media_item_id: str, playback_device_id: str = None) -> dict:
         """Play a media item on the selected device."""
 
         media_item = self.library_manager.get_mediaitem_by_id(media_item_id)
@@ -1518,26 +1196,27 @@ class MediaController:
             search_results = self.library_manager.find_media_items(title=media_item_id, limit=1)
             logger.debug(f"Search for '{media_item_id}' found {len(search_results)} results")
             media_item = search_results[0] if search_results else None
+
+        device = None
         if playback_device_id:
-            device = self.library_manager.devices.get(playback_device_id, None)
-        if media_item and device:
+            device = self.library_manager.devices.get(playback_device_id)
+
+        if not media_item:
+            return {"status": "error", "message": f"No media item found matching '{media_item_id}'"}
+
+        if device:
             success = await self.library_manager.play_media(media_item, device_entity_id=device.entity_id)
-            if success:
-                logger.info(f"✅ Playing: {media_item.title}")
-                return {"status": "success", "message": f"Playing: {media_item.title}", "device": device.name}
-            else:
-                logger.error(f"❌ Failed to play: {media_item.title}")
-                return {"status": "error", "message": f"Failed to play: {media_item.title}", "device": device.name}
-        elif media_item:
+            target = device.name
+        else:
             logger.info(f"Guessing best device to play {media_item.title} on, since no device ID was provided")
             success = await self.library_manager.play_media(media_item)
-            if success:
-                logger.debug(f"✅ Playing: {media_item.title} on guessed device")
-                return {"status": "success", "message": f"Playing: {media_item.title} on guessed device"}
-            else:
-                logger.debug(f"❌ Failed to play: {media_item.title} on guessed device")
-                return {"status": "error", "message": f"Failed to play: {media_item.title} on guessed device"}
-        return {"status": "error", "message": "No media item found", "device": device.name}
+            target = "guessed device"
+
+        if success:
+            logger.info(f"✅ Playing: {media_item.title}")
+            return {"status": "success", "message": f"Playing: {media_item.title}", "device": target}
+        logger.error(f"❌ Failed to play: {media_item.title}")
+        return {"status": "error", "message": f"Failed to play: {media_item.title}", "device": target}
 
     async def find_media_items(self, query: str, query_type: str = None, media_type: str = None, limit: int = 5) -> str:
         media_types = ["video", "audio", "image", "playlist"]
@@ -1686,132 +1365,24 @@ class MediaController:
             logger.error(f"Get status error: {e}")
             return {"success": False, "error": str(e)}
 
-    # def get_tool_definitions(self) -> List[Dict[str, Any]]:
-    #     """
-    #     Tool definitions for AI function c.
-    #     """
-    #     return [
-    #         {
-    #             "type": "function",
-    #             "function": {
-    #                 "name": "control_media_player",
-    #                 "description": "Control a media player's playback, volume, power, and sources on any device",
-    #                 "parameters": {
-    #                     "type": "object",
-    #                     "properties": {
-    #                         "action": {
-    #                             "type": "string",
-    #                             "enum": ["play", "pause", "stop", "toggle", "next", "previous", 
-    #                                     "seek", "shuffle", "repeat", "volume_set", "volume_up", 
-    #                                     "volume_down", "mute", "unmute", "turn_on", "turn_off", 
-    #                                     "select_source"],
-    #                             "description": "Action to perform"
-    #                         },
-    #                         "device": {
-    #                             "type": "string",
-    #                             "description": "Media Player device name or entity_id (optional, auto-detects)"
-    #                         },
-    #                         "value": {
-    #                             "type": ["number", "string", "boolean"],
-    #                             "description": "Value for the action (volume level 0-100, seek position in seconds, source name, etc.)"
-    #                         }
-    #                     },
-    #                     "required": ["action"]
-    #                 }
-    #             }
-    #         },
-    #         {
-    #             "type": "function",
-    #             "function": {
-    #                 "name": "get_media_player_statuses",
-    #                 "description": "Get status of media players or currently playing content",
-    #                 "parameters": {
-    #                     "type": "object",
-    #                     "properties": {},
-    #                     "required": []
-    #                 }
-    #             }
-    #         },
-    #         {
-    #             "type": "function",
-    #             "function": {
-    #                 "name": "play_media",
-    #                 "description": "Play a media item on the selected device. Can search by title if media ID is not found.",
-    #                 "parameters": {
-    #                     "type": "object",
-    #                     "properties": {
-    #                         "media_item_id": {
-    #                             "type": "string",
-    #                             "description": "The ID(preferred) or title of the media item to play. If an ID is not found, will search for items matching this as a title."
-    #                         },
-    #                         "playback_device_id": {
-    #                             "type": "string",
-    #                             "description": "The ID(preferred) of the playback device to use. If not provided, will attempt to guess the best device."
-    #                         }
-    #                     },
-    #                     "required": ["media_item_id"]
-    #                 }
-    #             }
-    #         },
-    #         {
-    #             "type": "function",
-    #             "function": {
-    #                 "name": "find_media_items",
-    #                 "description": "Search for media items in the library by title, genre, or year, with optional filtering by media type",
-    #                 "parameters": {
-    #                     "type": "object",
-    #                     "properties": {
-    #                         "query": {
-    #                             "type": "string",
-    #                             "description": "The search query string (e.g., movie title, genre name, or year)"
-    #                         },
-    #                         "query_type": {
-    #                             "type": "string",
-    #                             "enum": ["title", "genre", "year"],
-    #                             "description": "Type of search to perform. Defaults to 'title' if not specified"
-    #                         },
-    #                         "media_type": {
-    #                             "type": "string",
-    #                             "enum": ["video", "audio", "image", "playlist"],
-    #                             "description": "Filter results by media type. If not specified, returns all types"
-    #                         },
-    #                         "limit": {
-    #                             "type": "integer",
-    #                             "description": "Maximum number of results to return",
-    #                             "default": 5,
-    #                             "minimum": 1
-    #                         }
-    #                     },
-    #                     "required": ["query"]
-    #                 }
-    #             }
-    #         }
-    #     ]
-
-
 ######## Internal Helpers #########
 
     async def _resolve_device(self, device: str) -> Optional[str]:
-        """Resolve device name to entity_id."""
+        """Resolve device name to entity_id. Matches regardless of playback state."""
         if not device:
             return None
-            
+
         if device.startswith("media_player."):
             return device
-            
+
         players = await self.library_manager.get_all_media_players()
         device_lower = device.lower()
-        for player in players:
-            if device_lower in player["entity_id"].lower() and player.get("state","") in ["playing", "paused"]:
-                return player["entity_id"]
-            if player.get("name") and device_lower in player["name"].lower() and player.get("state","") in ["playing", "paused"]:
-                return player["entity_id"]
         for player in players:
             if device_lower in player["entity_id"].lower():
                 return player["entity_id"]
             if player.get("name") and device_lower in player["name"].lower():
                 return player["entity_id"]
-                
+
         return None
 
     async def _resolve_camera(self, camera: str) -> Optional[str]:
