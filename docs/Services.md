@@ -179,22 +179,20 @@ CURRENT_TIMEZONE="America/Los_Angeles"
 
 ### Available Tools
 
-#### Home Assistant Tools
-- `home_assistant.get_domain_entity_states`
-- `home_assistant.get_domain_services`
-- `home_assistant.execute_service`
+Tools are grouped into MCP servers. Each server has its own reference doc
+covering tool inventory, configuration, internals, and troubleshooting.
 
-#### External Service Tools
-- `get_weather_forecast`: Weather information
-- `brave_search`: Web search capabilities
-- `wolfram_alpha`: Computational queries
-- `query_wikipedia`: Knowledge queries
+| MCP server | Tools | Doc |
+|------------|-------|-----|
+| Home Assistant | 21 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [MCP-HomeAssistant](MCP-HomeAssistant.md) |
+| Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [MCP-Plex](MCP-Plex.md) |
+| General Tools | Up to 7 (credential-gated) — `generate_image`, `send_email`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [MCP-General](MCP-General.md) |
+| Qdrant | 2 — `create_memory`, `search_memories` | [MCP-Qdrant](MCP-Qdrant.md) |
+| MQTT / Cameras | 1 (when MQTT is connected) — `get_camera_snapshots` | [MCP-MQTT](MCP-MQTT.md) |
 
-#### Media Control Tools
-- `control_media_player`: Media device control
-- `get_media_player_statuses`: Device status
-- `play_media`: Content playback
-- `find_media_items`: Content discovery
+See [Media Control](Media-Control.md) for the split between Plex and Home
+Assistant on TV playback, required TV setup, and the optional wake/launch
+mapping.
 
 ### Conversation Management
 - **Session Tracking**: Automatic session management

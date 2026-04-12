@@ -1,0 +1,207 @@
+# MCP Server: Home Assistant (`mcp_homeassistant_tools`)
+
+Reference doc for the Home Assistant MCP server bundled with the agent.
+This is the server-side view — tool inventory, transport/dependencies,
+configuration, and troubleshooting. End-user setup (token, URL, voice
+examples) lives in [Home-Assistant-Integration](Home-Assistant-Integration.md).
+TV playback specifics live in [Media-Control](Media-Control.md).
+
+## Overview
+
+| | |
+|---|---|
+| Module path | `services/agent/selene_agent/modules/mcp_homeassistant_tools/` |
+| Entry point | `python -m selene_agent.modules.mcp_homeassistant_tools` |
+| Transport | MCP stdio (spawned by the agent's `MCPClientManager`) |
+| Server name | `havencore-homeassistant` |
+| HA REST client | `aiohttp`-based `HomeAssistantClient` (replaces the older blocking `homeassistant_api.Client`) |
+| HA WebSocket client | `ha_media_controller.MediaController` (used for registry lookups + media transport) |
+| Tool count | 21 |
+
+The module registers a single MCP stdio server. On startup it constructs a
+REST `HomeAssistantClient` and a WS `MediaController` and initializes the
+latter (persistent WS connection with one-shot reconnect on
+`ConnectionClosed` / `TimeoutError`). If initialization fails the server
+still starts and every tool returns `"Home Assistant unavailable: <reason>"`
+so the agent can surface the error in chat instead of crashing.
+
+When `HAOS_URL` or `HAOS_TOKEN` are unset, the server runs in **TEST
+MODE**: tools return mock data so the agent can boot even without an HA
+instance. Tests/mocks are intentional — don't treat them as real results.
+
+## Tool inventory
+
+Tools are grouped here by purpose; names match the MCP registrations.
+
+### Generic REST tools
+
+| Tool | Purpose |
+|------|---------|
+| `ha_get_domain_entity_states(domain)` | `GET /api/states`, filtered by domain prefix. For `media_player` this hands off to the WS media controller so you also get playback state. |
+| `ha_get_domain_services(domain)` | `GET /api/services`, narrowed to one domain. Use this to discover which `notify.*` services exist on a given HA instance. |
+| `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch: `POST /api/services/<domain>/<service>`. Domain is inferred from the entity ID. `service_data` is forwarded as a JSON object. |
+
+### Device / automation control (Phase A)
+
+| Tool | What it calls | Notes |
+|------|---------------|-------|
+| `ha_control_light(entity_id, state, brightness_pct?, color_name?, color_temp_kelvin?)` | `light.turn_on` / `turn_off` / `toggle` | Extras are only applied when `state=on`. |
+| `ha_control_climate(entity_id, temperature?, hvac_mode?, fan_mode?)` | `climate.set_hvac_mode`, `climate.set_temperature`, `climate.set_fan_mode` | Multi-call: issues one service per non-null argument, in that order. |
+| `ha_activate_scene(scene_entity)` | `scene.turn_on` | |
+| `ha_trigger_script(script_entity, variables?)` | `script.turn_on` | `variables` are passed through as service kwargs. |
+| `ha_trigger_automation(automation_entity)` | `automation.trigger` | Manually fires. Not the same as enabling. |
+| `ha_toggle_automation(entity_id, enabled)` | `automation.turn_on` / `turn_off` | Enable/disable gating. Does not fire the automation. |
+| `ha_send_notification(service, message, title?, target?)` | `notify.<service>` | Entity-less call — goes through `HomeAssistantClient.execute_service(entity_id=None, domain='notify', ...)`. |
+
+### Registry + presence (Phase B)
+
+These use the Home Assistant WebSocket API under the hood via the media
+controller's `send_ws_command`. They depend on the WS connection being
+healthy — if initialization failed, they'll surface an `error` in the
+payload.
+
+| Tool | WS / REST call | Notes |
+|------|----------------|-------|
+| `ha_list_areas()` | WS `config/area_registry/list` | Returns `[{area_id, name, aliases}]`. |
+| `ha_get_entities_in_area(area, domains?)` | WS `config/area_registry/list` + `entity_registry/list` + `device_registry/list` | Resolves `area` by `area_id`, name, or alias (case-insensitive). Entities inherit their device's area when their own `area_id` is null. Disabled / hidden entities are filtered. Grouped by domain. |
+| `ha_get_presence()` | REST `GET /api/states` | Buckets `person.*` and `device_tracker.*` into two lists with their state + `friendly_name`. |
+
+### Timer / template / history / calendar (Phase C)
+
+| Tool | HA endpoint | Notes |
+|------|-------------|-------|
+| `ha_set_timer(entity_id, duration?)` | `timer.start` | `duration` uses HA's `HH:MM:SS` format (e.g. `0:05:00`). Omit to use the timer helper's configured default. |
+| `ha_cancel_timer(entity_id)` | `timer.cancel` | |
+| `ha_evaluate_template(template)` | `POST /api/template` (text response) | Server-side Jinja2 render. Uses `_post_text` on the client since HA returns raw text here, not JSON. |
+| `ha_get_entity_history(entity_id, hours?)` | `GET /api/history/period/<start>?filter_entity_id=<id>&minimal_response` | `hours` clamped to `[1, 168]` (one week). Dense series are downsampled to ~200 points. Returns `{entity_id, hours, total_points, points[], sampled?}`. |
+| `ha_get_calendar_events(calendar_entity, days?)` | `GET /api/calendars/<entity>?start=…&end=…` | `days` clamped to `[1, 31]`. Normalizes `start`/`end` from `{dateTime, date}` dicts to flat values. |
+
+### Media player transport
+
+| Tool | Purpose |
+|------|---------|
+| `ha_control_media_player(action, device?, value?)` | Play/pause/stop/seek/volume/mute/power/source on any HA `media_player` entity. Plex / library search **is not here** — see [Media-Control](Media-Control.md). |
+
+Value units by action:
+
+- `volume_set` → integer 0–100 (percent)
+- `seek` → integer seconds from start
+- `select_source` → source name string (e.g. `"HDMI 1"`)
+- `shuffle` / `repeat` → boolean or `'off'` / `'all'` / `'one'`
+
+## Configuration
+
+Server-relevant env vars (loaded via `selene_agent.utils.config` and
+`shared/configs/shared_config.py`):
+
+| Var | Required | Purpose |
+|-----|----------|---------|
+| `HAOS_URL` | yes | Base HA URL; may or may not include `/api`. Both `https://host:8123` and `https://host:8123/api` work. |
+| `HAOS_TOKEN` | yes | Long-lived access token (`Authorization: Bearer …`). |
+| `HAOS_USE_SSL` | no | Currently unused at runtime; SSL is derived from the URL scheme. |
+
+Derived automatically (no env var):
+
+- **REST base**: `HAOS_URL` with any trailing `/api` stripped.
+- **WebSocket URL**: `ws://<host>/api/websocket` (or `wss://` when `HAOS_URL`
+  is `https`). See `HA_WS_URL` in `selene_agent/utils/config.py`.
+
+The agent spawns the server via `MCP_SERVERS` in `.env`:
+
+```json
+{
+  "name": "homeassistant",
+  "command": "python",
+  "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"],
+  "enabled": true
+}
+```
+
+## Internals worth knowing
+
+- **REST client is aiohttp-backed.** The older blocking
+  `homeassistant_api.Client` was replaced to unblock the orchestrator event
+  loop under tool calls. All methods open a short-lived session with a 15s
+  timeout.
+- **`execute_service` takes an optional `domain`.** Notify / mobile /
+  script-less services pass `entity_id=None` and an explicit `domain`
+  (e.g. `domain="notify"`). Other tools let the client derive the domain
+  from the entity ID.
+- **`get_all_media_players` has a 10s TTL cache** on the media controller
+  to keep repeated LLM prompts from hammering HA.
+- **WS reconnect is one-shot.** On `ConnectionClosed` / `TimeoutError` the
+  controller reconnects once and retries; a second failure propagates.
+- **Area lookup is tolerant.** `ha_get_entities_in_area` accepts the raw
+  `area_id`, the display name, or any alias — all case-insensitive. If no
+  area matches, it returns `{"error": ..., "known_areas": [...]}` to help
+  the LLM recover.
+- **History is truncated, not unbounded.** Above 200 points the response is
+  stride-sampled. This matters if you're asking about a very bursty
+  sensor — use a shorter `hours` window to see more detail.
+
+## Troubleshooting
+
+### Every HA tool returns "Home Assistant unavailable: …"
+
+Initialization failed. Check `docker compose logs agent` for the
+`Failed to initialize HA clients` line. Common causes:
+
+- Bad `HAOS_URL` (wrong host / port / scheme). Must be reachable **from
+  inside the agent container**, not just the host.
+- `HAOS_TOKEN` missing or revoked.
+- Network boundary (the agent container can't reach the HA VLAN).
+
+### Tools return `{"error": "..."}` with a stack-trace-like string
+
+The HA server responded but the call failed. Check HA's logs for the
+corresponding REST / WS request. Common causes:
+
+- Entity ID typos (`light.livingroom` vs `light.living_room`).
+- Service doesn't exist on that HA instance (e.g. `notify.mobile_app_pixel`
+  when the integration is named differently). Use `ha_get_domain_services`
+  with `domain="notify"` to enumerate.
+- Calendar entity doesn't exist or isn't exposed via the `/api/calendars/…`
+  endpoint.
+
+### `ha_list_areas` / `ha_get_entities_in_area` return `{"error": "WS registry … call failed"}`
+
+The WebSocket connection is broken. `MediaController` has a one-shot
+reconnect, but if HA is down or the token is wrong, the second attempt
+also fails. Restart the agent after fixing HA:
+
+```bash
+docker compose restart agent
+```
+
+### `ha_evaluate_template` returns the literal template string
+
+You're in TEST MODE — `HAOS_URL` / `HAOS_TOKEN` are unset, so the server
+short-circuits and echoes the input. Set the env vars and restart.
+
+### Timer does nothing
+
+`timer.*` helpers must be defined in HA's configuration (they are not a
+dynamic domain). Discover existing timers via:
+
+```text
+ha_get_domain_entity_states(domain="timer")
+```
+
+If the list is empty, add a `timer:` block to HA's `configuration.yaml`.
+
+## Related files
+
+- `services/agent/selene_agent/modules/mcp_homeassistant_tools/mcp_server.py`
+  — tool registrations + dispatch, aiohttp REST client.
+- `services/agent/selene_agent/modules/mcp_homeassistant_tools/ha_media_controller.py`
+  — trimmed transport-only media controller (WS + generic REST passthrough
+  via the shared client).
+- `services/agent/selene_agent/utils/config.py` — agent-side config passthrough,
+  including `HA_WS_URL` derivation.
+- `shared/configs/shared_config.py` — canonical env-var surface.
+
+## See also
+
+- [Home-Assistant-Integration](Home-Assistant-Integration.md) — end-user setup, HA token generation, voice examples.
+- [Media-Control](Media-Control.md) — Plex + HA split for TV playback.
+- [Tool-Development](Tool-Development.md) — adding or modifying MCP tools.

@@ -74,234 +74,165 @@ curl http://localhost:6002/health
 
 ## Available Tools and Commands
 
-### Entity State Tools
+HavenCore's HA MCP server (`mcp_homeassistant_tools`) currently exposes
+**21 tools** covering generic REST/service calls, opinionated helpers for
+common domains, WebSocket-powered registry + presence lookups, timer /
+template / history / calendar access, and media-player transport control.
+For a structured server-side reference (internals, config, troubleshooting),
+see [MCP-HomeAssistant](MCP-HomeAssistant.md). The section below focuses on
+what the assistant can do for a user.
 
-#### Get Domain Entity States
-Retrieve all entities for a specific domain (lights, switches, sensors, etc.):
+### Generic REST tools (always available)
 
-**Voice Commands**:
-- "Show me all the lights"
-- "What sensors do we have?"
-- "List all switches"
+| Tool | Purpose |
+|------|---------|
+| `ha_get_domain_entity_states(domain)` | Enumerate all entities in a domain and their current state. |
+| `ha_get_domain_services(domain)` | Discover what services an HA integration exposes. Most common: `domain="notify"` to find `notify.mobile_app_*`. |
+| `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch — call any HA service on any entity. `service_data` is a JSON object (brightness, temperature, volume_level, etc.). |
 
-**API Usage**:
-```bash
-curl -X POST http://localhost/v1/chat/completions \
-  -H "Authorization: Bearer your_api_key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-3.5-turbo",
-    "messages": [
-      {"role": "user", "content": "Show me all the lights in the house"}
-    ]
-  }'
-```
+**Voice examples**:
 
-**Supported Domains**:
-- `light` - Light entities
-- `switch` - Switch entities  
-- `sensor` - Sensor entities
-- `binary_sensor` - Binary sensors
-- `climate` - Climate control
-- `cover` - Covers/blinds
-- `fan` - Fan entities
-- `lock` - Lock entities
-- `media_player` - Media devices
-- `vacuum` - Vacuum cleaners
-- `camera` - Camera entities
+- "Show me all the lights" → `ha_get_domain_entity_states` with `domain="light"`
+- "What notification services are set up?" → `ha_get_domain_services` with `domain="notify"`
+- "Start the vacuum cleaner" → `ha_execute_service` on a `vacuum.*` entity
 
-### Service Execution Tools
+**Common domains**: `light`, `switch`, `sensor`, `binary_sensor`, `climate`,
+`cover`, `fan`, `lock`, `media_player`, `vacuum`, `camera`, `person`,
+`device_tracker`, `timer`, `calendar`, `scene`, `script`, `automation`.
 
-#### Execute Home Assistant Services
-Control devices and trigger automations:
+### Opinionated device / automation tools
 
-**Voice Commands**:
-- "Turn on the living room lights"
-- "Set the thermostat to 72 degrees"
-- "Close the bedroom blinds"
-- "Start the vacuum cleaner"
+These are higher-level wrappers around `ha_execute_service`. They exist so
+the LLM passes structured arguments instead of free-form service data, and
+so common patterns (multi-step climate control, light color+brightness)
+are atomic tool calls.
 
-**Service Examples**:
+| Tool | Purpose |
+|------|---------|
+| `ha_control_light(entity_id, state, brightness_pct?, color_name?, color_temp_kelvin?)` | Single call for on/off/toggle + brightness + color. Extras are ignored when turning off. |
+| `ha_control_climate(entity_id, temperature?, hvac_mode?, fan_mode?)` | Thermostat control. Issues one HA service per non-null argument (`set_hvac_mode`, `set_temperature`, `set_fan_mode`) in that order. |
+| `ha_activate_scene(scene_entity)` | `scene.turn_on` on the named scene. |
+| `ha_trigger_script(script_entity, variables?)` | Runs a script, optionally passing `variables` as script-level variables. |
+| `ha_trigger_automation(automation_entity)` | Manually fires an automation (same as pressing "Run" in the HA UI). |
+| `ha_toggle_automation(entity_id, enabled)` | Enables or disables an automation — controls whether HA runs it on its triggers. |
+| `ha_send_notification(service, message, title?, target?)` | Sends through a `notify.*` service (pass the service name without the `notify.` prefix). |
 
-##### Light Control
-```json
-{
-  "domain": "light",
-  "service": "turn_on",
-  "service_data": {
-    "entity_id": "light.living_room",
-    "brightness": 255,
-    "color_name": "blue"
-  }
-}
-```
+**Voice examples**:
 
-##### Climate Control
-```json
-{
-  "domain": "climate", 
-  "service": "set_temperature",
-  "service_data": {
-    "entity_id": "climate.main_thermostat",
-    "temperature": 72
-  }
-}
-```
+- "Dim the living room to 30% warm white" → `ha_control_light` with
+  `state=on`, `brightness_pct=30`, `color_temp_kelvin=2700`.
+- "Set the bedroom to 68 and turn on heat" → `ha_control_climate` with
+  `temperature=68`, `hvac_mode=heat`.
+- "Activate movie night" → `ha_activate_scene(scene.movie_night)`.
+- "Disable the porch light automation" → `ha_toggle_automation` with
+  `enabled=false`.
+- "Text Matt that dinner's ready" → `ha_send_notification` with the
+  right `notify.mobile_app_*` service.
 
-##### Switch Control
-```json
-{
-  "domain": "switch",
-  "service": "toggle",
-  "service_data": {
-    "entity_id": "switch.coffee_maker"
-  }
-}
-```
+### Registry + presence tools (WebSocket-backed)
 
-### Media Player Control
+These use HA's WebSocket registry APIs to answer "what's in the kitchen?"
+style questions and to summarize who's home.
 
-#### Basic Media Controls
-Control media playback devices:
+| Tool | Purpose |
+|------|---------|
+| `ha_list_areas()` | Lists all HA areas (rooms / zones) with `area_id`, name, and aliases. |
+| `ha_get_entities_in_area(area, domains?)` | Entities assigned to an area, grouped by domain. Accepts area_id, name, or alias (case-insensitive). Entities inherit their **device's** area when they don't have a direct area of their own — this matters because most entities inherit rather than set area directly. |
+| `ha_get_presence()` | Summary of all `person.*` and `device_tracker.*` entities with their current state (`home` / `not_home` / zone name). |
 
-**Voice Commands**:
-- "Play music in the living room"
+**Voice examples**:
+
+- "What lights are in the kitchen?" → `ha_get_entities_in_area` with
+  `area="kitchen"`, `domains=["light"]`.
+- "Is anyone home?" → `ha_get_presence`.
+
+### Timer / template / history / calendar tools
+
+| Tool | Purpose |
+|------|---------|
+| `ha_set_timer(entity_id, duration?)` | Starts a `timer.*` helper. `duration` is `HH:MM:SS` (e.g. `"0:05:00"` for five minutes). Omit to use the timer's configured default. |
+| `ha_cancel_timer(entity_id)` | Cancels a running timer. |
+| `ha_evaluate_template(template)` | Renders a Jinja2 template server-side via `POST /api/template`. Use for compound checks (`"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}"`) or anything with `now()` / `states()`. |
+| `ha_get_entity_history(entity_id, hours?)` | Recent state history (last N hours, capped at 168 = one week). Dense series are sampled down to ~200 points. |
+| `ha_get_calendar_events(calendar_entity, days?)` | Upcoming events from a `calendar.*` entity (next N days, capped at 31). |
+
+**Voice examples**:
+
+- "Set a 10-minute kitchen timer" → `ha_set_timer(timer.kitchen, "0:10:00")`.
+- "Has the garage door been open today?" → `ha_get_entity_history` with
+  `entity_id="cover.garage"`, `hours=24`.
+- "What's on the family calendar this week?" → `ha_get_calendar_events`
+  with `calendar_entity="calendar.family"`, `days=7`.
+- "Is the back door open and Matt home?" → `ha_evaluate_template` with
+  a Jinja expression.
+
+**Prerequisites**: `ha_set_timer` requires timer helpers defined in HA
+(they're not dynamic — add them in `configuration.yaml` or the UI).
+`ha_get_calendar_events` requires at least one calendar integration.
+
+### Media player control
+
+Home Assistant handles **transport control** (pause / resume / volume /
+power / source) on any `media_player` entity via `ha_control_media_player`.
+
+**Voice examples**:
+
 - "Pause the TV"
 - "Set volume to 50%"
-- "Next song"
+- "Mute the living room speaker"
+- "Turn off the bedroom TV"
 
-**Available Controls**:
-- `play` - Start playback
-- `pause` - Pause playback
-- `stop` - Stop playback
-- `previous_track` - Previous track
-- `next_track` - Next track
-- `volume_up` - Increase volume
-- `volume_down` - Decrease volume
-- `volume_set` - Set specific volume
-- `mute` - Toggle mute
+**Supported actions**: `play`, `pause`, `stop`, `toggle`, `next`,
+`previous`, `seek`, `shuffle`, `repeat`, `volume_set`, `volume_up`,
+`volume_down`, `mute`, `unmute`, `turn_on`, `turn_off`, `select_source`.
 
-#### Media Player Status
-Get current status of media devices:
+Value units by action:
 
-**Voice Commands**:
-- "What's playing in the living room?"
-- "Show me all media players"
-- "Is the TV on?"
+- `volume_set` → integer 0–100 (percent)
+- `seek` → integer seconds from start
+- `select_source` → source name string (e.g. `"HDMI 1"`)
+- `shuffle` / `repeat` → boolean or `'off'` / `'all'` / `'one'`
 
-**Status Information**:
-- Current media title and artist
-- Playback state (playing, paused, idle)
-- Volume level and mute status
-- Source input information
-
-#### Play Media Content
-Play specific content on media devices:
-
-**Voice Commands**:
-- "Play Spotify playlist 'Chill Music' in the living room"
-- "Play the news on the kitchen speaker"
-- "Start Netflix on the TV"
-
-**Supported Content Types**:
-- Music (Spotify, Apple Music, local files)
-- Podcasts and radio stations
-- Video content (Netflix, YouTube, Plex)
-- Audio announcements and TTS
+**Library search and initiating playback of specific content is handled
+by the Plex module, not Home Assistant.** See [Media Control](Media-Control.md)
+for the Plex + HA split, required TV setup, and the optional wake/launch
+mapping.
 
 ## Advanced Integration Patterns
 
-### Scene and Automation Control
+### Chaining tools
 
-#### Scene Activation
-Control Home Assistant scenes:
+The agent is free to chain tool calls across turns. Common patterns:
 
-**Voice Commands**:
-- "Activate movie night scene"
-- "Turn on bedtime mode"
-- "Set romantic lighting"
+- **Area-aware control**: `ha_list_areas` → `ha_get_entities_in_area` with
+  a domain filter → `ha_control_light` per entity. Lets the LLM turn off
+  "all the lights in the bedroom" without pre-wired groups.
+- **Notification discovery**: `ha_get_domain_services(domain="notify")` →
+  `ha_send_notification` against a discovered service name.
+- **Camera → vision LLM**: `get_camera_snapshots` (from the MQTT module)
+  returns URLs; the agent passes each URL to `query_multimodal_api`
+  (from `mcp_general_tools`) to describe what the cameras see.
 
-**Implementation**:
-```json
-{
-  "domain": "scene",
-  "service": "turn_on", 
-  "service_data": {
-    "entity_id": "scene.movie_night"
-  }
-}
-```
+### Complex device control
 
-#### Automation Triggers
-Trigger Home Assistant automations:
+- **Multi-room audio**: use `ha_get_entities_in_area` to enumerate
+  `media_player` entities per room, then fan out `ha_control_media_player`
+  calls.
+- **Climate zones**: `ha_control_climate` operates on one entity at a
+  time; "set all thermostats to 70" becomes one call per thermostat.
+- **Security + locks**: use `ha_execute_service` against `lock.*` /
+  `alarm_control_panel.*` entities for anything not covered by the
+  opinionated helpers.
 
-**Voice Commands**:
-- "Run the morning routine"
-- "Activate security mode"
-- "Start the bedtime sequence"
+### Sensor and environmental data
 
-**Implementation**:
-```json
-{
-  "domain": "automation",
-  "service": "trigger",
-  "service_data": {
-    "entity_id": "automation.morning_routine"
-  }
-}
-```
-
-### Complex Device Control
-
-#### Multi-Room Audio
-Control audio across multiple rooms:
-
-**Voice Commands**:
-- "Play jazz music throughout the house"
-- "Join the kitchen speaker to the living room"
-- "Stop music in all bedrooms"
-
-#### Climate Zones
-Control multiple climate zones:
-
-**Voice Commands**:
-- "Set all thermostats to 70 degrees"
-- "Turn on heat in the bedrooms"
-- "What's the temperature upstairs?"
-
-#### Security System Integration
-Control security systems and locks:
-
-**Voice Commands**:
-- "Lock all the doors"
-- "Arm the security system"
-- "Show me the front door camera"
-
-### Sensor Data and Monitoring
-
-#### Environmental Monitoring
-Get sensor readings and environmental data:
-
-**Voice Commands**:
-- "What's the temperature in the living room?"
-- "Check the humidity in the basement"
-- "Is anyone home?"
-
-#### Energy Monitoring
-Monitor energy usage and smart meters:
-
-**Voice Commands**:
-- "How much energy are we using?"
-- "What's our current electricity cost?"
-- "Show me the solar panel output"
-
-#### Security Monitoring
-Check security sensors and cameras:
-
-**Voice Commands**:
-- "Are all windows closed?"
-- "Check the motion sensors"
-- "Show me the security camera feeds"
+- "What's the temperature in the living room?" → resolve the sensor via
+  `ha_get_entities_in_area(area="living_room", domains=["sensor"])`, then
+  read it with `ha_get_domain_entity_states(domain="sensor")` or
+  `ha_evaluate_template("{{ states('sensor.living_room_temperature') }}")`.
+- "Has the garage been open today?" → `ha_get_entity_history` on the
+  `cover.*` or `binary_sensor.*` entity over a 24-hour window.
+- "Is anyone home?" → `ha_get_presence`.
 
 ## Natural Language Processing
 
@@ -565,6 +496,8 @@ havencore_goodnight:
 ---
 
 **Next Steps**:
+- [MCP-HomeAssistant](MCP-HomeAssistant.md) - Server-side reference for the HA MCP module (tool internals, config, troubleshooting)
+- [Media Control](Media-Control.md) - Plex + HA split for TV playback
 - [Voice Audio Configuration](Voice-Audio.md) - Speech integration setup
 - [Tool Development](Tool-Development.md) - Creating custom Home Assistant tools
 - [External Services](External-Services.md) - Integrating other smart home platforms

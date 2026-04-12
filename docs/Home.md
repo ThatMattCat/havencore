@@ -21,8 +21,17 @@ Welcome to the comprehensive documentation for **HavenCore** - a self-hosted AI 
 
 ### 🏠 Integrations
 - [**Home Assistant Integration**](Home-Assistant-Integration.md) - Smart home control setup
+- [**Media Control**](Media-Control.md) - Plex playback, HA transport control, and TV wake/launch
 - [**Voice & Audio**](Voice-Audio.md) - Speech-to-text and text-to-speech configuration
 - [**External Services**](External-Services.md) - Weather, search, and other integrations
+
+### 🧩 MCP Servers
+Per-module reference docs for each of the agent's Model Context Protocol servers — tool inventory, config, and troubleshooting.
+- [**MCP: Home Assistant**](MCP-HomeAssistant.md) - 21 HA tools: REST/WS control, registry, presence, timer/template/history/calendar, media transport
+- [**MCP: Plex**](MCP-Plex.md) - Plex library search + cloud-relay playback (pairs with Media Control)
+- [**MCP: General Tools**](MCP-General.md) - Weather, Brave, Wolfram, Wikipedia, ComfyUI image gen, email, multimodal vision
+- [**MCP: Qdrant**](MCP-Qdrant.md) - Semantic memory (create/search) on Qdrant + bge embeddings
+- [**MCP: MQTT / Cameras**](MCP-MQTT.md) - Camera snapshot trigger via HA + MQTT round-trip
 
 ### 🛠️ Development
 - [**Development Guide**](Development.md) - Contributing and local development

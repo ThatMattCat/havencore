@@ -130,14 +130,23 @@ HavenCore supports tool calling for external integrations:
 
 #### Available Tools
 
-HavenCore provides several built-in tools:
+Tools are grouped into MCP servers. Each server has its own reference
+doc with the full tool list, arguments, config, and troubleshooting.
 
-- **Home Assistant Control**: `home_assistant.*`
-- **Weather Forecast**: `get_weather_forecast`
-- **Web Search**: `brave_search`
-- **Wikipedia**: `query_wikipedia`
-- **WolframAlpha**: `wolfram_alpha`
-- **Media Control**: `control_media_player`, `play_media`
+- **Home Assistant** — 21 tools (domain state / services, light & climate
+  helpers, scenes, scripts, automations, notifications, areas, presence,
+  timers, Jinja templates, history, calendar, media transport). See
+  [MCP-HomeAssistant](MCP-HomeAssistant.md).
+- **Plex** — library search + cloud-relay playback
+  (`plex_search`, `plex_list_recent`, `plex_list_on_deck`,
+  `plex_list_clients`, `plex_play`). See
+  [MCP-Plex](MCP-Plex.md) and [Media Control](Media-Control.md).
+- **General Tools** — `get_weather_forecast`, `brave_search`,
+  `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_email`,
+  `query_multimodal_api`. See [MCP-General](MCP-General.md).
+- **Qdrant** — semantic memory (`create_memory`, `search_memories`). See
+  [MCP-Qdrant](MCP-Qdrant.md).
+- **MQTT / Cameras** — `get_camera_snapshots`. See [MCP-MQTT](MCP-MQTT.md).
 
 #### Example Request
 ```bash
