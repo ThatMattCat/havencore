@@ -448,6 +448,6 @@ tar -czf havencore_config_backup.tar.gz .env compose.yaml services/nginx/nginx.c
 ---
 
 **Next Steps**:
-- [API Reference](API-Reference.md) - Complete API documentation
-- [Troubleshooting](Troubleshooting.md) - Common configuration issues
-- [Home Assistant Integration](Home-Assistant-Integration.md) - Smart home setup
+- [API Reference](api-reference.md) - Complete API documentation
+- [Troubleshooting](troubleshooting.md) - Common configuration issues
+- [Home Assistant Integration](integrations/home-assistant.md) - Smart home setup

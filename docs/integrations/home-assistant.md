@@ -79,7 +79,7 @@ HavenCore's HA MCP server (`mcp_homeassistant_tools`) currently exposes
 common domains, WebSocket-powered registry + presence lookups, timer /
 template / history / calendar access, and media-player transport control.
 For a structured server-side reference (internals, config, troubleshooting),
-see [MCP-HomeAssistant](MCP-HomeAssistant.md). The section below focuses on
+see [MCP Home Assistant](../services/agent/tools/home-assistant.md). The section below focuses on
 what the assistant can do for a user.
 
 ### Generic REST tools (always available)
@@ -194,7 +194,7 @@ Value units by action:
 - `shuffle` / `repeat` → boolean or `'off'` / `'all'` / `'one'`
 
 **Library search and initiating playback of specific content is handled
-by the Plex module, not Home Assistant.** See [Media Control](Media-Control.md)
+by the Plex module, not Home Assistant.** See [Media Control](media-control.md)
 for the Plex + HA split, required TV setup, and the optional wake/launch
 mapping.
 
@@ -496,8 +496,8 @@ havencore_goodnight:
 ---
 
 **Next Steps**:
-- [MCP-HomeAssistant](MCP-HomeAssistant.md) - Server-side reference for the HA MCP module (tool internals, config, troubleshooting)
-- [Media Control](Media-Control.md) - Plex + HA split for TV playback
+- [MCP Home Assistant](../services/agent/tools/home-assistant.md) - Server-side reference for the HA MCP module (tool internals, config, troubleshooting)
+- [Media Control](media-control.md) - Plex + HA split for TV playback
 - [Voice Audio Configuration](Voice-Audio.md) - Speech integration setup
-- [Tool Development](Tool-Development.md) - Creating custom Home Assistant tools
+- [Tool Development](../services/agent/tools/development.md) - Creating custom Home Assistant tools
 - [External Services](External-Services.md) - Integrating other smart home platforms

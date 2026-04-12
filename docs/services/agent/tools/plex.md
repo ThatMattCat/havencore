@@ -4,7 +4,7 @@ Server-side reference for the Plex MCP module — tool inventory, module
 config, internals, and server-level troubleshooting. For the user-facing
 setup walkthrough (TV requirements, Plex token acquisition, authoring
 `PLEX_CLIENT_HA_MAP`, verification steps), see
-[Media-Control](Media-Control.md). Media control as a topic (Plex today,
+[Media Control](../../../integrations/media-control.md). Media control as a topic (Plex today,
 Music Assistant later, HA transport throughout) lives there; this doc
 documents only the Plex MCP module itself.
 
@@ -43,7 +43,7 @@ Env vars (loaded in `mcp_server.py` via `selene_agent.utils.config`):
 |-----|----------|---------|
 | `PLEX_URL` | yes | Base URL of the Plex Media Server (e.g. `http://10.0.50.110:32400`). No trailing slash. |
 | `PLEX_TOKEN` | yes | `X-Plex-Token`. |
-| `PLEX_CLIENT_HA_MAP` | optional | JSON object keyed by Plex client name. Enables wake/launch before `plex_play`. Authoring walkthrough in [Media-Control](Media-Control.md#3-optional-configure-wakelaunch-mapping). |
+| `PLEX_CLIENT_HA_MAP` | optional | JSON object keyed by Plex client name. Enables wake/launch before `plex_play`. Authoring walkthrough in [Media Control](../../../integrations/media-control.md#3-optional-configure-wakelaunch-mapping). |
 | `HAOS_URL` / `HAOS_TOKEN` | conditional | Required only when `PLEX_CLIENT_HA_MAP` is set, since wake/launch talks to HA. Shared with the HA MCP server. |
 
 If `PLEX_URL` or `PLEX_TOKEN` are unset (or the token is literally
@@ -108,7 +108,7 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 
 User-level symptoms ("nothing played on the TV", empty client list,
 mapping not working) are documented in
-[Media-Control → Troubleshooting](Media-Control.md#troubleshooting). This
+[Media Control → Troubleshooting](../../../integrations/media-control.md#troubleshooting). This
 section covers server-internal symptoms only.
 
 ### Server starts but all tools return stub-mode error
@@ -160,8 +160,8 @@ TV might need longer. Options:
 
 ## See also
 
-- [Media-Control](Media-Control.md) — topic doc: TV requirements, Plex
+- [Media Control](../../../integrations/media-control.md) — topic doc: TV requirements, Plex
   token acquisition, mapping authoring walkthrough, user-facing
   troubleshooting, forward-looking Music Assistant plans.
-- [MCP-HomeAssistant](MCP-HomeAssistant.md) — `ha_control_media_player`
+- [MCP Home Assistant](home-assistant.md) — `ha_control_media_player`
   (transport) lives there.

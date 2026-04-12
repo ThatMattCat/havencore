@@ -1277,5 +1277,5 @@ def my_custom_tool(param: str) -> Dict[str, Any]:
 
 **Next Steps**:
 - [MCP Integration](MCP-Integration.md) - Deep dive into Model Context Protocol
-- [Home Assistant Integration](Home-Assistant-Integration.md) - Smart home tool development
+- [Home Assistant Integration](../../../integrations/home-assistant.md) - Smart home tool development
 - [API Development](API-Development.md) - Building applications on HavenCore

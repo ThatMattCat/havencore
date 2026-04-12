@@ -948,5 +948,5 @@ When reporting issues, include:
 
 **Next Steps**:
 - [Performance Tuning](Performance.md) - Optimize your setup
-- [Development Guide](Development.md) - Modify and extend HavenCore
-- [Configuration Guide](Configuration.md) - Advanced configuration options
+- [Development Guide](development.md) - Modify and extend HavenCore
+- [Configuration Guide](configuration.md) - Advanced configuration options

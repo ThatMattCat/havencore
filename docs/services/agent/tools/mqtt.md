@@ -152,7 +152,7 @@ MCP server doesn't create the script — author it yourself (via HA UI or
 
 ## See also
 
-- [MCP-General](MCP-General.md) — the multimodal analysis tool typically
+- [MCP General](general.md) — the multimodal analysis tool typically
   chained after this one.
-- [Home-Assistant-Integration](Home-Assistant-Integration.md) — where the
+- [Home Assistant Integration](../../../integrations/home-assistant.md) — where the
   `capture_all_cameras` script is authored.

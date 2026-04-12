@@ -506,7 +506,7 @@ WHERE created_at < NOW() - INTERVAL '30 days';
 ---
 
 **Need more help?**
-- Check the [Troubleshooting Guide](Troubleshooting.md) for detailed solutions
-- Review the [Configuration Guide](Configuration.md) for advanced settings
-- Visit the [Development Guide](Development.md) for customization options
+- Check the [Troubleshooting Guide](troubleshooting.md) for detailed solutions
+- Review the [Configuration Guide](configuration.md) for advanced settings
+- Visit the [Development Guide](development.md) for customization options
 - Join the community discussions on GitHub

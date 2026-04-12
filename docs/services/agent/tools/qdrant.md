@@ -167,5 +167,5 @@ dimension.)
 
 ## See also
 
-- [Services → Qdrant Vector Database](Services.md#qdrant-vector-database) — raw Qdrant REST API.
-- [Services → Embeddings Service](Services.md#embeddings-service) — the TEI container.
+- [Qdrant service](../../qdrant/README.md) — raw Qdrant REST API.
+- [Embeddings service](../../embeddings/README.md) — the TEI container.

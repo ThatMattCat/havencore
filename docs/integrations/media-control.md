@@ -4,8 +4,8 @@ How HavenCore finds and plays media on your TVs and speakers. Today this
 means Plex + Home Assistant; Music Assistant is on the roadmap for
 audio-only devices (soundbars, Google Home, Wyoming satellites). This
 doc is the topic-level view — server-side references for each MCP
-module live in [MCP-Plex](MCP-Plex.md) and
-[MCP-HomeAssistant](MCP-HomeAssistant.md).
+module live in [MCP Plex](../services/agent/tools/plex.md) and
+[MCP Home Assistant](../services/agent/tools/home-assistant.md).
 
 ## How it works
 
@@ -26,7 +26,7 @@ devices can still be controlled for transport / volume via
 
 ### Tools exposed to the LLM
 
-From `mcp_plex_tools` — see [MCP-Plex](MCP-Plex.md) for full signatures
+From `mcp_plex_tools` — see [MCP Plex](../services/agent/tools/plex.md) for full signatures
 and server internals:
 
 | Tool | Purpose |
@@ -38,7 +38,7 @@ and server internals:
 | `plex_play` | Start playback on a named client. Runs HA wake/launch first if a mapping is configured. |
 
 From `mcp_homeassistant_tools` — see
-[MCP-HomeAssistant](MCP-HomeAssistant.md):
+[MCP Home Assistant](../services/agent/tools/home-assistant.md):
 
 | Tool | Purpose |
 |------|---------|
@@ -57,7 +57,7 @@ When a mapping exists for the target client, `plex_play` wakes the TV
 via HA and launches the Plex app via ADB before playback. A short note
 describing any action taken comes back in the tool response under
 `readiness`. For the exact sequence and timing, see
-[MCP-Plex → Internals](MCP-Plex.md#internals-worth-knowing).
+[MCP Plex → Internals](../services/agent/tools/plex.md#internals-worth-knowing).
 
 ## Requirements
 
@@ -189,7 +189,7 @@ accepted, but case and spelling matter if there are several similar names).
 
 User-facing symptoms. For server-internal errors (stub mode, plexapi
 exceptions, connection errors from inside the container), see
-[MCP-Plex → Troubleshooting](MCP-Plex.md#troubleshooting).
+[MCP Plex → Troubleshooting](../services/agent/tools/plex.md#troubleshooting).
 
 | Symptom | Likely cause |
 |---------|--------------|
@@ -202,9 +202,9 @@ exceptions, connection errors from inside the container), see
 
 ## See also
 
-- [MCP-Plex](MCP-Plex.md) — server reference for the Plex MCP module
+- [MCP Plex](../services/agent/tools/plex.md) — server reference for the Plex MCP module
   (tool signatures, internals, stub mode, plexapi error mapping).
-- [MCP-HomeAssistant](MCP-HomeAssistant.md) — `ha_control_media_player`
+- [MCP Home Assistant](../services/agent/tools/home-assistant.md) — `ha_control_media_player`
   transport tool.
 - `.env.tmpl` — reference config with an example `PLEX_CLIENT_HA_MAP`
   mapping.

@@ -1,6 +1,6 @@
 # Getting Started with HavenCore
 
-This guide will help you get HavenCore up and running quickly. For detailed configuration options, see the [Configuration Guide](Configuration.md).
+This guide will help you get HavenCore up and running quickly. For detailed configuration options, see the [Configuration Guide](configuration.md).
 
 ## Prerequisites
 
@@ -161,8 +161,8 @@ curl -I https://huggingface.co
 ## Configuration Deep Dive
 
 For detailed configuration options, see:
-- [Configuration Guide](Configuration.md) - Complete environment variable reference
-- [Home Assistant Integration](Home-Assistant-Integration.md) - Smart home setup
+- [Configuration Guide](configuration.md) - Complete environment variable reference
+- [Home Assistant Integration](integrations/home-assistant.md) - Smart home setup
 - [External Services](External-Services.md) - API key configuration
 
 ## Architecture Overview
@@ -175,7 +175,7 @@ HavenCore consists of these core services:
 - **postgres**: Database for conversation storage
 - **vLLM/LlamaCPP**: LLM inference backend
 
-For detailed architecture information, see [Architecture Overview](Architecture.md).
+For detailed architecture information, see [Architecture Overview](architecture.md).
 
 ## Development Setup
 
@@ -183,17 +183,17 @@ If you plan to contribute or modify HavenCore:
 
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally
-3. **Set up development environment**: See [Development Guide](Development.md)
+3. **Set up development environment**: See [Development Guide](development.md)
 4. **Make changes** to Python files (live reload with mounted volumes)
 5. **Test your changes** using the provided validation commands
 
 ## Getting Help
 
-- **Configuration Issues**: [Configuration Guide](Configuration.md)
-- **Service Problems**: [Troubleshooting Guide](Troubleshooting.md)
-- **API Questions**: [API Reference](API-Reference.md)
-- **Development Help**: [Development Guide](Development.md)
+- **Configuration Issues**: [Configuration Guide](configuration.md)
+- **Service Problems**: [Troubleshooting Guide](troubleshooting.md)
+- **API Questions**: [API Reference](api-reference.md)
+- **Development Help**: [Development Guide](development.md)
 
 ---
 
-**Next**: Once you have HavenCore running, explore the [Configuration Guide](Configuration.md) to customize your setup, or check out [Home Assistant Integration](Home-Assistant-Integration.md) to connect your smart home devices.
+**Next**: Once you have HavenCore running, explore the [Configuration Guide](configuration.md) to customize your setup, or check out [Home Assistant Integration](integrations/home-assistant.md) to connect your smart home devices.

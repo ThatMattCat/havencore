@@ -271,6 +271,6 @@ services:
 ---
 
 **Next Steps**: 
-- [Service Documentation](Services.md) - Detailed service specifications
-- [API Reference](API-Reference.md) - Complete API documentation
+- [Service Documentation](services/README.md) - Detailed service specifications
+- [API Reference](api-reference.md) - Complete API documentation
 - [Deployment Guide](Deployment.md) - Production deployment considerations

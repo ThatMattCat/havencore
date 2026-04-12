@@ -3,8 +3,8 @@
 Reference doc for the Home Assistant MCP server bundled with the agent.
 This is the server-side view — tool inventory, transport/dependencies,
 configuration, and troubleshooting. End-user setup (token, URL, voice
-examples) lives in [Home-Assistant-Integration](Home-Assistant-Integration.md).
-TV playback specifics live in [Media-Control](Media-Control.md).
+examples) lives in [Home Assistant Integration](../../../integrations/home-assistant.md).
+TV playback specifics live in [Media Control](../../../integrations/media-control.md).
 
 ## Overview
 
@@ -80,7 +80,7 @@ payload.
 
 | Tool | Purpose |
 |------|---------|
-| `ha_control_media_player(action, device?, value?)` | Play/pause/stop/seek/volume/mute/power/source on any HA `media_player` entity. Plex / library search **is not here** — see [Media-Control](Media-Control.md). |
+| `ha_control_media_player(action, device?, value?)` | Play/pause/stop/seek/volume/mute/power/source on any HA `media_player` entity. Plex / library search **is not here** — see [Media Control](../../../integrations/media-control.md). |
 
 Value units by action:
 
@@ -202,6 +202,6 @@ If the list is empty, add a `timer:` block to HA's `configuration.yaml`.
 
 ## See also
 
-- [Home-Assistant-Integration](Home-Assistant-Integration.md) — end-user setup, HA token generation, voice examples.
-- [Media-Control](Media-Control.md) — Plex + HA split for TV playback.
-- [Tool-Development](Tool-Development.md) — adding or modifying MCP tools.
+- [Home Assistant Integration](../../../integrations/home-assistant.md) — end-user setup, HA token generation, voice examples.
+- [Media Control](../../../integrations/media-control.md) — Plex + HA split for TV playback.
+- [Tool Development](development.md) — adding or modifying MCP tools.

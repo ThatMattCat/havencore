@@ -136,17 +136,17 @@ doc with the full tool list, arguments, config, and troubleshooting.
 - **Home Assistant** — 21 tools (domain state / services, light & climate
   helpers, scenes, scripts, automations, notifications, areas, presence,
   timers, Jinja templates, history, calendar, media transport). See
-  [MCP-HomeAssistant](MCP-HomeAssistant.md).
+  [MCP Home Assistant](services/agent/tools/home-assistant.md).
 - **Plex** — library search + cloud-relay playback
   (`plex_search`, `plex_list_recent`, `plex_list_on_deck`,
   `plex_list_clients`, `plex_play`). See
-  [MCP-Plex](MCP-Plex.md) and [Media Control](Media-Control.md).
+  [MCP Plex](services/agent/tools/plex.md) and [Media Control](integrations/media-control.md).
 - **General Tools** — `get_weather_forecast`, `brave_search`,
   `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_email`,
-  `query_multimodal_api`. See [MCP-General](MCP-General.md).
+  `query_multimodal_api`. See [MCP General](services/agent/tools/general.md).
 - **Qdrant** — semantic memory (`create_memory`, `search_memories`). See
-  [MCP-Qdrant](MCP-Qdrant.md).
-- **MQTT / Cameras** — `get_camera_snapshots`. See [MCP-MQTT](MCP-MQTT.md).
+  [MCP Qdrant](services/agent/tools/qdrant.md).
+- **MQTT / Cameras** — `get_camera_snapshots`. See [MCP MQTT](services/agent/tools/mqtt.md).
 
 #### Example Request
 ```bash
@@ -559,6 +559,6 @@ The agent dashboard already uses WebSockets for real-time features:
 ---
 
 **Next Steps**:
-- [Tool Development](Tool-Development.md) - Creating custom tools
-- [Integration Guides](Home-Assistant-Integration.md) - External service setup
-- [Troubleshooting](Troubleshooting.md) - API debugging and issues
+- [Tool Development](services/agent/tools/development.md) - Creating custom tools
+- [Integration Guides](integrations/home-assistant.md) - External service setup
+- [Troubleshooting](troubleshooting.md) - API debugging and issues

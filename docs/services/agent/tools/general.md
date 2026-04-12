@@ -150,6 +150,6 @@ the standard AppID — verify you're using the LLM endpoint's key.
 
 ## See also
 
-- [External-Services](External-Services.md) — if you're adding a new
+- [External Services](../../../External-Services.md) — if you're adding a new
   third-party API, this is where the lifecycle pattern is documented.
-- [Tool-Development](Tool-Development.md) — adding new MCP tools.
+- [Tool Development](development.md) — adding new MCP tools.

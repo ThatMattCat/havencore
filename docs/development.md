@@ -877,6 +877,6 @@ docker push registry.example.com/havencore_agent:v1.2.0
 ---
 
 **Next Steps**:
-- [Tool Development](Tool-Development.md) - Deep dive into tool creation
+- [Tool Development](services/agent/tools/development.md) - Deep dive into tool creation
 - [MCP Integration](MCP-Integration.md) - Model Context Protocol details
 - [Performance Tuning](Performance.md) - Optimization techniques
