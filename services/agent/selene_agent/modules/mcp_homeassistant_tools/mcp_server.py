@@ -6,7 +6,9 @@ Provides unified Home Assistant tools via MCP including device control, media ma
 
 import json
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import quote
 
 import aiohttp
 
@@ -59,6 +61,12 @@ class HomeAssistantClient:
             async with session.post(f"{self._base}{path}", json=payload) as resp:
                 resp.raise_for_status()
                 return await resp.json()
+
+    async def _post_text(self, path: str, payload: Dict[str, Any]) -> str:
+        async with aiohttp.ClientSession(timeout=self._timeout, headers=self._headers) as session:
+            async with session.post(f"{self._base}{path}", json=payload) as resp:
+                resp.raise_for_status()
+                return await resp.text()
 
     async def get_domain_entity_states(self, domain: str) -> str:
         if TEST_MODE:
@@ -427,6 +435,114 @@ class HomeAssistantMCPServer:
                         "Typical states: 'home', 'not_home', or a zone name."
                     ),
                     inputSchema={"type": "object", "properties": {}}
+                ),
+                Tool(
+                    name="ha_set_timer",
+                    description=(
+                        "Start a Home Assistant timer helper (timer.start). Requires a timer.* "
+                        "entity configured in Home Assistant — discover available timers via "
+                        "ha_get_domain_entity_states with domain='timer'. Duration uses HH:MM:SS "
+                        "format (e.g. '0:05:00' = 5 minutes); omit to use the timer's configured "
+                        "default duration."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Timer entity ID (e.g. 'timer.kitchen')"
+                            },
+                            "duration": {
+                                "type": "string",
+                                "description": "Duration in HH:MM:SS (e.g. '0:10:00' for 10 minutes). Optional."
+                            }
+                        },
+                        "required": ["entity_id"]
+                    }
+                ),
+                Tool(
+                    name="ha_cancel_timer",
+                    description="Cancel a running Home Assistant timer (timer.cancel).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Timer entity ID to cancel"
+                            }
+                        },
+                        "required": ["entity_id"]
+                    }
+                ),
+                Tool(
+                    name="ha_evaluate_template",
+                    description=(
+                        "Evaluate a Home Assistant Jinja2 template server-side and return the "
+                        "rendered text. Escape hatch for compound questions like "
+                        "\"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}\". "
+                        "See https://www.home-assistant.io/docs/configuration/templating/ for syntax."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "template": {
+                                "type": "string",
+                                "description": "Jinja2 template string to render"
+                            }
+                        },
+                        "required": ["template"]
+                    }
+                ),
+                Tool(
+                    name="ha_get_entity_history",
+                    description=(
+                        "Get recent state history for an entity over the last N hours. Returns a "
+                        "list of {state, last_changed} points, sampled if very dense. Use for "
+                        "questions like \"has the garage been open today?\" or \"when did the "
+                        "thermostat last change?\"."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Entity ID to fetch history for"
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "default": 24,
+                                "description": "Look-back window in hours (default 24, max 168 = 1 week)"
+                            }
+                        },
+                        "required": ["entity_id"]
+                    }
+                ),
+                Tool(
+                    name="ha_get_calendar_events",
+                    description=(
+                        "Get upcoming events from a Home Assistant calendar entity over the next "
+                        "N days. Discover calendar entities via ha_get_domain_entity_states with "
+                        "domain='calendar'."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "calendar_entity": {
+                                "type": "string",
+                                "description": "Calendar entity ID (e.g. 'calendar.family')"
+                            },
+                            "days": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 31,
+                                "default": 7,
+                                "description": "Look-ahead window in days (default 7, max 31)"
+                            }
+                        },
+                        "required": ["calendar_entity"]
+                    }
                 )
             ])
 
@@ -619,6 +735,35 @@ class HomeAssistantMCPServer:
 
                 elif name == "ha_get_presence":
                     result = await self._get_presence()
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_set_timer":
+                    result = await self._set_timer(
+                        arguments.get("entity_id"),
+                        arguments.get("duration"),
+                    )
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_cancel_timer":
+                    result = await self._cancel_timer(arguments.get("entity_id"))
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_evaluate_template":
+                    result = await self._evaluate_template(arguments.get("template"))
+                    return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_get_entity_history":
+                    result = await self._get_entity_history(
+                        arguments.get("entity_id"),
+                        arguments.get("hours", 24),
+                    )
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_get_calendar_events":
+                    result = await self._get_calendar_events(
+                        arguments.get("calendar_entity"),
+                        arguments.get("days", 7),
+                    )
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
                 # Media Player Control Operations
@@ -873,6 +1018,122 @@ class HomeAssistantMCPServer:
             elif eid.startswith("device_tracker."):
                 trackers.append(summary)
         return {"persons": people, "device_trackers": trackers}
+
+    # Timer / Template / History / Calendar Methods
+    async def _set_timer(self, entity_id: Optional[str], duration: Optional[str] = None) -> str:
+        if not entity_id:
+            return "Error: entity_id is required"
+        extras: Dict[str, Any] = {}
+        if duration:
+            extras["duration"] = duration
+        try:
+            return await self.ha_client.execute_service(entity_id, "start", **extras)
+        except Exception as e:
+            return f"Error starting timer '{entity_id}': {e}"
+
+    async def _cancel_timer(self, entity_id: Optional[str]) -> str:
+        if not entity_id:
+            return "Error: entity_id is required"
+        try:
+            return await self.ha_client.execute_service(entity_id, "cancel")
+        except Exception as e:
+            return f"Error cancelling timer '{entity_id}': {e}"
+
+    async def _evaluate_template(self, template: Optional[str]) -> str:
+        if not template:
+            return "Error: template is required"
+        if TEST_MODE:
+            return f"Mock template render: {template}"
+        try:
+            return await self.ha_client._post_text("/api/template", {"template": template})
+        except Exception as e:
+            return f"Error evaluating template: {e}"
+
+    async def _get_entity_history(
+        self,
+        entity_id: Optional[str],
+        hours: int = 24,
+    ) -> Dict[str, Any]:
+        if not entity_id:
+            return {"error": "entity_id is required"}
+        try:
+            hours = int(hours)
+        except (TypeError, ValueError):
+            hours = 24
+        hours = max(1, min(hours, 168))
+        start = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0).isoformat()
+        path = (
+            f"/api/history/period/{quote(start, safe='')}"
+            f"?filter_entity_id={quote(entity_id)}&minimal_response"
+        )
+        try:
+            data = await self.ha_client._get(path)
+        except Exception as e:
+            return {"error": str(e)}
+        points: List[Dict[str, Any]] = []
+        for series in data or []:
+            for p in series or []:
+                points.append({
+                    "state": p.get("state"),
+                    "last_changed": p.get("last_changed") or p.get("last_updated"),
+                })
+        MAX_POINTS = 200
+        result: Dict[str, Any] = {
+            "entity_id": entity_id,
+            "hours": hours,
+            "total_points": len(points),
+        }
+        if len(points) > MAX_POINTS:
+            step = max(1, len(points) // MAX_POINTS)
+            result["sampled"] = True
+            result["points"] = points[::step][:MAX_POINTS]
+        else:
+            result["points"] = points
+        return result
+
+    async def _get_calendar_events(
+        self,
+        calendar_entity: Optional[str],
+        days: int = 7,
+    ) -> Dict[str, Any]:
+        if not calendar_entity:
+            return {"error": "calendar_entity is required"}
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            days = 7
+        days = max(1, min(days, 31))
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        start = now.isoformat()
+        end = (now + timedelta(days=days)).isoformat()
+        path = (
+            f"/api/calendars/{quote(calendar_entity)}"
+            f"?start={quote(start, safe='')}&end={quote(end, safe='')}"
+        )
+        try:
+            data = await self.ha_client._get(path)
+        except Exception as e:
+            return {"error": str(e)}
+
+        def _extract_when(val: Any) -> Any:
+            if isinstance(val, dict):
+                return val.get("dateTime") or val.get("date") or val
+            return val
+
+        events: List[Dict[str, Any]] = []
+        for ev in data or []:
+            events.append({
+                "start": _extract_when(ev.get("start")),
+                "end": _extract_when(ev.get("end")),
+                "summary": ev.get("summary"),
+                "description": ev.get("description"),
+                "location": ev.get("location"),
+            })
+        return {
+            "calendar_entity": calendar_entity,
+            "days": days,
+            "events": events,
+        }
 
     # Media Player Control Methods
     async def _control_media_player(self, action: str, device: Optional[str] = None, value: Optional[Union[int, str, bool]] = None) -> Dict[str, Any]:
