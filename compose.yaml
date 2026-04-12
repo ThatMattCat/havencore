@@ -98,7 +98,9 @@ services:
       - ./shared:/app/shared:ro
     restart: unless-stopped
   vllm:
-    image: vllm/vllm-openai:latest
+    # Pinned to vLLM v0.19.0 — last version verified working on NVIDIA driver 580.x.
+    # Floating `:latest` has shipped builds requiring driver newer than our host.
+    image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
     runtime: nvidia
     # profiles: ["vllm"]
     env_file:
