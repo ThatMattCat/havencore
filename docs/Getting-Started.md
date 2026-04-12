@@ -103,9 +103,8 @@ curl -X POST http://localhost/v1/chat/completions \
 
 After successful startup, access these interfaces:
 
-- **Agent Chat Interface**: http://localhost:6002
-- **Text-to-Speech Interface**: http://localhost:6004
-- **System Gateway**: http://localhost
+- **Agent Dashboard**: http://localhost (SvelteKit SPA — chat, devices, history, metrics, service playgrounds)
+- **System Gateway Health**: http://localhost/health
 
 ## Next Steps
 

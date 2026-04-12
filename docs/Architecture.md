@@ -8,7 +8,7 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Client Applications                     │
 ├─────────────────────────────────────────────────────────────────┤
-│  Web UI (6002) │ Voice Clients │ API Clients │ Home Assistant  │
+│   Dashboard   │ Voice Clients │ API Clients │ Home Assistant    │
 └─────────────────┬───────────────┬─────────────┬─────────────────┘
                   │               │             │
 ┌─────────────────┴───────────────┴─────────────┴─────────────────┐
@@ -19,7 +19,7 @@ HavenCore is built as a distributed microservices architecture using Docker cont
       │         │             │             │
 ┌─────▼─────┐ ┌─▼───────┐ ┌───▼─────┐ ┌─────▼─────┐
 │   Agent   │ │   STT   │ │   TTS   │ │   Data    │
-│  (6002)   │ │ (6000)  │ │ (6004)  │ │ Services  │
+│  (6002)   │ │ (6001)  │ │ (6005)  │ │ Services  │
 └─────┬─────┘ └─────────┘ └─────────┘ └─────┬─────┘
       │                                     │
 ┌─────▼─────────────────────────────────────▼─────┐
@@ -60,12 +60,11 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 
 **Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate port 6006 FastAPI app were removed during the 2025 revamp.
 
-### 3. Speech-to-Text Service (Ports 6000, 6001, 5999)
+### 3. Speech-to-Text Service (Port 6001)
 **Purpose**: Audio Transcription and Processing
 - Converts spoken audio to text using Whisper models
 - Handles multiple audio formats and preprocessing
-- Provides OpenAI-compatible transcription API
-- Supports real-time and batch processing
+- Provides OpenAI-compatible transcription API (`POST /v1/audio/transcriptions`)
 
 **Model Pipeline**:
 ```
@@ -74,17 +73,11 @@ Audio Input → Preprocessing → Whisper Model → Text Output
   Format Detection  Normalization  GPU Inference  Post-processing
 ```
 
-### 4. Text-to-Speech Service (Ports 6003, 6004, 6005)
+### 4. Text-to-Speech Service (Port 6005)
 **Purpose**: Audio Generation and Voice Synthesis
 - Converts text to natural speech using Kokoro TTS
-- Provides multiple voice options and languages
-- Serves generated audio files statically
-- Offers both API and web interface access
-
-**Service Endpoints**:
-- **Port 6005**: OpenAI-compatible API (`/v1/audio/speech`)
-- **Port 6004**: Legacy testing interface
-- **Port 6003**: Static audio file server
+- OpenAI-compatible API at `POST /v1/audio/speech`
+- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service)
 
 ### 5. PostgreSQL Database (Port 5432)
 **Purpose**: Persistent Data Storage

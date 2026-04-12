@@ -87,8 +87,8 @@ HavenCore is built as a microservices architecture using Docker containers. Each
 |---------|------|---------|---------------|
 | **Nginx** | 80 | API Gateway & Load Balancer | Routes to other services |
 | **Agent** | 6002 | LLM logic, tool calling, dashboard UI | `/` (SvelteKit dashboard), `/api/*`, `/ws/*`, `/v1/chat/completions` |
-| **Speech-to-Text** | 6000, 6001, 5999 | Audio Transcription | `/v1/audio/transcriptions` |
-| **Text-to-Speech** | 6003, 6004, 6005 | Audio Generation | `/v1/audio/speech` |
+| **Speech-to-Text** | 6001 | Audio Transcription | `/v1/audio/transcriptions` |
+| **Text-to-Speech** | 6005 | Audio Generation | `/v1/audio/speech` |
 | **PostgreSQL** | 5432 | Database & Conversation Storage | N/A (internal) |
 | **vLLM** | 8000 | LLM Inference Backend | OpenAI-compatible API |
 | **LlamaCPP** | 8000* | Alternative LLM Backend | OpenAI-compatible API |
@@ -294,9 +294,8 @@ WOLFRAM_ALPHA_API_KEY="your_wolfram_key"
 
 ### Web Interface Access
 
-- **Agent Interface**: http://localhost:6002 - Interactive chat interface
-- **Text-to-Speech**: http://localhost:6004 - TTS testing interface
-- **System Health**: http://localhost - Nginx status page
+- **Agent Dashboard**: http://localhost - SvelteKit UI (chat, devices, history, metrics, service playgrounds)
+- **System Health**: http://localhost/health - Nginx gateway health
 
 ### Edge Device Integration
 

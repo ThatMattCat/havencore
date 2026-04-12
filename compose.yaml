@@ -60,8 +60,6 @@ services:
       - ./shared:/app/shared:ro
     ports:
       - "6001:6001" # /v1/audio/transcriptions OpenAI-compat API
-      - "6000:6000"
-      - "5999:5999"
     env_file:
       - .env
     deploy:
@@ -79,12 +77,10 @@ services:
     image: text-to-speech:${VERSION:-latest}
     ports:
       - "6005:6005" # OpenAI API-compatible /v1/audio/speech
-      - "6004:6004" # UI/API
-      - "6003:6003" # Serving audio files
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6004/"]
+      test: ["CMD", "curl", "-f", "http://localhost:6005/health"]
       interval: 30s
       timeout: 10s
       retries: 3

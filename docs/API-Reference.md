@@ -547,8 +547,6 @@ The agent dashboard already uses WebSockets for real-time features:
 - **`/ws/chat`** — streaming conversation with inline tool-call visibility, per-turn timing metrics, and thinking indicators. See the Agent Dashboard APIs section above and `services/agent/README.md` for the event schema.
 - **`/ws/logs`** — one-way stream of structured log records from the agent's in-process ring buffer (the last 500 records are replayed on connect).
 
-The speech-to-text service also exposes a legacy bidirectional WebSocket on port 6000 for raw PCM audio streaming used by the voice pipeline; see `services/speech-to-text/` for the protocol.
-
 ---
 
 **Next Steps**:

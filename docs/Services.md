@@ -8,8 +8,8 @@ This document provides detailed information about each service in the HavenCore 
 |---------|-------|---------|------------------|
 | [Nginx Gateway](#nginx-gateway) | 80 | API Gateway & Load Balancer | Nginx Alpine |
 | [Agent Service](#agent-service) | 6002 | AI Logic, Tool Calling & Dashboard | Python, FastAPI, SvelteKit |
-| [Speech-to-Text](#speech-to-text-service) | 6000, 6001, 5999 | Audio Transcription | Python, Whisper, CUDA |
-| [Text-to-Speech](#text-to-speech-service) | 6003, 6004, 6005 | Audio Generation | Python, Kokoro TTS, CUDA |
+| [Speech-to-Text](#speech-to-text-service) | 6001 | Audio Transcription | Python, Whisper, CUDA |
+| [Text-to-Speech](#text-to-speech-service) | 6005 | Audio Generation | Python, Kokoro TTS, CUDA |
 | [PostgreSQL](#postgresql-database) | 5432 | Data Storage | PostgreSQL 15 Alpine |
 | [vLLM Backend](#vllm-backend) | 8000 | LLM Inference | vLLM, CUDA |
 | [LlamaCPP Backend](#llamacpp-backend) | 8000 | Alternative LLM | LlamaCPP, CPU/GPU |
@@ -244,11 +244,9 @@ Format Detection  Normalization  GPU Inference  Post-processing
 
 | Port | Purpose | API Type |
 |------|---------|----------|
-| 6001 | OpenAI-compatible API (`/v1/audio/transcriptions`) | REST API |
-| 6000 | Legacy streaming WebSocket (bidirectional PCM + control) | WebSocket |
-| 5999 | Internal service API | Internal |
+| 6001 | OpenAI-compatible API (`/v1/audio/transcriptions`, `/health`) | REST API |
 
-The port 6000 WebSocket accepts raw int16 PCM audio frames and JSON control messages (`{"type": "CONTROL", "message": "start"|"stop"}`). On stream completion it emits a JSON message `{"text": "<final transcript>", "final": true, "trace_id": "..."}` to the client. The dashboard STT playground uses the HTTP endpoint on 6001 (record-then-upload), not the WebSocket.
+The service is HTTP-only — the legacy streaming WebSocket on port 6000 was retired. The dashboard STT playground uses the record-then-upload HTTP endpoint.
 
 ### Supported Audio Formats
 - **WAV**: Uncompressed audio
@@ -331,9 +329,9 @@ Text Input → Kokoro TTS → Audio Generation → File Storage
 
 | Port | Purpose | Features |
 |------|---------|----------|
-| 6005 | OpenAI-compatible API | `/v1/audio/speech` |
-| 6004 | Legacy web interface | Testing and controls |
-| 6003 | Static file server | Generated audio files |
+| 6005 | OpenAI-compatible API | `/v1/audio/speech`, `/health` |
+
+For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` — it proxies through the agent service. The legacy Gradio UI (6004) and static audio-file server (6003) were removed.
 
 ### Voice Options
 OpenAI voice aliases (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) are accepted and all currently map to the `af_heart` Kokoro voice. The agent dashboard's TTS playground pulls the same alias list via `/api/tts/voices`.
@@ -373,16 +371,10 @@ TTS_VOICE="af_heart"     # Voice model
 - **Streaming**: Real-time audio generation
 
 ### Dashboard Playground
-Use the agent dashboard at `http://localhost:6002/playgrounds/tts` for an in-browser testing surface (text input, voice/format selection, inline playback, synthesis latency). The dashboard proxies to the TTS service — no direct `:6004` / `:6005` access needed.
+Use the agent dashboard at `http://localhost/playgrounds/tts` for an in-browser testing surface (text input, voice/format selection, inline playback, synthesis latency). The dashboard proxies to the TTS service.
 
 ### File Management
-```bash
-# Generated audio storage
-/app/audio_files/timestamp-sessionid.wav
-
-# Static file serving
-curl http://localhost:6003/1234567890-abcd.wav
-```
+Generated audio is written to `/app/output/` inside the container, read back into the HTTP response body, and is not served via a separate static endpoint.
 
 ### Troubleshooting
 ```bash
