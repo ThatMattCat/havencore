@@ -584,57 +584,6 @@ class HomeAssistantMCPServer:
                         "required": ["action"]
                     }
                 ),
-                Tool(
-                    name="ha_stream_media",
-                    description="Stream a specific media item to a device from the media library",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "media_item_id": {
-                                "type": "string",
-                                "description": "The media ID of the media item to stream"
-                            },
-                            "playback_device_id": {
-                                "type": "string",
-                                "description": "The device ID to stream on (optional, will auto-select if not provided)"
-                            }
-                        },
-                        "required": ["media_item_id"]
-                    }
-                ),
-                Tool(
-                    name="ha_find_media_items",
-                    description=(
-                        "Search the Home Assistant media library. Returns media items including "
-                        "their media IDs, which can be passed to ha_stream_media as media_item_id."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query (camera, movie title, song name, etc.)"
-                            },
-                            "query_type": {
-                                "type": "string",
-                                "enum": ["title", "genre", "year"],
-                                "description": "Type of search to perform (defaults to 'title')"
-                            },
-                            "media_type": {
-                                "type": "string",
-                                "enum": ["video", "audio", "image", "playlist"],
-                                "description": "Filter by media type (optional)"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results to return",
-                                "default": 5,
-                                "minimum": 1
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                )
             ])
             
             logger.info(f"Listing {len(tools)} Home Assistant tools")
@@ -775,22 +724,6 @@ class HomeAssistantMCPServer:
                     )
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
-                elif name == "ha_stream_media":
-                    result = await self._stream_media(
-                        arguments.get("media_item_id"),
-                        arguments.get("playback_device_id")
-                    )
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
-                
-                elif name == "ha_find_media_items":
-                    result = await self._find_media_items(
-                        arguments.get("query"),
-                        arguments.get("query_type"),
-                        arguments.get("media_type"),
-                        arguments.get("limit", 5)
-                    )
-                    return [types.TextContent(type="text", text=result)]
-                
                 else:
                     return [types.TextContent(type="text", text=f"Unknown Home Assistant tool: {name}")]
                     
@@ -1157,29 +1090,6 @@ class HomeAssistantMCPServer:
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
-    async def _stream_media(self, media_item_id: str, playback_device_id: Optional[str] = None) -> Dict[str, Any]:
-        """Play media item"""
-        if not self.media_controller:
-            return {"success": False, "error": "Media controller not available"}
-        
-        try:
-            result = await self.media_controller.stream_media(media_item_id=media_item_id, playback_device_id=playback_device_id)
-            return result
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def _find_media_items(self, query: str, query_type: Optional[str] = None, 
-                               media_type: Optional[str] = None, limit: int = 5) -> str:
-        """Find media items"""
-        if not self.media_controller:
-            return "Error: Media controller not available"
-        
-        try:
-            result = await self.media_controller.find_media_items(query, query_type, media_type, limit)
-            return result
-        except Exception as e:
-            return f"Error searching media: {str(e)}"
     
     async def run(self):
         """Run the MCP server"""

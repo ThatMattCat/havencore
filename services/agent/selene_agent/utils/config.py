@@ -29,6 +29,10 @@ HAOS_TOKEN = os.getenv("HAOS_TOKEN", "")
 HAOS_URL = os.getenv("HAOS_URL", "")
 HAOS_USE_SSL = os.getenv("HAOS_USE_SSL", "")
 
+PLEX_URL = os.getenv("PLEX_URL", "")
+PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
+PLEX_CLIENT_HA_MAP = os.getenv("PLEX_CLIENT_HA_MAP", "")
+
 LOKI_URL = os.getenv("LOKI_URL", "")
 
 parsed_url = urlparse(HAOS_URL)
