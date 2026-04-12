@@ -117,15 +117,16 @@ HavenCore is built as a microservices architecture using Docker containers. Each
 
 ### Hardware Requirements
 
-- **NVIDIA GPU**: At least one CUDA-compatible GPU (RTX 3090 or better recommended)
-- **RAM**: 16GB+ system RAM (32GB+ recommended for larger models)
-- **Storage**: 50GB+ free space for models and data
+- **NVIDIA GPU**: At least one CUDA-compatible GPU. The default config loads `Qwen/Qwen2.5-72B-Instruct-AWQ` via vLLM with tensor parallelism across 2 GPUs plus dedicated GPUs for STT/TTS/embeddings/vision — development hardware is 4× RTX 3090 (24 GB each). A single 24 GB GPU works only with a smaller LLM.
+- **RAM**: 32GB+ system RAM recommended
+- **Storage**: 150GB+ free space — the 72B AWQ model is ~40GB, plus ComfyUI checkpoints, STT/TTS models, and container images
 - **Network**: Stable internet connection for initial model downloads
 
 ### Software Requirements
 
 - **Operating System**: Ubuntu 22.04 LTS (tested) or compatible Linux distribution
-- **Docker**: Version 20.10+ with Docker Compose V2
+- **NVIDIA Driver**: **580.x or newer**. The pinned `vllm/vllm-openai` and `text-to-image` (ComfyUI + torch 2.11) images both require a driver that reports CUDA runtime ≥12.9. Older 570.x drivers will fail vLLM startup with CUDA error 804 ("forward compatibility attempted on non supported HW").
+- **Docker**: Version 24.0+ with Docker Compose V2 (v2.20+)
 - **NVIDIA Container Toolkit**: For GPU support in containers
 - **Git**: For cloning the repository
 

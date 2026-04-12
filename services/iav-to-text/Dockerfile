@@ -1,4 +1,6 @@
-FROM vllm/vllm-openai:latest
+# Pinned to the same vLLM build as the main vllm service (v0.19.0).
+# Floating `:latest` has shipped builds requiring drivers newer than 580.x.
+FROM vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
 
 # Set working directory
 WORKDIR /app
