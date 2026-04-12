@@ -109,7 +109,7 @@ WOLFRAM_ALPHA_API_KEY=""   # For computational queries
 | Service | Ports | Purpose | Build Time |
 |---------|-------|---------|------------|
 | **nginx** | 80 | API Gateway & Load Balancer | 2-5 minutes |
-| **agent** | 6002, 6006 | LLM Logic & Tool Calling | 10-15 minutes |
+| **agent** | 6002 | LLM logic, tool calling, SvelteKit dashboard | 10-15 minutes |
 | **speech-to-text** | 6000, 6001, 5999 | Audio Transcription | 30-45 minutes |
 | **text-to-speech** | 6003, 6004, 6005 | Audio Generation | 15-25 minutes |
 | **postgres** | 5432 | Database & Conversation Storage | 2-5 minutes |

@@ -310,3 +310,44 @@ docker compose up -d agent
 ```
 
 Note: The Docker volume mount (`./services/agent/:/app`) overrides `/app/static` in development. Use `npm run dev` with the Vite proxy for frontend development, and the Docker build for production deployment.
+
+---
+
+## Follow-up: Service Playgrounds + Metrics (2026-04)
+
+A second pass added surfaces for the sibling services and lightweight observability. No new infrastructure services — everything rides on the existing FastAPI + Postgres stack.
+
+### Per-turn metrics
+
+- `orchestrator.py` instruments each turn: LLM call duration, per-tool-call duration, total duration, iteration count.
+- A new `METRIC` event is yielded right before `DONE`, forwarded over `/ws/chat`, and persisted to a new `turn_metrics` Postgres table via `utils/metrics_db.py` (reuses the existing asyncpg pool).
+- `GET /api/metrics/turns`, `/api/metrics/summary`, `/api/metrics/top-tools` drive the new **Metrics** dashboard page.
+- The **Chat** page renders a compact badge row (`LLM 812ms · Tools 240ms · Total 1.09s · 2 iter`) under each assistant reply.
+
+### Live log stream
+
+- `utils/logger.py` gained an in-process ring-buffer handler (500 records, fan-out via `asyncio.Queue`).
+- `api/logs.py` exposes `WS /ws/logs`: flushes the ring on connect, streams new records thereafter.
+- `frontend/src/lib/components/LogStream.svelte` renders this on the **System** page with pause, level filter, and clear.
+
+### Service playgrounds
+
+New `/playgrounds/*` routes in the dashboard, backed by new agent API proxies. Everything is same-origin — no CORS, no nginx changes.
+
+| Playground | Dashboard route | Agent endpoint(s) | Proxies to |
+|-----------|-----------------|-------------------|------------|
+| TTS | `/playgrounds/tts` | `POST /api/tts/speak`, `GET /api/tts/voices`, `GET /api/tts/health` | `text-to-speech:6005` |
+| STT | `/playgrounds/stt` | `POST /api/stt/transcribe`, `GET /api/stt/health` | `speech-to-text:6001` |
+| Vision | `/playgrounds/vision` | `POST /api/vision/ask`, `GET /api/vision/health` | `iav-to-text:8100` |
+| ComfyUI | `/playgrounds/comfy` | `POST /api/comfy/generate`, `GET /api/comfy/status/{id}`, `GET /api/comfy/view`, `GET /api/comfy/health` | `text-to-image:8188` |
+
+Implementation notes:
+
+- **STT playground**: uses the browser `MediaRecorder` API (WebM/Opus) and uploads the finished blob to `/api/stt/transcribe`. Whisper's file loader handles WebM natively. A WS streaming mode was prototyped but shelved because the STT service's legacy WebSocket expects raw int16 PCM — a transcode-in-browser step we don't need for a "record then transcribe" playground.
+- **Vision playground**: encodes the image as a base64 data URL and forwards it as an OpenAI `image_url` chat-completion to iav-to-text. Avoided a shared-volume mount between the agent and vision containers.
+- **ComfyUI playground**: reuses `modules/mcp_general_tools/comfyui_tools.py:SimpleComfyUI` for workflow loading and queue polling — no duplicated queueing logic.
+- **Dependencies**: added `python-multipart` to `pyproject.toml` (needed by FastAPI `File`/`Form` params for the new multipart endpoints).
+
+### Speech-to-text cleanup
+
+In parallel, `services/speech-to-text/app/main.py` dropped its `gradio_client` dependency and no longer round-trips final transcripts through the agent's (now non-existent) Gradio server. The port-6000 WebSocket now emits a direct `{"text": "...", "final": true, "trace_id": "..."}` message on completion. The voice pipeline (edge devices) was unaffected — ESP32s use the HTTP endpoint on port 6001, not the WebSocket.

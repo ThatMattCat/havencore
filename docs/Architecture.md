@@ -44,20 +44,21 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 - Request/response transformation
 - Static file serving
 
-### 2. Agent Service (Ports 6002, 6006)
-**Purpose**: Main AI Logic and Tool Calling Engine
+### 2. Agent Service (Port 6002)
+**Purpose**: Main AI logic, tool calling engine, and dashboard UI
 - Orchestrates conversation flow and context management
-- Executes function/tool calling for external integrations
+- Executes function/tool calling for external integrations via MCP
 - Manages conversation history and user sessions
-- Provides Gradio web interface for direct interaction
+- Serves a custom SvelteKit dashboard (static SPA) with chat, metrics, service playgrounds, Home Assistant views, and live logs
 
 **Key Components**:
-- **Selene Agent**: Core conversation engine
-- **Tool Registry**: Unified tool management (legacy + MCP)
-- **Conversation Database**: Session and history management
-- **Integration Layer**: Home Assistant, web search, computational tools
+- **Orchestrator**: Event-based agent loop with per-turn metrics
+- **MCP Client Manager**: Tool discovery and lifecycle across MCP servers
+- **Conversation Database**: PostgreSQL session and history management
+- **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
+- **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 
-**Architecture Pattern**: Event-driven with async tool execution
+**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate port 6006 FastAPI app were removed during the 2025 revamp.
 
 ### 3. Speech-to-Text Service (Ports 6000, 6001, 5999)
 **Purpose**: Audio Transcription and Processing
@@ -81,8 +82,8 @@ Audio Input → Preprocessing → Whisper Model → Text Output
 - Offers both API and web interface access
 
 **Service Endpoints**:
-- **Port 6005**: OpenAI-compatible API
-- **Port 6004**: Gradio web interface
+- **Port 6005**: OpenAI-compatible API (`/v1/audio/speech`)
+- **Port 6004**: Legacy testing interface
 - **Port 6003**: Static audio file server
 
 ### 5. PostgreSQL Database (Port 5432)
@@ -262,9 +263,9 @@ services:
 
 ### Core Technologies
 - **Containerization**: Docker & Docker Compose
-- **Languages**: Python (services), JavaScript (some components)
-- **Databases**: PostgreSQL (relational), Qdrant (vector)
-- **Web Framework**: FastAPI (APIs), Gradio (interfaces)
+- **Languages**: Python (services), JavaScript/TypeScript (SvelteKit dashboard)
+- **Databases**: PostgreSQL (relational, including `turn_metrics`), Qdrant (vector)
+- **Web Framework**: FastAPI (agent + API surface), SvelteKit (agent dashboard), uvicorn (ASGI)
 - **Proxy**: Nginx (reverse proxy, load balancer)
 
 ### AI/ML Stack

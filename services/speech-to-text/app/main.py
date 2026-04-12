@@ -14,7 +14,6 @@ from asyncio import Queue
 import requests
 import aiohttp
 from aiohttp import ClientSession, web
-from gradio_client import Client
 from shared.scripts.trace_id import with_trace, get_trace_id, set_trace_id
 import shared.scripts.logger as logger_module
 import shared.configs.shared_config as shared_config
@@ -125,45 +124,6 @@ class OrderedAudioProcessor:
         logger.info("Stream stopped. Waiting for processing to complete...", extra={'trace_id': trace_id})
 
     @with_trace
-    async def send_transcription(self, transcript, source_ip):
-        prefix = "This message was transcribed from audio so it may not be perfectly accurate: "
-        transcript = prefix + transcript
-        trace_id = get_trace_id()
-        
-        text_client = Client(f"http://{shared_config.HOST_IP_ADDRESS}:6002/") #the AI Agent
-        tts_client = Client(f"http://{shared_config.HOST_IP_ADDRESS}:6004/")
-
-        try:
-            logger.debug(f"Sending transcription to text inference: {transcript}", extra={'trace_id': trace_id})
-            loop = asyncio.get_event_loop()
-            response_data = await loop.run_in_executor(
-                None,
-                lambda: text_client.predict(
-                    transcript,
-                    api_name="/predict"
-                )
-            )
-            logger.debug(f"Agent Response received")
-            
-            logger.debug(f"Converting text response to audio: {response_data}", extra={'trace_id': trace_id})
-            audio_url = await loop.run_in_executor(
-                None,
-                lambda: tts_client.predict(
-                    response_data,
-                    api_name="/predict"
-                )
-            )
-            logger.debug(f"Text-to-Speech Response received")
-            url = audio_url[0]
-            logger.debug(f"Sending audio URL to speaker via WebSocket. URL: {url}", extra={'trace_id': trace_id})
-            wsmessage = json.dumps({"url": url, "trace_id": trace_id})
-            await self.ws.send(wsmessage)
-            
-        except Exception as e:
-            logger.error(f"Error in send_transcription: {str(e)}", extra={'trace_id': trace_id})
-            raise
-
-    @with_trace
     async def begin_transcription(self):
         trace_id = get_trace_id()
         self.processor_task = asyncio.create_task(self.process_chunks())
@@ -224,8 +184,16 @@ class OrderedAudioProcessor:
         trace_id = get_trace_id()
         transcription = "".join(t[2] for t in self.transcriptions)
         logger.info(f"Final transcription: {transcription}", extra={'trace_id': trace_id})
-        test = self.online.finish()
-        await self.send_transcription(transcription, self.source_ip)
+        self.online.finish()
+        if self.ws is not None:
+            try:
+                await self.ws.send(json.dumps({
+                    "text": transcription,
+                    "final": True,
+                    "trace_id": trace_id,
+                }))
+            except Exception as e:
+                logger.warning(f"Failed to send final transcript over WS: {e}", extra={'trace_id': trace_id})
         await self.reset()
 
     @with_trace

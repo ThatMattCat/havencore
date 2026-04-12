@@ -7,7 +7,7 @@ This document provides detailed information about each service in the HavenCore 
 | Service | Ports | Purpose | Technology Stack |
 |---------|-------|---------|------------------|
 | [Nginx Gateway](#nginx-gateway) | 80 | API Gateway & Load Balancer | Nginx Alpine |
-| [Agent Service](#agent-service) | 6002, 6006 | AI Logic & Tool Calling | Python, FastAPI, Gradio |
+| [Agent Service](#agent-service) | 6002 | AI Logic, Tool Calling & Dashboard | Python, FastAPI, SvelteKit |
 | [Speech-to-Text](#speech-to-text-service) | 6000, 6001, 5999 | Audio Transcription | Python, Whisper, CUDA |
 | [Text-to-Speech](#text-to-speech-service) | 6003, 6004, 6005 | Audio Generation | Python, Kokoro TTS, CUDA |
 | [PostgreSQL](#postgresql-database) | 5432 | Data Storage | PostgreSQL 15 Alpine |
@@ -31,7 +31,7 @@ This document provides detailed information about each service in the HavenCore 
 
 ```nginx
 upstream agent_backend {
-    server agent:6006;
+    server agent:6002;
 }
 
 upstream tts_backend {
@@ -146,14 +146,27 @@ Handles conversation persistence and history.
 
 ### API Endpoints
 
+All endpoints live on a single port (6002). The SvelteKit dashboard is built into the image and served as static files by FastAPI — there is no Gradio.
+
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/v1/chat/completions` | POST | Main chat API |
-| `/v1/models` | GET | List available models |
+| `/` | GET | SvelteKit dashboard SPA (pages: Dashboard, Chat, Devices, History, Playgrounds, Metrics, System) |
+| `/api/chat` | POST | Send a message, get full response + tool event log |
+| `/api/status` | GET | Health: agent, MCP servers, DB, vLLM |
+| `/api/tools` | GET | Registered tools grouped by MCP server |
+| `/api/conversations` | GET | Paginated conversation history |
+| `/api/ha/*` | GET | Home Assistant entities, automations, scenes |
+| `/api/metrics/*` | GET | Per-turn timings, daily aggregates, top tools |
+| `/api/tts/*` | POST/GET | Proxies to text-to-speech |
+| `/api/stt/*` | POST/GET | Proxies to speech-to-text |
+| `/api/vision/*` | POST/GET | Proxies to iav-to-text |
+| `/api/comfy/*` | POST/GET | Proxies to text-to-image (ComfyUI) |
+| `/ws/chat` | WS | Streaming chat with tool visibility + metric events |
+| `/ws/logs` | WS | Live server log tail |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat (used by the voice pipeline) |
+| `/v1/models` | GET | Lists the agent as an available model |
 | `/health` | GET | Service health check |
-| `/tools/status` | GET | Tool registry status |
 | `/mcp/status` | GET | MCP connection status |
-| `/` | GET | Gradio web interface |
 
 ### Configuration
 Environment variables in `.env`:
@@ -231,9 +244,11 @@ Format Detection  Normalization  GPU Inference  Post-processing
 
 | Port | Purpose | API Type |
 |------|---------|----------|
-| 6001 | OpenAI-compatible API | REST API |
-| 6000 | Gradio web interface | Web UI |
+| 6001 | OpenAI-compatible API (`/v1/audio/transcriptions`) | REST API |
+| 6000 | Legacy streaming WebSocket (bidirectional PCM + control) | WebSocket |
 | 5999 | Internal service API | Internal |
+
+The port 6000 WebSocket accepts raw int16 PCM audio frames and JSON control messages (`{"type": "CONTROL", "message": "start"|"stop"}`). On stream completion it emits a JSON message `{"text": "<final transcript>", "final": true, "trace_id": "..."}` to the client. The dashboard STT playground uses the HTTP endpoint on 6001 (record-then-upload), not the WebSocket.
 
 ### Supported Audio Formats
 - **WAV**: Uncompressed audio
@@ -317,17 +332,11 @@ Text Input → Kokoro TTS → Audio Generation → File Storage
 | Port | Purpose | Features |
 |------|---------|----------|
 | 6005 | OpenAI-compatible API | `/v1/audio/speech` |
-| 6004 | Gradio web interface | Testing and controls |
+| 6004 | Legacy web interface | Testing and controls |
 | 6003 | Static file server | Generated audio files |
 
 ### Voice Options
-Currently all OpenAI voice names map to "af_heart":
-- alloy → af_heart
-- echo → af_heart  
-- fable → af_heart
-- onyx → af_heart
-- nova → af_heart
-- shimmer → af_heart
+OpenAI voice aliases (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) are accepted and all currently map to the `af_heart` Kokoro voice. The agent dashboard's TTS playground pulls the same alias list via `/api/tts/voices`.
 
 ### API Usage
 ```bash
@@ -363,13 +372,8 @@ TTS_VOICE="af_heart"     # Voice model
 - **Caching**: Generated audio file storage
 - **Streaming**: Real-time audio generation
 
-### Web Interface Features
-Access at `http://localhost:6004`:
-- Text input with voice selection
-- Real-time audio generation
-- Audio playback controls
-- Download generated files
-- Voice parameter tuning
+### Dashboard Playground
+Use the agent dashboard at `http://localhost:6002/playgrounds/tts` for an in-browser testing surface (text input, voice/format selection, inline playback, synthesis latency). The dashboard proxies to the TTS service — no direct `:6004` / `:6005` access needed.
 
 ### File Management
 ```bash
@@ -741,9 +745,13 @@ curl -X POST http://localhost:3000/embed \
 Services communicate via Docker internal networking:
 ```
 agent → postgres:5432
-agent → vllm:8000  
+agent → vllm:8000
 agent → qdrant:6333
-nginx → agent:6006
+agent → text-to-speech:6005   (TTS playground proxy)
+agent → speech-to-text:6001   (STT playground proxy)
+agent → iav-to-text:8100      (Vision playground proxy)
+agent → text-to-image:8188    (ComfyUI playground proxy)
+nginx → agent:6002
 nginx → text-to-speech:6005
 nginx → speech-to-text:6001
 ```

@@ -1,18 +1,20 @@
 # API Reference
 
-HavenCore provides OpenAI-compatible APIs for chat completions, audio processing, and system management. All APIs are accessible through the Nginx gateway at `http://localhost`.
+HavenCore exposes two surfaces:
+
+1. **OpenAI-compatible APIs** — `/v1/chat/completions`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`. These ride through the Nginx gateway at `http://localhost` and are used by the voice pipeline (edge devices, external integrations).
+2. **Agent dashboard APIs** — `/api/*` and `/ws/*`, served by the agent on port 6002 (also available through Nginx). Used by the SvelteKit dashboard at `http://localhost:6002/` for chat, metrics, service playgrounds, Home Assistant state, and live logs.
 
 ## Authentication
 
-Most APIs require authentication using an API key:
+The OpenAI-compatible endpoints forwarded to vLLM use the `DEV_CUSTOM_API_KEY` configured in `.env`:
 
 ```bash
-# Set your API key in .env file
 DEV_CUSTOM_API_KEY="your_secret_key"
-
-# Use in requests
-curl -H "Authorization: Bearer your_secret_key" http://localhost/endpoint
+curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/chat/completions ...
 ```
+
+The `/api/*` dashboard endpoints are unauthenticated — the dashboard is intended for a private/home network. Do not expose port 6002 to the public internet without adding your own auth in front of it.
 
 ## Chat Completions API
 
@@ -181,7 +183,7 @@ Convert text to spoken audio using Kokoro TTS.
 | `response_format` | string | No | "mp3" | Audio format (mp3, wav, opus, aac, flac, pcm) |
 | `speed` | number | No | 1.0 | Playback speed (0.25-4.0) |
 
-**Note**: All voices currently map to "af_heart" and output is always WAV format regardless of `response_format`.
+**Note**: OpenAI voice aliases (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) all currently map to the Kokoro `af_heart` voice. Output is always WAV format regardless of `response_format`.
 
 #### Response
 Returns raw audio binary data with appropriate Content-Type header.
@@ -363,29 +365,41 @@ Get status of MCP (Model Context Protocol) connections.
 }
 ```
 
-## Gradio Interface APIs
+## Agent Dashboard APIs
 
-### Agent Interface
+The agent service at `http://localhost:6002` serves both the SvelteKit dashboard SPA and a set of JSON/WebSocket endpoints under `/api/*` and `/ws/*`. Full endpoint detail lives in [`services/agent/README.md`](../services/agent/README.md); this section is a quick reference.
 
-#### GET http://localhost:6002
-Web-based chat interface for direct interaction with the AI agent.
+### REST (`/api/*`)
 
-**Features**:
-- Real-time conversation
-- Tool execution visualization
-- Session management
-- Conversation history
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/chat` | One-shot message with tool event log |
+| `GET`  | `/api/status` | Agent, MCP, DB, vLLM health |
+| `GET`  | `/api/tools` | Registered tools grouped by MCP server |
+| `GET`  | `/api/conversations` | Paginated conversation history |
+| `GET`  | `/api/conversations/{session_id}` | Full messages for a session |
+| `GET`  | `/api/ha/entities` | HA entities (optionally `?domain=light`) |
+| `GET`  | `/api/ha/entities/summary` | Entity counts per domain |
+| `GET`  | `/api/ha/automations` | HA automations |
+| `GET`  | `/api/ha/scenes` | HA scenes |
+| `GET`  | `/api/metrics/turns` | Recent per-turn timings |
+| `GET`  | `/api/metrics/summary` | Daily aggregates, p95 |
+| `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
+| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
+| `GET`  | `/api/tts/voices` | Voice alias list |
+| `POST` | `/api/stt/transcribe` | Multipart transcription proxy |
+| `POST` | `/api/vision/ask` | Multipart image + prompt to vision LLM |
+| `POST` | `/api/comfy/generate` | Queue ComfyUI workflow |
+| `GET`  | `/api/comfy/status/{prompt_id}` | Poll generation status |
+| `GET`  | `/api/comfy/view` | Stream a generated image |
+| `GET`  | `/api/{tts,stt,vision,comfy}/health` | Per-service health proxies |
 
-### Text-to-Speech Interface
+### WebSockets
 
-#### GET http://localhost:6004
-Web interface for testing text-to-speech functionality.
-
-**Features**:
-- Text input and voice selection
-- Audio playback
-- Download generated audio
-- Voice parameter tuning
+| URL | Direction | Purpose |
+|-----|-----------|---------|
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events |
+| `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling
 
@@ -526,14 +540,14 @@ curl -X POST http://localhost/v1/audio/transcriptions \
   -F "model=whisper-1"
 ```
 
-## WebSocket APIs (Future)
+## WebSocket APIs
 
-*Note: WebSocket support is planned for real-time features:*
+The agent dashboard already uses WebSockets for real-time features:
 
-- Real-time conversation streaming
-- Live audio processing
-- System event notifications
-- Real-time tool execution updates
+- **`/ws/chat`** — streaming conversation with inline tool-call visibility, per-turn timing metrics, and thinking indicators. See the Agent Dashboard APIs section above and `services/agent/README.md` for the event schema.
+- **`/ws/logs`** — one-way stream of structured log records from the agent's in-process ring buffer (the last 500 records are replayed on connect).
+
+The speech-to-text service also exposes a legacy bidirectional WebSocket on port 6000 for raw PCM audio streaming used by the voice pipeline; see `services/speech-to-text/` for the protocol.
 
 ---
 

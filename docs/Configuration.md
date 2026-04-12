@@ -191,7 +191,7 @@ llamacpp:
 Located in `services/nginx/nginx.conf`:
 ```nginx
 upstream agent_backend {
-    server agent:6006;
+    server agent:6002;
 }
 
 upstream tts_backend {

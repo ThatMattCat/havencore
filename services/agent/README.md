@@ -43,10 +43,16 @@ These all serve the SPA and are meant to be opened in a browser:
 | URL | Page | Description |
 |-----|------|-------------|
 | `http://HOST:6002/` | Dashboard | System status, recent conversations, tool summary, HA device overview |
-| `http://HOST:6002/chat` | Chat | Real-time chat with Selene via WebSocket. Shows tool calls inline, markdown rendering, thinking indicators |
+| `http://HOST:6002/chat` | Chat | Real-time chat with Selene via WebSocket. Shows tool calls inline, markdown rendering, thinking indicators, per-turn timing badges |
 | `http://HOST:6002/devices` | Devices | Home Assistant entities grouped by domain, automations, scenes |
 | `http://HOST:6002/history` | History | Browse stored conversations with full message detail |
-| `http://HOST:6002/system` | System | MCP server status, loaded LLM model, DB connection, per-server tool listings |
+| `http://HOST:6002/playgrounds` | Playgrounds | Index of per-service playgrounds (TTS, STT, Vision, ComfyUI) with health badges |
+| `http://HOST:6002/playgrounds/tts` | TTS Playground | Synthesize speech from text with voice + format selection; plays the result inline |
+| `http://HOST:6002/playgrounds/stt` | STT Playground | Transcribe an uploaded audio file or a clip recorded from the browser microphone |
+| `http://HOST:6002/playgrounds/vision` | Vision Playground | Send an image + prompt to the vision LLM (iav-to-text) and render the response |
+| `http://HOST:6002/playgrounds/comfy` | ComfyUI Playground | Queue an image-generation prompt and view the rendered output |
+| `http://HOST:6002/metrics` | Metrics | Per-turn LLM/tool/total latencies, daily activity, top tools, p95 stats |
+| `http://HOST:6002/system` | System | MCP server status, loaded LLM model, DB connection, per-server tool listings, live log stream |
 
 ### REST API (`/api/*`)
 
@@ -64,10 +70,31 @@ JSON endpoints consumed by the dashboard frontend. Can also be called directly.
 | `GET` | `/api/ha/entities/summary` | Entity counts per domain with active counts |
 | `GET` | `/api/ha/automations` | HA automations with state and last-triggered time |
 | `GET` | `/api/ha/scenes` | HA scenes |
+| `GET` | `/api/metrics/turns?limit=50` | Recent per-turn timings from the `turn_metrics` table |
+| `GET` | `/api/metrics/summary?days=7` | Aggregates: turns/day, avg llm/total ms, p95 total ms |
+| `GET` | `/api/metrics/top-tools?days=7&limit=10` | Tool call counts and average latency |
+| `POST` | `/api/tts/speak` | Proxy to text-to-speech. Body: `{"text", "voice?", "format?", "speed?"}`. Streams binary audio back |
+| `GET` | `/api/tts/voices` | Static voice list (OpenAI aliases all mapped to `af_heart`) |
+| `GET` | `/api/tts/health` | TTS service health proxy |
+| `POST` | `/api/stt/transcribe` | Multipart proxy to `/v1/audio/transcriptions`. Fields: `file`, `language?`, `response_format?` |
+| `GET` | `/api/stt/health` | STT service health proxy |
+| `POST` | `/api/vision/ask` | Multipart: `image` + `prompt`. Encodes image as data URL and forwards to iav-to-text. Returns `{response, latency_ms}` |
+| `GET` | `/api/vision/health` | Vision service health proxy |
+| `POST` | `/api/comfy/generate` | Body: `{prompt, negative_prompt?, seed?, steps?}`. Queues workflow, returns `{prompt_id}` |
+| `GET` | `/api/comfy/status/{prompt_id}` | Returns `{status: "pending"\|"done", images: [...]}`  |
+| `GET` | `/api/comfy/view?filename=...&subfolder=...` | Streams a generated image from ComfyUI |
+| `GET` | `/api/comfy/health` | ComfyUI service health proxy |
 
-### WebSocket (`/ws/chat`)
+### WebSocket Endpoints
 
-Streaming chat with real-time tool visibility. Used by the chat page.
+| URL | Direction | Description |
+|-----|-----------|-------------|
+| `/ws/chat` | bidirectional | Streaming chat with real-time tool visibility |
+| `/ws/logs` | server → client | Live tail of the in-process log ring buffer (500 records) |
+
+#### `/ws/chat`
+
+Used by the chat page.
 
 ```
 Connect:  ws://HOST:6002/ws/chat
@@ -79,13 +106,18 @@ Receive (in order):
   {"type": "tool_call", "tool": "get_weather_forecast", "args": {"location": "..."}}
   {"type": "tool_result", "tool": "get_weather_forecast", "result": "..."}
   {"type": "thinking", "iteration": 2}
+  {"type": "metric", "payload": {"llm_ms": 812, "tool_ms_total": 240, "tool_calls": [...], "total_ms": 1089, "iterations": 2}}
   {"type": "done", "content": "It's 72F and sunny..."}
 
 Error:
   {"type": "error", "error": "description of what went wrong"}
 ```
 
-The connection stays open for multiple messages. Each message triggers a full agent loop (LLM call, optional tool calls, final response).
+The connection stays open for multiple messages. Each message triggers a full agent loop (LLM call, optional tool calls, final response). The `metric` event is emitted once per turn, just before `done`, and is persisted to the `turn_metrics` table.
+
+#### `/ws/logs`
+
+On connect the server flushes the current ring buffer, then streams new records as they arrive. Each message is JSON: `{"type": "log", "level", "message", "timestamp", "trace_id"}`. Periodic `{"type": "ping"}` frames keep the connection alive.
 
 ### OpenAI-Compatible API (`/v1/*`)
 
@@ -130,7 +162,7 @@ The core agent loop lives in `selene_agent/orchestrator.py`. It:
 5. If the LLM requests tool calls, executes them via MCP and loops back to step 4
 6. Returns the final text response
 
-Each step yields typed events (`THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `DONE`, `ERROR`) that enable streaming and tool visibility in the UI.
+Each step yields typed events (`THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `METRIC`, `DONE`, `ERROR`) that enable streaming and tool visibility in the UI. The `METRIC` event carries per-turn timings (LLM latency, per-tool latencies, total, iteration count) and is both forwarded over the chat WebSocket and persisted to the `turn_metrics` Postgres table for the Metrics page.
 
 **Safety limits:**
 - Max 8 tool iterations per request (prevents runaway loops)
@@ -216,29 +248,42 @@ services/agent/
 │   ├── vite.config.js        # Dev proxy to FastAPI on :6002
 │   └── src/
 │       ├── lib/
-│       │   ├── api.ts        # Typed API client
+│       │   ├── api.ts        # Typed API client (chat, HA, metrics, TTS, STT, vision, comfy)
 │       │   ├── stores/
-│       │   │   └── chat.ts   # WebSocket chat store
-│       │   └── components/   # Card, StatusBadge, ToolCallCard
+│       │   │   └── chat.ts   # WebSocket chat store (handles metric events)
+│       │   └── components/   # Card, StatusBadge, ToolCallCard, LogStream
 │       └── routes/
 │           ├── +layout.svelte
-│           ├── +page.svelte         # Dashboard
-│           ├── chat/+page.svelte    # Chat
-│           ├── devices/+page.svelte # HA Devices
-│           ├── history/+page.svelte # Conversation History
-│           └── system/+page.svelte  # System Status
+│           ├── +page.svelte             # Dashboard
+│           ├── chat/+page.svelte        # Chat (with timing badges)
+│           ├── devices/+page.svelte     # HA Devices
+│           ├── history/+page.svelte     # Conversation History
+│           ├── metrics/+page.svelte     # Per-turn metrics + top tools
+│           ├── playgrounds/+page.svelte # Playground index
+│           ├── playgrounds/tts/+page.svelte
+│           ├── playgrounds/stt/+page.svelte
+│           ├── playgrounds/vision/+page.svelte
+│           ├── playgrounds/comfy/+page.svelte
+│           └── system/+page.svelte      # System Status + live log stream
 └── selene_agent/
     ├── selene_agent.py       # FastAPI app, lifespan, OpenAI-compat endpoints, static mount
-    ├── orchestrator.py       # Agent loop with event-based streaming
+    ├── orchestrator.py       # Agent loop with event-based streaming + per-turn metrics
     ├── api/
-    │   ├── chat.py           # POST /api/chat, WS /ws/chat
+    │   ├── chat.py           # POST /api/chat, WS /ws/chat (persists metrics)
     │   ├── conversations.py  # GET /api/conversations
     │   ├── status.py         # GET /api/status, /api/tools
-    │   └── homeassistant.py  # GET /api/ha/*
+    │   ├── homeassistant.py  # GET /api/ha/*
+    │   ├── metrics.py        # GET /api/metrics/{turns,summary,top-tools}
+    │   ├── logs.py           # WS /ws/logs
+    │   ├── tts.py            # POST /api/tts/speak, voices/health proxies
+    │   ├── stt.py            # POST /api/stt/transcribe + health proxy
+    │   ├── vision.py         # POST /api/vision/ask + health proxy
+    │   └── comfy.py          # POST /api/comfy/generate, status/view/health
     ├── utils/
     │   ├── config.py         # Environment-driven configuration
-    │   ├── logger.py         # Loki-compatible logging
+    │   ├── logger.py         # Loki + ring-buffer log handlers
     │   ├── conversation_db.py # PostgreSQL conversation storage/retrieval
+    │   ├── metrics_db.py     # PostgreSQL turn_metrics read/write (shared pool)
     │   └── mcp_client_manager.py # MCP server lifecycle, tool discovery
     └── modules/              # MCP tool servers (each runs as a subprocess)
         ├── mcp_general_tools/
