@@ -1,5 +1,7 @@
 services:
   postgres:
+    # Rollback digest (known-good 2026-04-12):
+    #   postgres@sha256:fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c
     image: postgres:15-alpine
     env_file:
       - .env
@@ -15,6 +17,8 @@ services:
       retries: 5
     restart: unless-stopped
   nginx:
+    # Rollback digest (known-good 2026-04-12):
+    #   nginx@sha256:582c496ccf79d8aa6f8203a79d32aaf7ffd8b13362c60a701a2f9ac64886c93d
     image: nginx:alpine
     ports:
       - "80:80"
@@ -167,6 +171,8 @@ services:
                 capabilities: [gpu]
       restart: unless-stopped
   mosquitto:
+    # Rollback digest (known-good 2026-04-12):
+    #   eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
     image: eclipse-mosquitto:latest
     container_name: mosquitto
     restart: unless-stopped
@@ -275,6 +281,8 @@ services:
   #   restart: unless-stopped
 
   qdrant:
+    # Rollback digest (known-good 2026-04-12):
+    #   qdrant/qdrant@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
     image: qdrant/qdrant:latest
     container_name: qdrant
     ports:
