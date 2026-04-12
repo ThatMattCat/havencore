@@ -209,7 +209,11 @@ class HAMediaLibrary:
             logger.error(f"Unexpected error sending command: {e}")
             raise
 
-    async def _call_service(self, domain: str, service: str, 
+    async def send_ws_command(self, command: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+        """Public WS request wrapper (for registry lookups, template eval, etc.)."""
+        return await self._send_ws_command(command, timeout=timeout)
+
+    async def _call_service(self, domain: str, service: str,
                           service_data: Dict[str, Any] = None,
                           target: Dict[str, Any] = None) -> Dict[str, Any]:
         """Call a Home Assistant service via WebSocket."""

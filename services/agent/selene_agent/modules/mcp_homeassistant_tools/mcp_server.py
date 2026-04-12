@@ -388,6 +388,45 @@ class HomeAssistantMCPServer:
                         },
                         "required": ["service", "message"]
                     }
+                ),
+                Tool(
+                    name="ha_list_areas",
+                    description=(
+                        "List Home Assistant areas (rooms / zones). Useful before "
+                        "ha_get_entities_in_area when the user names a room."
+                    ),
+                    inputSchema={"type": "object", "properties": {}}
+                ),
+                Tool(
+                    name="ha_get_entities_in_area",
+                    description=(
+                        "List entities assigned to an area. Accepts area_id or case-insensitive "
+                        "area name. Entities inherit from their device's area when they have no "
+                        "direct area assignment. Results are grouped by domain."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "area": {
+                                "type": "string",
+                                "description": "Area ID or name (e.g. 'kitchen' or 'Kitchen')"
+                            },
+                            "domains": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional domain filter, e.g. ['light','switch']"
+                            }
+                        },
+                        "required": ["area"]
+                    }
+                ),
+                Tool(
+                    name="ha_get_presence",
+                    description=(
+                        "Summarize presence: state of all person.* and device_tracker.* entities. "
+                        "Typical states: 'home', 'not_home', or a zone name."
+                    ),
+                    inputSchema={"type": "object", "properties": {}}
                 )
             ])
 
@@ -567,6 +606,21 @@ class HomeAssistantMCPServer:
                     )
                     return [types.TextContent(type="text", text=result)]
 
+                elif name == "ha_list_areas":
+                    result = await self._list_areas()
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_get_entities_in_area":
+                    result = await self._get_entities_in_area(
+                        arguments.get("area"),
+                        arguments.get("domains"),
+                    )
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_get_presence":
+                    result = await self._get_presence()
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
                 # Media Player Control Operations
                 elif name == "ha_control_media_player":
                     result = await self._control_media_player(
@@ -724,6 +778,101 @@ class HomeAssistantMCPServer:
             )
         except Exception as e:
             return f"Error sending notification via 'notify.{service}': {e}"
+
+    # Registry & Presence Methods
+    async def _ws_registry(self, registry: str) -> List[Dict[str, Any]]:
+        """Call config/<registry>_registry/list and return the result list."""
+        if not self.media_controller:
+            raise RuntimeError("Media controller not available for WS registry access")
+        resp = await self.media_controller.library_manager.send_ws_command(
+            {"type": f"config/{registry}_registry/list"}
+        )
+        if not resp.get("success", True):
+            raise RuntimeError(f"WS registry {registry} call failed: {resp.get('error')}")
+        return resp.get("result") or []
+
+    async def _list_areas(self) -> List[Dict[str, Any]]:
+        try:
+            areas = await self._ws_registry("area")
+        except Exception as e:
+            return [{"error": str(e)}]
+        return [
+            {
+                "area_id": a.get("area_id"),
+                "name": a.get("name"),
+                "aliases": a.get("aliases") or [],
+            }
+            for a in areas
+        ]
+
+    async def _get_entities_in_area(
+        self,
+        area: str,
+        domains: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        if not area:
+            return {"error": "'area' is required"}
+        try:
+            areas = await self._ws_registry("area")
+            entities = await self._ws_registry("entity")
+            devices = await self._ws_registry("device")
+        except Exception as e:
+            return {"error": str(e)}
+
+        needle = area.strip().lower()
+        area_id = None
+        for a in areas:
+            if a.get("area_id") == area or a.get("area_id", "").lower() == needle:
+                area_id = a.get("area_id"); break
+            if (a.get("name") or "").lower() == needle:
+                area_id = a.get("area_id"); break
+            if needle in {(al or "").lower() for al in (a.get("aliases") or [])}:
+                area_id = a.get("area_id"); break
+        if area_id is None:
+            return {"error": f"No area matching '{area}'", "known_areas": [a.get("name") for a in areas]}
+
+        device_area = {d["id"]: d.get("area_id") for d in devices if d.get("id")}
+        domain_filter = set(d.lower() for d in domains) if domains else None
+
+        grouped: Dict[str, List[str]] = {}
+        for ent in entities:
+            if ent.get("disabled_by") or ent.get("hidden_by"):
+                continue
+            eid = ent.get("entity_id")
+            if not eid:
+                continue
+            ent_area = ent.get("area_id") or device_area.get(ent.get("device_id"))
+            if ent_area != area_id:
+                continue
+            dom = eid.split(".", 1)[0]
+            if domain_filter and dom not in domain_filter:
+                continue
+            grouped.setdefault(dom, []).append(eid)
+
+        for dom in grouped:
+            grouped[dom].sort()
+        return {"area_id": area_id, "entities_by_domain": grouped, "total": sum(len(v) for v in grouped.values())}
+
+    async def _get_presence(self) -> Dict[str, Any]:
+        try:
+            raw = await self.ha_client._get("/api/states")
+        except Exception as e:
+            return {"error": str(e)}
+        people: List[Dict[str, Any]] = []
+        trackers: List[Dict[str, Any]] = []
+        for s in raw:
+            eid = s.get("entity_id", "")
+            attrs = s.get("attributes") or {}
+            summary = {
+                "entity_id": eid,
+                "state": s.get("state"),
+                "friendly_name": attrs.get("friendly_name"),
+            }
+            if eid.startswith("person."):
+                people.append(summary)
+            elif eid.startswith("device_tracker."):
+                trackers.append(summary)
+        return {"persons": people, "device_trackers": trackers}
 
     # Media Player Control Methods
     async def _control_media_player(self, action: str, device: Optional[str] = None, value: Optional[Union[int, str, bool]] = None) -> Dict[str, Any]:
