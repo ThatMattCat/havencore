@@ -2,13 +2,14 @@
  * Chat store — manages WebSocket connection and message history.
  */
 import { writable, get } from 'svelte/store';
-import type { ChatEvent } from '$lib/api';
+import type { ChatEvent, TurnMetric } from '$lib/api';
 
 export interface ChatMessage {
 	role: 'user' | 'assistant';
 	content: string;
 	events: ChatEvent[];
 	timestamp: number;
+	metric?: TurnMetric;
 }
 
 export const messages = writable<ChatMessage[]>([]);
@@ -18,6 +19,7 @@ export const isProcessing = writable(false);
 let ws: WebSocket | null = null;
 let currentEvents: ChatEvent[] = [];
 let currentContent = '';
+let currentMetric: TurnMetric | undefined;
 
 function getWsUrl(): string {
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -47,6 +49,20 @@ export function connect() {
 		const data: ChatEvent = JSON.parse(event.data);
 		currentEvents.push(data);
 
+		if (data.type === 'metric') {
+			const { type: _t, ...payload } = data;
+			currentMetric = payload as TurnMetric;
+			messages.update((msgs) => {
+				const last = msgs[msgs.length - 1];
+				if (last && last.role === 'assistant') {
+					last.metric = currentMetric;
+					last.events = [...currentEvents];
+				}
+				return [...msgs];
+			});
+			return;
+		}
+
 		if (data.type === 'done') {
 			currentContent = data.content || '';
 			messages.update((msgs) => {
@@ -55,12 +71,14 @@ export function connect() {
 				if (last && last.role === 'assistant') {
 					last.content = currentContent;
 					last.events = [...currentEvents];
+					if (currentMetric) last.metric = currentMetric;
 				}
 				return [...msgs];
 			});
 			isProcessing.set(false);
 			currentEvents = [];
 			currentContent = '';
+			currentMetric = undefined;
 		} else if (data.type === 'error') {
 			messages.update((msgs) => {
 				const last = msgs[msgs.length - 1];
@@ -72,6 +90,7 @@ export function connect() {
 			});
 			isProcessing.set(false);
 			currentEvents = [];
+			currentMetric = undefined;
 		} else {
 			// Update the placeholder with live events
 			messages.update((msgs) => {

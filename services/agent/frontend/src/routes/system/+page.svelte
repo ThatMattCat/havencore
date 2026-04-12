@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/Card.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import LogStream from '$lib/components/LogStream.svelte';
 	import { getStatus, getTools } from '$lib/api';
 
 	let status = $state(null);
@@ -149,10 +150,19 @@
 				{/each}
 			{/if}
 		</div>
+
+		<div class="logs-section">
+			<Card title="Live logs">
+				<LogStream />
+			</Card>
+		</div>
 	{/if}
 </div>
 
 <style>
+	.logs-section {
+		margin-top: 16px;
+	}
 	.page-title {
 		font-size: 24px;
 		font-weight: 600;

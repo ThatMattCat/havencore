@@ -8,6 +8,7 @@ from typing import List
 
 from selene_agent.orchestrator import AgentOrchestrator, EventType
 from selene_agent.utils import logger as custom_logger
+from selene_agent.utils.metrics_db import metrics_db
 
 logger = custom_logger.get_logger('loki')
 
@@ -42,7 +43,9 @@ async def chat(request: ChatRequest, req: Request):
 
     async for event in orchestrator.run(request.message):
         events.append({"type": event.type.value, **event.data})
-        if event.type == EventType.DONE:
+        if event.type == EventType.METRIC:
+            await metrics_db.record_turn(orchestrator.session_id, event.data)
+        elif event.type == EventType.DONE:
             final_content = event.data.get("content", "")
         elif event.type == EventType.ERROR:
             final_content = event.data.get("error", "ERROR: Unknown error")
@@ -80,6 +83,8 @@ async def websocket_chat(websocket: WebSocket):
                     "type": event.type.value,
                     **event.data,
                 })
+                if event.type == EventType.METRIC:
+                    await metrics_db.record_turn(orchestrator.session_id, event.data)
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")

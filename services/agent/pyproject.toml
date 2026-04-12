@@ -25,7 +25,8 @@ dependencies = [
     "websocket",
     "websockets",
     "aiofiles",
-    "aiohttp"
+    "aiohttp",
+    "python-multipart"
 ]
 
 [project.scripts]

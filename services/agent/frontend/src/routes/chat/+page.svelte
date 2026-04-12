@@ -50,6 +50,12 @@
 		if (!text) return '';
 		return marked.parse(text);
 	}
+
+	function fmtMs(n) {
+		if (n == null) return '';
+		if (n < 1000) return `${Math.round(n)}ms`;
+		return `${(n / 1000).toFixed(2)}s`;
+	}
 </script>
 
 <div class="chat-page">
@@ -108,6 +114,15 @@
 							{:else}
 								{msg.content}
 							{/if}
+						</div>
+					{/if}
+
+					{#if msg.role === 'assistant' && msg.metric}
+						<div class="metric-badges" title="Turn timings">
+							<span class="badge">LLM {fmtMs(msg.metric.llm_ms)}</span>
+							<span class="badge">Tools {fmtMs(msg.metric.tool_ms_total)}</span>
+							<span class="badge">Total {fmtMs(msg.metric.total_ms)}</span>
+							<span class="badge">{msg.metric.iterations} iter</span>
 						</div>
 					{/if}
 				</div>
@@ -294,6 +309,23 @@
 	.message-content :global(pre code) {
 		background: none;
 		padding: 0;
+	}
+
+	.metric-badges {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 6px;
+	}
+
+	.metric-badges .badge {
+		background: #1a1d2e;
+		color: #9ca3af;
+		border: 1px solid #2d3148;
+		padding: 2px 8px;
+		border-radius: 10px;
+		font-size: 11px;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 	}
 
 	.thinking {

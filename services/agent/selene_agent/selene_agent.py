@@ -31,6 +31,14 @@ from selene_agent.api.chat import router as chat_router, ws_router as chat_ws_ro
 from selene_agent.api.conversations import router as conversations_router
 from selene_agent.api.status import router as status_router
 from selene_agent.api.homeassistant import router as ha_router
+from selene_agent.api.metrics import router as metrics_router
+from selene_agent.api.tts import router as tts_router
+from selene_agent.api.stt import router as stt_router, ws_router as stt_ws_router
+from selene_agent.api.vision import router as vision_router
+from selene_agent.api.comfy import router as comfy_router
+from selene_agent.api.logs import ws_router as logs_ws_router
+from selene_agent.utils import log_stream
+from selene_agent.utils.metrics_db import metrics_db
 
 logger = custom_logger.get_logger('loki')
 
@@ -118,6 +126,9 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan handler for startup/shutdown"""
     logger.info("Starting Selene Agent")
 
+    # Install in-process log ring buffer for the /ws/logs stream
+    log_stream.install()
+
     # Initialize MCP
     mcp_manager = MCPClientManager()
     _load_mcp_server_configs(mcp_manager)
@@ -126,6 +137,7 @@ async def lifespan(app: FastAPI):
     try:
         await conversation_db.initialize()
         logger.info("Database connection initialized successfully")
+        await metrics_db.ensure_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
 
@@ -211,7 +223,14 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(conversations_router, prefix="/api")
 app.include_router(status_router, prefix="/api")
 app.include_router(ha_router, prefix="/api")
+app.include_router(metrics_router, prefix="/api")
+app.include_router(tts_router, prefix="/api")
+app.include_router(stt_router, prefix="/api")
+app.include_router(vision_router, prefix="/api")
+app.include_router(comfy_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
+app.include_router(stt_ws_router, prefix="/ws")
+app.include_router(logs_ws_router, prefix="/ws")
 
 
 # --- OpenAI-compatible endpoints (kept on /v1/* for voice pipeline backward compat) ---

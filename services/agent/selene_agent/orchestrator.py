@@ -9,6 +9,7 @@ import json
 import re
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -36,6 +37,7 @@ class EventType(str, Enum):
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     RESPONSE_CHUNK = "response_chunk"
+    METRIC = "metric"
     DONE = "done"
     ERROR = "error"
 
@@ -78,6 +80,7 @@ class AgentOrchestrator:
         self.messages: List[Dict[str, Any]] = []
         self.last_query_time: float = time.time()
         self.agent_name = config.AGENT_NAME
+        self.session_id: str = str(uuid.uuid4())
 
         self.temperature = 0.7
         self.top_p = 0.8
@@ -87,6 +90,7 @@ class AgentOrchestrator:
         """Initialize with system prompt"""
         system_prompt = config.SYSTEM_PROMPT
         self.messages = [{"role": "system", "content": system_prompt}]
+        self.session_id = str(uuid.uuid4())
 
     async def _check_session_timeout(self):
         """Check if conversation should be reset due to timeout."""
@@ -136,6 +140,10 @@ class AgentOrchestrator:
         await self._check_session_timeout()
         self.last_query_time = time.time()
 
+        turn_start = time.perf_counter()
+        llm_ms_total = 0.0
+        tool_calls_timing: List[Dict[str, Any]] = []
+
         try:
             self.messages.append({"role": "user", "content": wrapped_message})
             logger.info(f"Query: {user_message}")
@@ -148,6 +156,7 @@ class AgentOrchestrator:
 
                 yield AgentEvent(type=EventType.THINKING, data={"iteration": iteration})
 
+                llm_start = time.perf_counter()
                 response = await self.client.chat.completions.create(
                     model=self.model_name,
                     messages=self.messages,
@@ -157,6 +166,7 @@ class AgentOrchestrator:
                     top_p=self.top_p,
                     max_tokens=self.max_tokens,
                 )
+                llm_ms_total += (time.perf_counter() - llm_start) * 1000
 
                 assistant_message = response.choices[0].message
                 logger.debug(f"Assistant response: {assistant_message}")
@@ -199,11 +209,19 @@ class AgentOrchestrator:
                             data={"tool": function_name, "args": function_args, "id": tool_call.id},
                         )
 
+                        tool_start = time.perf_counter()
                         result = await self._execute_tool_call(tool_call)
+                        tool_ms = (time.perf_counter() - tool_start) * 1000
+                        tool_calls_timing.append({"name": function_name, "ms": int(tool_ms)})
 
                         yield AgentEvent(
                             type=EventType.TOOL_RESULT,
-                            data={"tool": function_name, "result": result, "id": tool_call.id},
+                            data={
+                                "tool": function_name,
+                                "result": result,
+                                "id": tool_call.id,
+                                "ms": int(tool_ms),
+                            },
                         )
 
                         self.messages.append({
@@ -217,6 +235,16 @@ class AgentOrchestrator:
                 # Final text response
                 if assistant_message.content:
                     logger.info(f"Got final response after {iteration} iteration(s)")
+                    total_ms = (time.perf_counter() - turn_start) * 1000
+                    tool_ms_total = sum(tc["ms"] for tc in tool_calls_timing)
+                    metric_payload = {
+                        "llm_ms": int(llm_ms_total),
+                        "tool_ms_total": int(tool_ms_total),
+                        "total_ms": int(total_ms),
+                        "iterations": iteration,
+                        "tool_calls": tool_calls_timing,
+                    }
+                    yield AgentEvent(type=EventType.METRIC, data=metric_payload)
                     yield AgentEvent(
                         type=EventType.DONE,
                         data={"content": assistant_message.content},
