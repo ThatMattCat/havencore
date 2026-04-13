@@ -101,7 +101,43 @@ class QdrantMCPServer:
         except Exception as e:
             logger.error(f"Failed to get embedding: {e}")
             raise
-    
+
+    async def _record_accesses(self, ids: List[str]) -> None:
+        """Fire-and-forget bump of access_count + last_accessed_at for the given ids.
+
+        Increment is approximate: Qdrant's set_payload is not atomic-increment.
+        We read current counts and write back count+1. Concurrent retrievals may
+        drop ticks — acceptable because consolidation applies log(1+access_count)
+        which dampens counting noise.
+        """
+        if not ids:
+            return
+        try:
+            current = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=ids,
+                with_payload=True,
+                with_vectors=False,
+            )
+            now_iso = datetime.now(timezone.utc).isoformat()
+            by_id = {str(p.id): (p.payload or {}).get("access_count", 0) for p in current}
+            # Group ids by their new count so we can issue one set_payload per group.
+            from collections import defaultdict
+            groups = defaultdict(list)
+            for pid in ids:
+                groups[by_id.get(pid, 0) + 1].append(pid)
+            for new_count, group_ids in groups.items():
+                self.client.set_payload(
+                    collection_name=self.collection_name,
+                    payload={
+                        "access_count": new_count,
+                        "last_accessed_at": now_iso,
+                    },
+                    points=group_ids,
+                )
+        except Exception as e:
+            logger.warning(f"_record_accesses failed (non-fatal): {e}")
+
     def _setup_handlers(self):
         """Set up MCP server handlers"""
         
@@ -348,13 +384,17 @@ class QdrantMCPServer:
                     memory["expires"] = result.payload["expires"]
                 memories.append(memory)
 
+            # Fire-and-forget: do NOT await; retrieval must not wait on this.
+            if memories:
+                asyncio.create_task(self._record_accesses([m["id"] for m in memories]))
+
             return {
                 "success": True,
                 "query": query,
                 "count": len(memories),
                 "results": memories
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to search memories: {e}")
             return {

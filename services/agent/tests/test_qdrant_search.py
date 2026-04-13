@@ -82,3 +82,25 @@ async def test_search_excludes_l4(server):
             if getattr(cond, "key", None) == "tier":
                 found = True
     assert found, "expected must_not filter on tier='L4'"
+
+
+@pytest.mark.asyncio
+async def test_search_fires_access_update(server):
+    server.client.query_points = MagicMock()
+    server.client.query_points.return_value.points = [
+        _mk_point("a", "L2", 0.9), _mk_point("b", "L2", 0.5),
+    ]
+    server.client.set_payload = MagicMock()
+    await server._search_memories({"query": "q", "limit": 5})
+    # Background task scheduled — let it run.
+    import asyncio as aio
+    await aio.sleep(0)
+    await aio.sleep(0)
+    assert server.client.set_payload.called
+    call = server.client.set_payload.call_args
+    assert call.kwargs["collection_name"] == server.collection_name
+    payload = call.kwargs["payload"]
+    assert "last_accessed_at" in payload
+    # Increment is handled via a per-id update path; confirm ids are targeted.
+    points = call.kwargs.get("points") or []
+    assert set(points) == {"a", "b"}
