@@ -223,6 +223,132 @@ async def _cluster_to_l3(
         stats["l3_created"] += 1
 
 
+async def _propose_l4(
+    client,
+    stats: Dict[str, Any],
+    *,
+    llm_client,
+    model_name: str,
+) -> None:
+    """Step 4: flag eligible L3 entries as pending_l4_approval."""
+    from qdrant_client.models import (
+        Filter, FieldCondition, MatchValue, Range,
+    )
+    from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
+
+    flt = Filter(
+        must=[
+            FieldCondition(key="tier", match=MatchValue(value="L3")),
+            FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
+            FieldCondition(
+                key="importance_effective",
+                range=Range(gte=config.MEMORY_L4_MIN_IMPORTANCE),
+            ),
+        ]
+    )
+    candidates = _scroll_all(
+        client, flt=flt, collection=COLLECTION_NAME, cap=500,
+    )
+    now = _now()
+    now_iso = now.isoformat()
+    for p in candidates:
+        payload = p.payload or {}
+        created = _parse_ts(payload.get("timestamp", ""))
+        age_days = max(0, (now - created).days)
+        if age_days < config.MEMORY_L4_MIN_AGE_DAYS:
+            continue
+        access_ok = (
+            int(payload.get("access_count", 0) or 0) >= config.MEMORY_L4_MIN_ACCESS_COUNT
+            or "core_fact" in (payload.get("tags") or [])
+        )
+        if not access_ok:
+            continue
+        # Short LLM-authored rationale. If this fails, fall back to static text.
+        rationale = (
+            "Consolidated high-importance memory has aged and been retrieved "
+            "enough to warrant persistent context."
+        )
+        try:
+            resp = await llm_client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content":
+                     "Write ONE short sentence (<=120 chars) justifying why "
+                     "this consolidated memory should be promoted to the "
+                     "always-in-context tier. No prose beyond the sentence."},
+                    {"role": "user", "content": str(payload.get("text", ""))[:500]},
+                ],
+                max_tokens=80,
+                temperature=0.2,
+            )
+            candidate_text = (resp.choices[0].message.content or "").strip()
+            if candidate_text:
+                rationale = candidate_text[:240]
+            stats["llm_calls"] = stats.get("llm_calls", 0) + 1
+        except Exception as e:
+            logger.warning(f"[memory_review] rationale LLM failed: {e}")
+
+        client.set_payload(
+            collection_name=COLLECTION_NAME,
+            payload={
+                "pending_l4_approval": True,
+                "proposed_at": now_iso,
+                "proposal_rationale": rationale,
+            },
+            points=[str(p.id)],
+        )
+        stats["l4_proposed"] = stats.get("l4_proposed", 0) + 1
+
+
+async def _prune_l2(client, stats: Dict[str, Any]) -> None:
+    """Step 5: delete stale low-importance L2 entries not referenced by any L3."""
+    from qdrant_client.models import (
+        Filter, FieldCondition, MatchValue, Range, PointIdsList,
+    )
+    from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
+
+    # Gather all L3 source_ids first (protection set).
+    l3_flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])
+    l3s = _scroll_all(client, flt=l3_flt, collection=COLLECTION_NAME, cap=5000)
+    protected: set[str] = set()
+    for p in l3s:
+        for sid in (p.payload or {}).get("source_ids") or []:
+            protected.add(str(sid))
+
+    # Scroll candidates: L2, importance_effective below threshold.
+    cand_flt = Filter(
+        must=[
+            FieldCondition(key="tier", match=MatchValue(value="L2")),
+            FieldCondition(
+                key="importance_effective",
+                range=Range(lt=config.MEMORY_L2_PRUNE_IMPORTANCE_THRESHOLD),
+            ),
+        ]
+    )
+    candidates = _scroll_all(
+        client, flt=cand_flt, collection=COLLECTION_NAME, cap=5000,
+    )
+    now = _now()
+    to_delete: List[str] = []
+    for p in candidates:
+        payload = p.payload or {}
+        created = _parse_ts(payload.get("timestamp", ""))
+        age_days = max(0, (now - created).days)
+        if age_days < config.MEMORY_L2_PRUNE_AGE_DAYS:
+            continue
+        pid = str(p.id)
+        if pid in protected:
+            continue
+        to_delete.append(pid)
+
+    if to_delete:
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=PointIdsList(points=to_delete),
+        )
+    stats["l2_pruned"] = len(to_delete)
+
+
 async def handle(
     item: Dict[str, Any],
     *,
@@ -256,6 +382,16 @@ async def handle(
         )
     except Exception as e:
         logger.error(f"[memory_review] step 3 failed: {e}")
+
+    try:
+        await _propose_l4(qc, stats, llm_client=client, model_name=model_name)
+    except Exception as e:
+        logger.error(f"[memory_review] step 4 failed: {e}")
+
+    try:
+        await _prune_l2(qc, stats)
+    except Exception as e:
+        logger.error(f"[memory_review] step 5 failed: {e}")
 
     total_ms = int((time.perf_counter() - start) * 1000)
     summary = (

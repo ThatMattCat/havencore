@@ -114,3 +114,66 @@ async def test_cluster_step_skips_when_too_few_new_points(qdrant_stub, monkeypat
     )
     assert stats["l3_created"] == 0
     qdrant_stub.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_propose_l4_flags_eligible_l3(qdrant_stub, monkeypatch):
+    from selene_agent.autonomy.handlers import memory_review
+
+    # L3 candidate: old enough, important enough, accessed enough.
+    old_enough = "2026-03-15T00:00:00+00:00"
+    candidate = _stub_point(
+        "l3a", "core preference", importance=5,
+        tier="L3", created=old_enough, access_count=5,
+        importance_effective=5.0,
+    )
+    qdrant_stub.scroll.return_value = ([candidate], None)
+    monkeypatch.setattr(memory_review, "_now", lambda: datetime(2026, 4, 13, tzinfo=timezone.utc))
+
+    stats = {"l4_proposed": 0, "llm_calls": 0}
+    await memory_review._propose_l4(
+        qdrant_stub, stats,
+        llm_client=MagicMock(), model_name="gpt-3.5-turbo",
+    )
+    assert stats["l4_proposed"] == 1
+    call = qdrant_stub.set_payload.call_args
+    payload = call.kwargs["payload"]
+    assert payload["pending_l4_approval"] is True
+    assert payload["proposed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_prune_respects_source_protection(qdrant_stub, monkeypatch):
+    from selene_agent.autonomy.handlers import memory_review
+
+    # L3 references "protected". Both "protected" and "unprotected" are
+    # stale+low-importance L2, but only "unprotected" should be deleted.
+    l3 = _stub_point("l3", "x", 3, tier="L3", source_ids=["protected"])
+    l2_protected = _stub_point(
+        "protected", "p", importance=1, tier="L2",
+        created="2025-09-01T00:00:00+00:00",
+        importance_effective=0.1,
+    )
+    l2_free = _stub_point(
+        "unprotected", "u", importance=1, tier="L2",
+        created="2025-09-01T00:00:00+00:00",
+        importance_effective=0.1,
+    )
+
+    def _scroll_side_effect(**kw):
+        flt = kw.get("scroll_filter")
+        # Detect tier being filtered by stringifying the filter.
+        s = str(flt)
+        if "'L3'" in s:
+            return ([l3], None)
+        return ([l2_protected, l2_free], None)
+
+    qdrant_stub.scroll.side_effect = _scroll_side_effect
+    monkeypatch.setattr(memory_review, "_now", lambda: datetime(2026, 4, 13, tzinfo=timezone.utc))
+
+    stats = {"l2_pruned": 0}
+    await memory_review._prune_l2(qdrant_stub, stats)
+    assert stats["l2_pruned"] == 1
+    delete_call = qdrant_stub.delete.call_args
+    ids = delete_call.kwargs["points_selector"].points
+    assert ids == ["unprotected"]
