@@ -68,7 +68,12 @@ class AutonomousTurn:
             tools=tools,
         )
         # Replace system prompt + override sampling for this one-shot run.
-        orch.messages = [{"role": "system", "content": self.system_prompt}]
+        from selene_agent.utils.l4_context import build_l4_block
+        _l4 = await build_l4_block()
+        _sys = (_l4 + "\n\n" + self.system_prompt) if _l4 else self.system_prompt
+        orch.messages = [{"role": "system", "content": _sys}]
+        # Autonomous turn already handled L4 injection — skip prepare()'s path.
+        orch._l4_pending = False
         orch.temperature = self.temperature
         orch.max_tokens = self.max_tokens
 

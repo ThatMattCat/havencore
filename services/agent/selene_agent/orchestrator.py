@@ -85,11 +85,20 @@ class AgentOrchestrator:
         self.temperature = 0.7
         self.top_p = 0.8
         self.max_tokens = 1024
+        self._l4_pending = True
 
     async def initialize(self):
-        """Initialize with system prompt"""
+        """Initialize with system prompt (prepends L4 persistent-memory block when present)."""
         system_prompt = config.SYSTEM_PROMPT
+        try:
+            from selene_agent.utils.l4_context import build_l4_block
+            block = await build_l4_block()
+            if block:
+                system_prompt = block + "\n\n" + system_prompt
+        except Exception as e:
+            logger.warning(f"L4 block build failed during initialize: {e}")
         self.messages = [{"role": "system", "content": system_prompt}]
+        self._l4_pending = False
         self.session_id = str(uuid.uuid4())
 
     async def _check_session_timeout(self):
@@ -116,6 +125,19 @@ class AgentOrchestrator:
 
             await self.initialize()
 
+    async def prepare(self) -> None:
+        """Lazily prepend L4 block if the orchestrator was set up without initialize()."""
+        if not getattr(self, "_l4_pending", True):
+            return
+        try:
+            from selene_agent.utils.l4_context import build_l4_block
+            block = await build_l4_block()
+            if block and self.messages and self.messages[0].get("role") == "system":
+                self.messages[0]["content"] = block + "\n\n" + self.messages[0]["content"]
+        except Exception as e:
+            logger.warning(f"L4 block build failed during prepare: {e}")
+        self._l4_pending = False
+
     async def run(self, user_message: str) -> AsyncGenerator[AgentEvent, None]:
         """
         Process a user message, yielding events as the agent works.
@@ -128,6 +150,7 @@ class AgentOrchestrator:
         - DONE: Final response complete
         - ERROR: An error occurred
         """
+        await self.prepare()
         wrapped_message = f"""
 ### System Context
 - Current date and time: {datetime.now(ZoneInfo(config.CURRENT_TIMEZONE)).strftime('%A, %Y-%m-%d %H:%M:%S %Z')}
