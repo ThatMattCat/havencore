@@ -87,6 +87,7 @@ volumes/**/*
 # Claude Code
 CLAUDE.md
 .claude/*
+.worktrees/
 
 # Overrides (keep at end)
 !/.gitkeep
