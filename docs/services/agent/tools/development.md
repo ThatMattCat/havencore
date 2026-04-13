@@ -1236,13 +1236,73 @@ class TestToolIntegration:
 
 ### MCP Server Testing
 
-```bash
-# Test MCP server directly
-echo '{"method": "tools/list", "params": {}}' | node mcp-servers/file-manager/server.js
+HavenCore's MCP servers run as subprocesses of the agent (see the `MCP_SERVERS`
+JSON in `.env`). Each one is a Python module launched with
+`python -m selene_agent.modules.<name>` and talks JSON-RPC over stdio. To
+exercise one manually, run the same command inside the **agent container** —
+that's where the Python deps, the loaded `.env`, and `shared_config` live.
 
-# Test tool call
-echo '{"method": "tools/call", "params": {"name": "list_files", "arguments": {"path": "."}}}' | node mcp-servers/file-manager/server.js
+Requires the agent container to be running (`docker compose up -d agent`).
+
+#### Quick sanity check — does the server start and list tools?
+
+Run the full MCP handshake (`initialize` → `notifications/initialized` → `tools/list`)
+against the server:
+
+```bash
+docker compose exec -T agent python -m selene_agent.modules.mcp_homeassistant_tools <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual-test","version":"0.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+EOF
 ```
+
+Expect two JSON-RPC responses on stdout: the `initialize` result (protocol
+version + server info) and the `tools/list` result (array of tool definitions
+with `name`, `description`, `inputSchema`). Server logs go to stderr —
+`docker compose exec` interleaves both, so pipe to `grep -E '^\{'` if you only
+want the JSON.
+
+Swap the module for any of the others:
+
+| Server | Module |
+|---|---|
+| general_tools | `selene_agent.modules.mcp_general_tools` |
+| homeassistant | `selene_agent.modules.mcp_homeassistant_tools` |
+| plex | `selene_agent.modules.mcp_plex_tools` |
+| mcp_server_qdrant | `selene_agent.modules.mcp_qdrant_tools` |
+| mqtt | `selene_agent.modules.mcp_mqtt_tools` |
+
+(The `mcp_server_fetch` entry in `.env` is the upstream `mcp-server-fetch`
+package, not a local module.)
+
+#### Exercising a specific tool
+
+Add a `tools/call` message with the tool name and arguments. Important: if the
+tool makes an external call (HA REST/WS, web API, vector DB), stdin EOF from a
+heredoc can race the response and kill the subprocess mid-reply. Wrap the
+input so stdin stays open until the tool finishes:
+
+```bash
+(cat <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual-test","version":"0.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ha_get_domain_services","arguments":{"domain":"light"}}}
+EOF
+sleep 3) | docker compose exec -T agent python -m selene_agent.modules.mcp_homeassistant_tools 2>&1 | grep -E '^\{'
+```
+
+The response wraps the tool's output in `result.content` (an array of
+`{type, text}` blocks). `isError: false` means the transport succeeded — a
+tool reporting its own failure will still come back with `isError: false` and
+the error text inside `content`. Bump `sleep` higher for slow tools.
+
+#### End-to-end via the chat API
+
+To test a tool the way the LLM actually invokes it — including tool
+selection, argument synthesis, and the follow-up response — hit
+`/v1/chat/completions` with a prompt that forces the tool. See the
+[Integration Testing](#integration-testing) section above for the pattern.
 
 ### Debugging Tools
 
