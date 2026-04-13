@@ -31,5 +31,19 @@ dependencies = [
     "croniter>=2.0.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
 [project.scripts]
 agent = "selene_agent.selene_agent:main"
+
+[tool.setuptools.packages.find]
+include = ["selene_agent*"]
+exclude = ["frontend*", "tests*"]
