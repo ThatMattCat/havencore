@@ -268,13 +268,13 @@ class QdrantMCPServer:
                 search_filter = Filter(**filter_dict)
             
             # Search in Qdrant
-            results = self.client.search(
+            results = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=search_filter,
                 limit=limit,
                 with_payload=True
-            )
+            ).points
             
             # Format results
             memories = []
