@@ -50,6 +50,12 @@ def _embed(text: str) -> List[float]:
     return r.json()[0]
 
 
+def _scored_out(p: Any, score: float) -> Dict[str, Any]:
+    out = _point_out(p)
+    out["score"] = float(score)
+    return out
+
+
 def _point_out(p: Any) -> Dict[str, Any]:
     pl = p.payload or {}
     return {
@@ -254,6 +260,50 @@ def delete_l3(entry_id: str):
     c.delete(collection_name=_collection(),
              points_selector=PointIdsList(points=[entry_id]))
     return {"id": entry_id, "deleted": True}
+
+
+# ---------- Semantic search ----------
+
+class SearchRequest(BaseModel):
+    q: str
+    tiers: List[str] = ["L2", "L3", "L4"]
+    limit: int = 25
+
+
+@router.post("/memory/search")
+def search(body: SearchRequest):
+    from qdrant_client.models import Filter, FieldCondition, MatchAny
+
+    if not body.q.strip():
+        raise HTTPException(400, "query is empty")
+
+    valid_tiers = [t for t in body.tiers if t in ("L2", "L3", "L4")]
+    if not valid_tiers:
+        raise HTTPException(400, "no valid tiers selected")
+
+    limit = max(1, min(body.limit, 100))
+
+    try:
+        vec = _embed(body.q)
+    except Exception as e:
+        raise HTTPException(502, f"embedding service error: {e}")
+
+    flt = Filter(must=[FieldCondition(key="tier", match=MatchAny(any=valid_tiers))])
+
+    c = _qdrant_client()
+    results = c.query_points(
+        collection_name=_collection(),
+        query=vec,
+        query_filter=flt,
+        limit=limit,
+        with_payload=True,
+    ).points
+
+    return {
+        "query": body.q,
+        "tiers": valid_tiers,
+        "results": [_scored_out(r, r.score) for r in results],
+    }
 
 
 # ---------- Runs + stats ----------

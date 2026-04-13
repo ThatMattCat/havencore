@@ -8,7 +8,11 @@
 	let tools = $state(null);
 	let conversations = $state(null);
 	let haSummary = $state(null);
+	let memory = $state(null);
+	let memoryLastRun = $state(null);
 	let error = $state('');
+
+	const L4_TOKEN_BUDGET = 1500;
 
 	onMount(async () => {
 		try {
@@ -27,6 +31,16 @@
 		// HA summary is optional — don't fail the whole dashboard if HA is down
 		try {
 			haSummary = await getEntitySummary();
+		} catch {}
+
+		// Memory summary is optional — don't fail the dashboard if Qdrant is down
+		try {
+			const [m, runs] = await Promise.all([
+				fetch('/api/memory/stats').then((r) => (r.ok ? r.json() : null)),
+				fetch('/api/memory/runs?limit=1').then((r) => (r.ok ? r.json() : null)),
+			]);
+			memory = m;
+			memoryLastRun = runs?.runs?.[0] ?? null;
 		} catch {}
 	});
 
@@ -126,6 +140,57 @@
 				{/if}
 			{:else}
 				<div class="loading">Loading...</div>
+			{/if}
+		</Card>
+
+		<!-- Memory -->
+		<Card title="Memory">
+			{#if memory}
+				<div class="memory-summary">
+					<div class="tier-row">
+						<span class="tier-label">L4 persistent</span>
+						<span class="tier-count">{memory.l4_count}</span>
+					</div>
+					<div class="tier-row">
+						<span class="tier-label">L3 consolidated</span>
+						<span class="tier-count">{memory.l3_count}</span>
+					</div>
+					<div class="tier-row">
+						<span class="tier-label">L2 episodic</span>
+						<span class="tier-count">{memory.l2_count}</span>
+					</div>
+				</div>
+
+				<div class="token-meter" title="L4 is injected into every system prompt">
+					<div class="token-meter-header">
+						<span class="muted">L4 token budget</span>
+						<span class="token-meter-value" class:warn={memory.l4_est_tokens > L4_TOKEN_BUDGET}>
+							{memory.l4_est_tokens} / {L4_TOKEN_BUDGET}
+						</span>
+					</div>
+					<div class="token-meter-bar">
+						<div
+							class="token-meter-fill"
+							class:warn={memory.l4_est_tokens > L4_TOKEN_BUDGET}
+							style="width: {Math.min(100, (memory.l4_est_tokens / L4_TOKEN_BUDGET) * 100)}%"
+						></div>
+					</div>
+				</div>
+
+				{#if memory.pending_proposals > 0}
+					<div class="memory-cta">
+						<StatusBadge status="unhealthy" label="{memory.pending_proposals} proposals pending review" />
+					</div>
+				{/if}
+
+				<div class="memory-footer">
+					<span class="muted">
+						Last consolidation: {memoryLastRun?.triggered_at ? formatTime(memoryLastRun.triggered_at) : 'never'}
+					</span>
+					<a href="/memory" class="see-all">Open memory</a>
+				</div>
+			{:else}
+				<p class="muted">Memory unavailable</p>
 			{/if}
 		</Card>
 
@@ -331,5 +396,81 @@
 
 	.see-all:hover {
 		text-decoration: underline;
+	}
+
+	.memory-summary {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin-bottom: 12px;
+	}
+
+	.tier-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		font-size: 13px;
+		padding: 4px 0;
+	}
+
+	.tier-label {
+		color: #c9cdd5;
+	}
+
+	.tier-count {
+		color: #a78bfa;
+		font-weight: 600;
+		font-size: 15px;
+	}
+
+	.token-meter {
+		margin-bottom: 12px;
+	}
+
+	.token-meter-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		margin-bottom: 6px;
+	}
+
+	.token-meter-value {
+		font-size: 12px;
+		color: #c9cdd5;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.token-meter-value.warn {
+		color: #f87171;
+	}
+
+	.token-meter-bar {
+		height: 6px;
+		background: #0f1117;
+		border: 1px solid #2d3148;
+		border-radius: 4px;
+		overflow: hidden;
+	}
+
+	.token-meter-fill {
+		height: 100%;
+		background: linear-gradient(90deg, #6366f1, #8b5cf6);
+		transition: width 0.3s ease;
+	}
+
+	.token-meter-fill.warn {
+		background: linear-gradient(90deg, #f59e0b, #f87171);
+	}
+
+	.memory-cta {
+		margin-bottom: 12px;
+	}
+
+	.memory-footer {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 </style>
