@@ -28,7 +28,9 @@ dependencies = [
     "aiofiles",
     "aiohttp",
     "python-multipart",
-    "croniter>=2.0.0"
+    "croniter>=2.0.0",
+    "hdbscan>=0.8.33",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
