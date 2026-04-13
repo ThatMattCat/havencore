@@ -52,6 +52,23 @@ STT_DEVICE = os.getenv('STT_DEVICE', "0") # GPU index to use for speech-to-text 
 
 LLM_API_KEY = os.getenv('LLM_API_KEY', "1234")
 
+# Autonomy Engine
+AUTONOMY_ENABLED = os.getenv('AUTONOMY_ENABLED', 'true').lower() == 'true'
+AUTONOMY_DISPATCH_INTERVAL_SECONDS = int(os.getenv('AUTONOMY_DISPATCH_INTERVAL_SECONDS', '30'))
+AUTONOMY_BRIEFING_CRON = os.getenv('AUTONOMY_BRIEFING_CRON', '0 8 * * *')
+AUTONOMY_ANOMALY_CRON = os.getenv('AUTONOMY_ANOMALY_CRON', '*/15 * * * *')
+AUTONOMY_ANOMALY_COOLDOWN_MIN = int(os.getenv('AUTONOMY_ANOMALY_COOLDOWN_MIN', '30'))
+AUTONOMY_MAX_RUNS_PER_HOUR = int(os.getenv('AUTONOMY_MAX_RUNS_PER_HOUR', '20'))
+AUTONOMY_TURN_TIMEOUT_SEC = int(os.getenv('AUTONOMY_TURN_TIMEOUT_SEC', '60'))
+AUTONOMY_BRIEFING_EMAIL_TO = os.getenv('AUTONOMY_BRIEFING_EMAIL_TO', '')
+AUTONOMY_HA_NOTIFY_TARGET = os.getenv('AUTONOMY_HA_NOTIFY_TARGET', '')
+AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
+    e.strip() for e in os.getenv('AUTONOMY_BRIEFING_CAMERA_ENTITIES', '').split(',') if e.strip()
+]
+AUTONOMY_ANOMALY_WATCH_DOMAINS = [
+    d.strip() for d in os.getenv('AUTONOMY_ANOMALY_WATCH_DOMAINS', 'binary_sensor,lock,cover').split(',') if d.strip()
+]
+
 SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly AI assistant with access to various tools.
         Current Location: {CURRENT_LOCATION}
         Zip Code: {CURRENT_ZIPCODE}

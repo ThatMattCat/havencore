@@ -189,7 +189,12 @@ class QdrantMCPServer:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "importance": importance,
                 "tags": tags,
-                "source": "mcp_server"
+                "source": "mcp_server",
+                # Memory tiering (v1 = all new memories are L2; v2 consolidation
+                # will promote select entries into L3 / L4). source_ids links
+                # consolidated memories back to their originating L2 rows.
+                "tier": "L2",
+                "source_ids": [],
             }
             
             if expires_in_days:
@@ -285,6 +290,9 @@ class QdrantMCPServer:
                     "timestamp": result.payload.get("timestamp", ""),
                     "importance": result.payload.get("importance", 0),
                     "tags": result.payload.get("tags", []),
+                    # Tier defaults to 'L2' for pre-tier-field rows (backward compat).
+                    "tier": result.payload.get("tier", "L2"),
+                    "source_ids": result.payload.get("source_ids", []),
                     "relevance_score": float(result.score)
                 }
                 

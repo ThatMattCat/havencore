@@ -27,7 +27,8 @@ dependencies = [
     "websockets",
     "aiofiles",
     "aiohttp",
-    "python-multipart"
+    "python-multipart",
+    "croniter>=2.0.0"
 ]
 
 [project.scripts]

@@ -36,9 +36,11 @@ from selene_agent.api.tts import router as tts_router
 from selene_agent.api.stt import router as stt_router
 from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
+from selene_agent.api.autonomy import router as autonomy_router
 from selene_agent.api.logs import ws_router as logs_ws_router
 from selene_agent.utils import log_stream
 from selene_agent.utils.metrics_db import metrics_db
+from selene_agent.autonomy.engine import AutonomyEngine
 
 logger = custom_logger.get_logger('loki')
 
@@ -187,11 +189,31 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = orchestrator
     app.state.mcp_manager = mcp_manager
 
+    # Autonomy engine — proactive behaviors (briefings, anomaly sweeps).
+    autonomy_engine = AutonomyEngine(
+        client=client,
+        mcp_manager=mcp_manager,
+        model_name=model_name,
+        base_tools=tools,
+    )
+    app.state.autonomy_engine = autonomy_engine
+    if config.AUTONOMY_ENABLED:
+        try:
+            await autonomy_engine.start()
+        except Exception as e:
+            logger.error(f"Failed to start AutonomyEngine: {e}")
+    else:
+        logger.info("AutonomyEngine disabled via AUTONOMY_ENABLED=false")
+
     logger.info("Selene Agent initialized successfully")
 
     yield
 
     logger.info("Shutting down Selene Agent")
+    try:
+        await autonomy_engine.stop()
+    except Exception as e:
+        logger.error(f"Error stopping AutonomyEngine: {e}")
     if mcp_manager:
         await mcp_manager.cleanup()
     await conversation_db.close()
@@ -228,6 +250,7 @@ app.include_router(tts_router, prefix="/api")
 app.include_router(stt_router, prefix="/api")
 app.include_router(vision_router, prefix="/api")
 app.include_router(comfy_router, prefix="/api")
+app.include_router(autonomy_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")
 
@@ -354,7 +377,18 @@ async def list_models():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "agent": "selene"}
+    payload = {"status": "healthy", "agent": "selene"}
+    engine = getattr(app.state, "autonomy_engine", None)
+    if engine is not None:
+        try:
+            payload["autonomy"] = {
+                "running": engine.is_running(),
+                "paused": engine.is_paused(),
+                "last_dispatch_at": engine.last_dispatch_at.isoformat() if engine.last_dispatch_at else None,
+            }
+        except Exception as e:
+            payload["autonomy"] = {"error": str(e)}
+    return payload
 
 
 # Legacy endpoint — kept for backward compatibility, delegates to status router
