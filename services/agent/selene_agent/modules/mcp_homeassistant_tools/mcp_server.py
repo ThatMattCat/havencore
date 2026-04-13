@@ -36,6 +36,29 @@ if TEST_MODE:
     HA_WS_URL = "ws://localhost:8123/api/websocket"
 
 
+class EntityNotFoundError(Exception):
+    """Raised when a service call references an entity that does not exist in HA.
+
+    HA's POST /api/services endpoint returns HTTP 200 with an empty body for
+    non-existent entities — indistinguishable from a legitimate no-op (e.g.
+    turn_off on an already-off light). We detect the missing-entity case with a
+    pre-flight GET /api/states/<entity_id> and surface it explicitly so tool
+    responses can't silently falsely claim success.
+    """
+
+    def __init__(self, entity_id: str):
+        self.entity_id = entity_id
+        super().__init__(f"Entity '{entity_id}' does not exist in Home Assistant")
+
+
+def _format_entity_not_found(err: "EntityNotFoundError", device_label: str = "entity") -> str:
+    return (
+        f"FAILED: {device_label} '{err.entity_id}' does not exist in Home Assistant. "
+        "No action was taken. Call ha_get_domain_entity_states or ha_get_entities_in_area "
+        "to look up the correct entity_id, then retry. Do not guess entity names."
+    )
+
+
 class HomeAssistantClient:
     """Async Home Assistant REST API client using aiohttp."""
 
@@ -106,6 +129,16 @@ class HomeAssistantClient:
         data = await self._get(f"/api/states/{entity_id}")
         return data.get("state", "unknown")
 
+    async def _entity_exists(self, entity_id: str) -> bool:
+        """Return True if the entity exists, False if HA returns 404 for it."""
+        try:
+            await self._get(f"/api/states/{entity_id}")
+            return True
+        except aiohttp.ClientResponseError as e:
+            if e.status == 404:
+                return False
+            raise
+
     async def execute_service(
         self,
         entity_id: Optional[str],
@@ -120,6 +153,8 @@ class HomeAssistantClient:
         if TEST_MODE:
             target = entity_id or f"{domain}.*"
             return f"Mock execution: {domain}.{service} on {target}"
+        if entity_id and not await self._entity_exists(entity_id):
+            raise EntityNotFoundError(entity_id)
         payload = {**service_data}
         if entity_id:
             payload["entity_id"] = entity_id
@@ -768,6 +803,8 @@ class HomeAssistantMCPServer:
         try:
             result = await self.ha_client.execute_service(entity_id, service, **service_data)
             return f"Service '{service}' executed on '{entity_id}': {result}"
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "entity")
         except Exception as e:
             return f"Error executing service '{service}' on '{entity_id}': {str(e)}"
 
@@ -794,6 +831,8 @@ class HomeAssistantMCPServer:
                 extras["color_temp_kelvin"] = color_temp_kelvin
         try:
             return await self.ha_client.execute_service(entity_id, service, **extras)
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Light")
         except Exception as e:
             return f"Error controlling light '{entity_id}': {e}"
 
@@ -821,24 +860,32 @@ class HomeAssistantMCPServer:
                     await self.ha_client.execute_service(entity_id, "set_fan_mode", fan_mode=fan_mode)
                 )
             return "; ".join(results)
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Climate")
         except Exception as e:
             return f"Error controlling climate '{entity_id}': {e}"
 
     async def _activate_scene(self, scene_entity: str) -> str:
         try:
             return await self.ha_client.execute_service(scene_entity, "turn_on")
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Scene")
         except Exception as e:
             return f"Error activating scene '{scene_entity}': {e}"
 
     async def _trigger_script(self, script_entity: str, variables: Dict[str, Any]) -> str:
         try:
             return await self.ha_client.execute_service(script_entity, "turn_on", **variables)
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Script")
         except Exception as e:
             return f"Error triggering script '{script_entity}': {e}"
 
     async def _trigger_automation(self, automation_entity: str) -> str:
         try:
             return await self.ha_client.execute_service(automation_entity, "trigger")
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Automation")
         except Exception as e:
             return f"Error triggering automation '{automation_entity}': {e}"
 
@@ -846,6 +893,8 @@ class HomeAssistantMCPServer:
         service = "turn_on" if enabled else "turn_off"
         try:
             return await self.ha_client.execute_service(entity_id, service)
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Automation")
         except Exception as e:
             verb = "enable" if enabled else "disable"
             return f"Error trying to {verb} automation '{entity_id}': {e}"
@@ -975,6 +1024,8 @@ class HomeAssistantMCPServer:
             extras["duration"] = duration
         try:
             return await self.ha_client.execute_service(entity_id, "start", **extras)
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error starting timer '{entity_id}': {e}"
 
@@ -983,6 +1034,8 @@ class HomeAssistantMCPServer:
             return "Error: entity_id is required"
         try:
             return await self.ha_client.execute_service(entity_id, "cancel")
+        except EntityNotFoundError as e:
+            return _format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error cancelling timer '{entity_id}': {e}"
 

@@ -123,6 +123,21 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   `homeassistant_api.Client` was replaced to unblock the orchestrator event
   loop under tool calls. All methods open a short-lived session with a 15s
   timeout.
+- **`execute_service` pre-flights entity existence.** HA's
+  `POST /api/services/<domain>/<service>` returns HTTP 200 with an empty
+  body `[]` for *both* non-existent entities and legitimate no-ops (e.g.
+  `turn_off` on an already-off light), so the response alone can't
+  distinguish the two. Before the service POST, the client does a
+  `GET /api/states/<entity_id>`; a 404 raises `EntityNotFoundError` and
+  each wrapper (`ha_control_light`, `ha_execute_service`, `ha_control_climate`,
+  `ha_activate_scene`, `ha_trigger_script`, `ha_trigger_automation`,
+  `ha_toggle_automation`, `ha_set_timer`, `ha_cancel_timer`) turns that into
+  a `FAILED: <kind> '<entity_id>' does not exist in Home Assistant. ...`
+  message that tells the LLM to call `ha_get_domain_entity_states` /
+  `ha_get_entities_in_area` before retrying. This costs one extra round-trip
+  per service call but closes a silent-failure path where guessed entity
+  IDs looked like success. `ha_send_notification` skips the check (it
+  calls with `entity_id=None`).
 - **`execute_service` takes an optional `domain`.** Notify / mobile /
   script-less services pass `entity_id=None` and an explicit `domain`
   (e.g. `domain="notify"`). Other tools let the client derive the domain
@@ -150,6 +165,16 @@ Initialization failed. Check `docker compose logs agent` for the
   inside the agent container**, not just the host.
 - `HAOS_TOKEN` missing or revoked.
 - Network boundary (the agent container can't reach the HA VLAN).
+
+### A tool returns `FAILED: <kind> '...' does not exist in Home Assistant`
+
+The pre-flight `GET /api/states/<entity_id>` in `HomeAssistantClient.execute_service`
+returned 404. The service POST was **not** issued, so nothing changed in HA.
+This typically means the LLM guessed an entity ID that doesn't exist; the
+message instructs it to call `ha_get_domain_entity_states` or
+`ha_get_entities_in_area` first and retry. If the entity *should* exist,
+verify the exact ID in HA's **Developer Tools → States** — naming is
+case-sensitive and exact (`light.kitchen_light_1`, not `light.kitchen`).
 
 ### Tools return `{"error": "..."}` with a stack-trace-like string
 

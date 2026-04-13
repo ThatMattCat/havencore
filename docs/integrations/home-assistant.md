@@ -337,13 +337,28 @@ docker compose exec agent env | grep HAOS_TOKEN
 
 #### Entity Not Found
 ```
-Error: Entity 'light.nonexistent' not found
+FAILED: Light 'light.sitting_room_lamp' does not exist in Home Assistant.
+No action was taken. Call ha_get_domain_entity_states or ha_get_entities_in_area
+to look up the correct entity_id, then retry. Do not guess entity names.
 ```
 
-**Solutions**:
-1. **Check entity ID** in Home Assistant Developer Tools
-2. **Verify entity domain** (light, switch, etc.)
-3. **Check entity availability**
+HA's service endpoint returns HTTP 200 with an empty body for *both*
+non-existent entities and legitimate no-ops, so the HA MCP server
+pre-flights every service call with a `GET /api/states/<entity_id>`. A 404
+there becomes the `FAILED: ...` message above, and the service POST is
+skipped entirely — nothing changes in HA.
+
+When the assistant reports this, it means the entity ID it tried doesn't
+exist. The message also nudges the LLM to list available entities via
+`ha_get_domain_entity_states` or `ha_get_entities_in_area` before retrying.
+
+**If the entity *should* exist**:
+1. **Check the exact ID** in Home Assistant → **Developer Tools → States**.
+   IDs are case-sensitive and must match exactly
+   (`light.kitchen_light_1`, not `light.kitchen`).
+2. **Verify the domain prefix** (`light.`, `switch.`, `climate.`, etc.).
+3. **Check the entity isn't disabled/hidden** in the entity registry —
+   those are filtered out of area lookups.
 
 #### Service Call Failed
 ```
