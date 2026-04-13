@@ -37,7 +37,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/` | GET | SvelteKit dashboard SPA (Dashboard, Chat, Devices, History, Playgrounds, Metrics, System) |
+| `/` | GET | SvelteKit dashboard SPA (Dashboard, Chat, Devices, Memory, History, Playgrounds, Metrics, System) |
 | `/api/chat` | POST | Send a message, get full response + tool event log |
 | `/api/status` | GET | Health: agent, MCP servers, DB, vLLM |
 | `/api/tools` | GET | Registered tools grouped by MCP server |
@@ -54,6 +54,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/autonomy/items` | GET | List agenda items (scheduled autonomous behaviors) |
 | `/api/autonomy/runs` | GET | Recent run history; `include_messages=1` for full traces |
 | `/api/autonomy/trigger/{id}` | POST | Fire an agenda item immediately, bypassing schedule + rate limit |
+| `/api/memory/*` | GET/POST/PATCH/DELETE | Tiered memory (L2/L3/L4): stats, L4 CRUD, proposal approve/reject, L3 browse + source drill-down, semantic search, run history + manual trigger. See [autonomy/memory/README.md](autonomy/memory/README.md). |
 | `/ws/chat` | WS | Streaming chat with tool visibility + metric events |
 | `/ws/logs` | WS | Live server log tail |
 | `/v1/chat/completions` | POST | OpenAI-compatible chat (used by the voice pipeline) |

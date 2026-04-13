@@ -374,6 +374,20 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/autonomy/items` | List agenda items (scheduled autonomous behaviors) |
 | `GET`  | `/api/autonomy/runs` | Recent run history; `?include_messages=1` for full traces |
 | `POST` | `/api/autonomy/trigger/{id}` | Fire an agenda item immediately (bypasses schedule + rate limit) |
+| `GET`  | `/api/memory/stats` | Per-tier counts (L2/L3/L4), pending proposals, estimated L4 prompt tokens |
+| `GET`  | `/api/memory/l4` | List approved L4 entries (persistent context injected into every prompt) |
+| `POST` | `/api/memory/l4` | Create an L4 entry directly (`{text, importance, tags}`) |
+| `PATCH`| `/api/memory/l4/{id}` | Update an L4 entry's text, importance, or tags |
+| `DELETE`| `/api/memory/l4/{id}` | Demote an L4 entry to L3 (the underlying memory is preserved) |
+| `GET`  | `/api/memory/l4/proposals` | L3 entries flagged `pending_l4_approval` by the nightly job |
+| `POST` | `/api/memory/l4/proposals/{id}/approve` | Promote a proposal to L4 |
+| `POST` | `/api/memory/l4/proposals/{id}/reject` | Clear the pending flag, leave entry at L3 |
+| `GET`  | `/api/memory/l3?limit=&offset=` | Browse consolidated L3 summaries with paging |
+| `GET`  | `/api/memory/l3/{id}/sources` | Resolve an L3 entry's `source_ids` back to the originating L2 entries |
+| `DELETE`| `/api/memory/l3/{id}` | Hard-delete an L3 entry (source L2 entries untouched) |
+| `POST` | `/api/memory/search` | Semantic search across selected tiers (`{q, tiers:[L2,L3,L4], limit}`) |
+| `GET`  | `/api/memory/runs?limit=` | History of `memory_review` consolidation runs |
+| `POST` | `/api/memory/runs/trigger` | Run the consolidation pipeline now (delegates to autonomy engine) |
 
 ### WebSockets
 

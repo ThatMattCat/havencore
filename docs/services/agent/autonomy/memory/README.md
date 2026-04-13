@@ -18,7 +18,14 @@ Runs at `AUTONOMY_MEMORY_REVIEW_CRON` (default `0 3 * * *`). Handler: `selene_ag
 `search_memories` excludes L4 (already in prompt), applies `MEMORY_L3_RANK_BOOST` to L3 scores, and fires an async `access_count` update.
 
 ## Dashboard
-`/memory` — stats, L4 view/editor, proposal queue, L3 browser with source drill-down, run history, manual trigger.
+`/memory` — stats, L4 view/editor, proposal queue, L3 browser with source drill-down, run history, manual trigger, and **semantic search** across any combination of L2/L3/L4 tiers (text input + per-tier checkboxes; results show similarity score and tier; L3 hits link to the same source modal).
+
+The main `/` Dashboard surfaces a Memory summary card: per-tier counts, an L4 token-budget meter (warns above ~1500 chars/4 tokens), pending-proposal call-to-action, and last consolidation timestamp.
+
+## REST surface
+All endpoints live under `/api/memory/*` — see [API Reference](../../../../api-reference.md#agent-dashboard-apis) for the full table. Notable shapes:
+- `POST /api/memory/search` — body `{q, tiers: ["L2","L3","L4"], limit}` returns scored payloads; embeds the query via the same `embeddings` service the agent uses for retrieval.
+- `DELETE /api/memory/l4/{id}` is a **demotion** (sets `tier='L3'`), not a hard delete — preserves the underlying memory and any L3 → L2 source chain.
 
 ## Tuning knobs (env)
 See `.env.example` — `MEMORY_HALF_LIFE_DAYS`, `MEMORY_ACCESS_COEF`, `MEMORY_L3_RANK_BOOST`, `MEMORY_L4_MAX_ENTRIES`, proposal thresholds, prune thresholds.
