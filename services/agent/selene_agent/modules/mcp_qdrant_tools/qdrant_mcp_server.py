@@ -15,16 +15,16 @@ import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, DatetimeRange,
-    Filter, FieldCondition
+    Filter, FieldCondition, MatchValue, PayloadSchemaType
 )
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('qdrant_mcp')
+from selene_agent.utils.logger import get_logger
+
+logger = get_logger('loki')
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
@@ -67,7 +67,27 @@ class QdrantMCPServer:
                 )
             )
             logger.info(f"Created collection: {self.collection_name}")
-    
+        self._init_payload_indexes()
+
+    def _init_payload_indexes(self) -> None:
+        """Idempotently create payload indexes required for v2 scroll/filter queries."""
+        indexes = [
+            ("tier", PayloadSchemaType.KEYWORD),
+            ("pending_l4_approval", PayloadSchemaType.BOOL),
+            ("importance_effective", PayloadSchemaType.FLOAT),
+        ]
+        for field_name, schema in indexes:
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=schema,
+                )
+                logger.info(f"Payload index created or already existed: {field_name}")
+            except Exception as e:
+                # Qdrant returns an error on re-create; log and continue.
+                logger.debug(f"Payload index {field_name}: {e}")
+
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding vector from the embeddings service"""
         try:
@@ -81,7 +101,43 @@ class QdrantMCPServer:
         except Exception as e:
             logger.error(f"Failed to get embedding: {e}")
             raise
-    
+
+    async def _record_accesses(self, ids: List[str]) -> None:
+        """Fire-and-forget bump of access_count + last_accessed_at for the given ids.
+
+        Increment is approximate: Qdrant's set_payload is not atomic-increment.
+        We read current counts and write back count+1. Concurrent retrievals may
+        drop ticks — acceptable because consolidation applies log(1+access_count)
+        which dampens counting noise.
+        """
+        if not ids:
+            return
+        try:
+            current = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=ids,
+                with_payload=True,
+                with_vectors=False,
+            )
+            now_iso = datetime.now(timezone.utc).isoformat()
+            by_id = {str(p.id): (p.payload or {}).get("access_count", 0) for p in current}
+            # Group ids by their new count so we can issue one set_payload per group.
+            from collections import defaultdict
+            groups = defaultdict(list)
+            for pid in ids:
+                groups[by_id.get(pid, 0) + 1].append(pid)
+            for new_count, group_ids in groups.items():
+                self.client.set_payload(
+                    collection_name=self.collection_name,
+                    payload={
+                        "access_count": new_count,
+                        "last_accessed_at": now_iso,
+                    },
+                    points=group_ids,
+                )
+        except Exception as e:
+            logger.warning(f"_record_accesses failed (non-fatal): {e}")
+
     def _setup_handlers(self):
         """Set up MCP server handlers"""
         
@@ -189,7 +245,19 @@ class QdrantMCPServer:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "importance": importance,
                 "tags": tags,
-                "source": "mcp_server"
+                "source": "mcp_server",
+                # Memory tiering: new rows are L2. source_ids links consolidated
+                # (L3/L4) entries back to originating L2 rows.
+                "tier": "L2",
+                "source_ids": [],
+                # v2 access tracking + importance dynamics.
+                "access_count": 0,
+                "last_accessed_at": None,
+                "importance_effective": importance,
+                # v2 L4 proposal queue.
+                "pending_l4_approval": False,
+                "proposed_at": None,
+                "proposal_rationale": None,
             }
             
             if expires_in_days:
@@ -246,7 +314,13 @@ class QdrantMCPServer:
                     )
                 )
             )
-            
+
+            # v2: L4 entries are injected into every system prompt already — exclude
+            # them from semantic retrieval to avoid wasting token budget.
+            must_not_conditions.append(
+                FieldCondition(key="tier", match=MatchValue(value="L4"))
+            )
+
             # Filter by time range if specified
             if days_back:
                 cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back))
@@ -268,39 +342,59 @@ class QdrantMCPServer:
                 search_filter = Filter(**filter_dict)
             
             # Search in Qdrant
-            results = self.client.search(
+            results = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=search_filter,
-                limit=limit,
+                limit=limit * 2,  # over-fetch slightly so tier re-ranking has room
                 with_payload=True
-            )
-            
-            # Format results
-            memories = []
+            ).points
+
+            from selene_agent.utils import config as cfg
+            TIER_WEIGHT = {"L2": 1.0, "L3": cfg.MEMORY_L3_RANK_BOOST, "L4": 1.0}
+
+            scored = []
             for result in results:
+                tier = result.payload.get("tier", "L2")
+                weight = TIER_WEIGHT.get(tier, 1.0)
+                adjusted = float(result.score) * weight
+                scored.append((adjusted, result))
+            scored.sort(key=lambda t: t[0], reverse=True)
+            scored = scored[:limit]
+
+            memories = []
+            for adjusted, result in scored:
                 memory = {
                     "id": str(result.id),
                     "text": result.payload.get("text", ""),
                     "timestamp": result.payload.get("timestamp", ""),
                     "importance": result.payload.get("importance", 0),
                     "tags": result.payload.get("tags", []),
-                    "relevance_score": float(result.score)
+                    "tier": result.payload.get("tier", "L2"),
+                    "source_ids": result.payload.get("source_ids", []),
+                    "access_count": result.payload.get("access_count", 0),
+                    "last_accessed_at": result.payload.get("last_accessed_at"),
+                    "importance_effective": result.payload.get(
+                        "importance_effective", result.payload.get("importance", 0)
+                    ),
+                    "relevance_score": float(result.score),
+                    "adjusted_score": adjusted,
                 }
-                
-                # Include expiry info if present
                 if "expires" in result.payload:
                     memory["expires"] = result.payload["expires"]
-                
                 memories.append(memory)
-            
+
+            # Fire-and-forget: do NOT await; retrieval must not wait on this.
+            if memories:
+                asyncio.create_task(self._record_accesses([m["id"] for m in memories]))
+
             return {
                 "success": True,
                 "query": query,
                 "count": len(memories),
                 "results": memories
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to search memories: {e}")
             return {

@@ -8,7 +8,6 @@ version = "0.1.0"
 dependencies = [
     "openai",
     "HomeAssistant-API",
-    "gradio",
     "wolframalpha",
     "nltk",
     "fastapi",
@@ -20,11 +19,33 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "mcp-server-fetch",
     "mcp==1.1.2",
+    "plexapi>=4.15.0",
     "requests>=2.31.0",
     "paho-mqtt>=2.1.0",
     "aiosmtplib",
-    "websocket"
+    "websocket",
+    "websockets",
+    "aiofiles",
+    "aiohttp",
+    "python-multipart",
+    "croniter>=2.0.0",
+    "hdbscan>=0.8.33",
+    "numpy>=1.24",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [project.scripts]
 agent = "selene_agent.selene_agent:main"
+
+[tool.setuptools.packages.find]
+include = ["selene_agent*"]
+exclude = ["frontend*", "tests*"]

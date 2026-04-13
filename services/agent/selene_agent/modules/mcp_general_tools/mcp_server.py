@@ -32,12 +32,9 @@ from mcp.server.models import InitializationOptions
 
 from .comfyui_tools import SimpleComfyUI
 from .wiki_tools import query_wikipedia
-# import shared.scripts.logger as logger_module
-# import selene_agent.config as config
+from selene_agent.utils.logger import get_logger
 
-# TODO: Fix logger here
-#logger = logger_module.get_logger('loki')
-logger = logging.getLogger(__name__)
+logger = get_logger('loki')
 
 # Get configuration from environment
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")

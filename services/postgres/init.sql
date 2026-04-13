@@ -18,3 +18,18 @@ CREATE INDEX IF NOT EXISTS idx_conversation_histories_created_at ON conversation
 
 -- Create index on metadata for flexible queries
 CREATE INDEX IF NOT EXISTS idx_conversation_histories_metadata ON conversation_histories USING GIN(metadata);
+
+-- Per-turn agent metrics (LLM + tool-call timings)
+CREATE TABLE IF NOT EXISTS turn_metrics (
+    id BIGSERIAL PRIMARY KEY,
+    session_id TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    llm_ms INTEGER NOT NULL,
+    tool_ms_total INTEGER NOT NULL,
+    total_ms INTEGER NOT NULL,
+    iterations INTEGER NOT NULL,
+    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_created_at ON turn_metrics (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_session ON turn_metrics (session_id);

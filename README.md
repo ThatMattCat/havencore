@@ -86,9 +86,9 @@ HavenCore is built as a microservices architecture using Docker containers. Each
 | Service | Port | Purpose | API Endpoints |
 |---------|------|---------|---------------|
 | **Nginx** | 80 | API Gateway & Load Balancer | Routes to other services |
-| **Agent** | 6002, 6006 | LLM Logic & Tool Calling | `/v1/chat/completions` |
-| **Speech-to-Text** | 6000, 6001, 5999 | Audio Transcription | `/v1/audio/transcriptions` |
-| **Text-to-Speech** | 6003, 6004, 6005 | Audio Generation | `/v1/audio/speech` |
+| **Agent** | 6002 | LLM logic, tool calling, dashboard UI | `/` (SvelteKit dashboard), `/api/*`, `/ws/*`, `/v1/chat/completions` |
+| **Speech-to-Text** | 6001 | Audio Transcription | `/v1/audio/transcriptions` |
+| **Text-to-Speech** | 6005 | Audio Generation | `/v1/audio/speech` |
 | **PostgreSQL** | 5432 | Database & Conversation Storage | N/A (internal) |
 | **vLLM** | 8000 | LLM Inference Backend | OpenAI-compatible API |
 | **LlamaCPP** | 8000* | Alternative LLM Backend | OpenAI-compatible API |
@@ -117,15 +117,16 @@ HavenCore is built as a microservices architecture using Docker containers. Each
 
 ### Hardware Requirements
 
-- **NVIDIA GPU**: At least one CUDA-compatible GPU (RTX 3090 or better recommended)
-- **RAM**: 16GB+ system RAM (32GB+ recommended for larger models)
-- **Storage**: 50GB+ free space for models and data
+- **NVIDIA GPU**: At least one CUDA-compatible GPU. The default config loads `Qwen/Qwen2.5-72B-Instruct-AWQ` via vLLM with tensor parallelism across 2 GPUs plus dedicated GPUs for STT/TTS/embeddings/vision — development hardware is 4× RTX 3090 (24 GB each). A single 24 GB GPU works only with a smaller LLM.
+- **RAM**: 32GB+ system RAM recommended
+- **Storage**: 150GB+ free space — the 72B AWQ model is ~40GB, plus ComfyUI checkpoints, STT/TTS models, and container images
 - **Network**: Stable internet connection for initial model downloads
 
 ### Software Requirements
 
 - **Operating System**: Ubuntu 22.04 LTS (tested) or compatible Linux distribution
-- **Docker**: Version 20.10+ with Docker Compose V2
+- **NVIDIA Driver**: **580.x or newer**. The pinned `vllm/vllm-openai` and `text-to-image` (ComfyUI + torch 2.11) images both require a driver that reports CUDA runtime ≥12.9. Older 570.x drivers will fail vLLM startup with CUDA error 804 ("forward compatibility attempted on non supported HW").
+- **Docker**: Version 24.0+ with Docker Compose V2 (v2.20+)
 - **NVIDIA Container Toolkit**: For GPU support in containers
 - **Git**: For cloning the repository
 
@@ -294,9 +295,8 @@ WOLFRAM_ALPHA_API_KEY="your_wolfram_key"
 
 ### Web Interface Access
 
-- **Agent Interface**: http://localhost:6002 - Interactive chat interface
-- **Text-to-Speech**: http://localhost:6004 - TTS testing interface
-- **System Health**: http://localhost - Nginx status page
+- **Agent Dashboard**: http://localhost - SvelteKit UI (chat, devices, history, metrics, service playgrounds)
+- **System Health**: http://localhost/health - Nginx gateway health
 
 ### Edge Device Integration
 

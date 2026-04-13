@@ -29,21 +29,27 @@ HAOS_TOKEN = os.getenv("HAOS_TOKEN", "")
 HAOS_URL = os.getenv("HAOS_URL", "")
 HAOS_USE_SSL = os.getenv("HAOS_USE_SSL", "")
 
+PLEX_URL = os.getenv("PLEX_URL", "")
+PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
+PLEX_CLIENT_HA_MAP = os.getenv("PLEX_CLIENT_HA_MAP", "")
+
 LOKI_URL = os.getenv("LOKI_URL", "")
 
 parsed_url = urlparse(HAOS_URL)
 HAOS_HOST = parsed_url.hostname
 
-HA_WS_URL = f"ws://{HAOS_HOST}/api/websocket"
+_ws_scheme = "wss" if parsed_url.scheme == "https" else "ws"
+_ws_netloc = parsed_url.netloc or HAOS_HOST or ""
+HA_WS_URL = f"{_ws_scheme}://{_ws_netloc}/api/websocket" if _ws_netloc else ""
 
 
 # Qdrant configuration
-QDRANT_HOST = "qdrant"
-QDRANT_PORT = 6333
+QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
 # Embeddings service configuration
-EMBEDDINGS_URL = "http://embeddings:3000"
-EMBEDDING_DIM = 1024  # for bge-large or e5-large
+EMBEDDINGS_URL = os.getenv("EMBEDDINGS_URL", "http://embeddings:3000")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 
 # Collection names
 COLLECTION_NAMES = ["user_data"]
@@ -53,8 +59,51 @@ DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_IMPORTANCE = 3
 MAX_SEARCH_RESULTS = 20
 
+CONVERSATION_TIMEOUT = int(os.getenv("CONVERSATION_TIMEOUT", "180"))
+TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
+
 CURRENT_LOCATION = os.getenv("CURRENT_LOCATION", "New York, NY")
 CURRENT_ZIPCODE = os.getenv("CURRENT_ZIPCODE", "10001")
+
+# Autonomy Engine
+AUTONOMY_ENABLED = os.getenv("AUTONOMY_ENABLED", "true").lower() == "true"
+AUTONOMY_DISPATCH_INTERVAL_SECONDS = int(os.getenv("AUTONOMY_DISPATCH_INTERVAL_SECONDS", "30"))
+AUTONOMY_BRIEFING_CRON = os.getenv("AUTONOMY_BRIEFING_CRON", "0 8 * * *")
+AUTONOMY_ANOMALY_CRON = os.getenv("AUTONOMY_ANOMALY_CRON", "*/15 * * * *")
+AUTONOMY_ANOMALY_COOLDOWN_MIN = int(os.getenv("AUTONOMY_ANOMALY_COOLDOWN_MIN", "30"))
+AUTONOMY_MAX_RUNS_PER_HOUR = int(os.getenv("AUTONOMY_MAX_RUNS_PER_HOUR", "20"))
+AUTONOMY_TURN_TIMEOUT_SEC = int(os.getenv("AUTONOMY_TURN_TIMEOUT_SEC", "60"))
+AUTONOMY_BRIEFING_EMAIL_TO = os.getenv("AUTONOMY_BRIEFING_EMAIL_TO", "")
+AUTONOMY_HA_NOTIFY_TARGET = os.getenv("AUTONOMY_HA_NOTIFY_TARGET", "")
+AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
+    e.strip() for e in os.getenv("AUTONOMY_BRIEFING_CAMERA_ENTITIES", "").split(",") if e.strip()
+]
+AUTONOMY_ANOMALY_WATCH_DOMAINS = [
+    d.strip() for d in os.getenv("AUTONOMY_ANOMALY_WATCH_DOMAINS", "binary_sensor,lock,cover").split(",") if d.strip()
+]
+
+# --- v2 memory consolidation ---
+AUTONOMY_MEMORY_REVIEW_CRON = os.getenv("AUTONOMY_MEMORY_REVIEW_CRON", "0 3 * * *")
+AUTONOMY_MEMORY_MAX_SCAN = int(os.getenv("AUTONOMY_MEMORY_MAX_SCAN", "5000"))
+AUTONOMY_MEMORY_LLM_CALL_CAP = int(os.getenv("AUTONOMY_MEMORY_LLM_CALL_CAP", "20"))
+
+MEMORY_HALF_LIFE_DAYS = float(os.getenv("MEMORY_HALF_LIFE_DAYS", "60"))
+MEMORY_ACCESS_COEF = float(os.getenv("MEMORY_ACCESS_COEF", "0.5"))
+
+MEMORY_HDBSCAN_MIN_CLUSTER_SIZE = int(os.getenv("MEMORY_HDBSCAN_MIN_CLUSTER_SIZE", "5"))
+MEMORY_HDBSCAN_MIN_SAMPLES = int(os.getenv("MEMORY_HDBSCAN_MIN_SAMPLES", "3"))
+
+MEMORY_L4_MIN_IMPORTANCE = float(os.getenv("MEMORY_L4_MIN_IMPORTANCE", "4"))
+MEMORY_L4_MIN_AGE_DAYS = int(os.getenv("MEMORY_L4_MIN_AGE_DAYS", "14"))
+MEMORY_L4_MIN_ACCESS_COUNT = int(os.getenv("MEMORY_L4_MIN_ACCESS_COUNT", "3"))
+
+MEMORY_L2_PRUNE_AGE_DAYS = int(os.getenv("MEMORY_L2_PRUNE_AGE_DAYS", "180"))
+MEMORY_L2_PRUNE_IMPORTANCE_THRESHOLD = float(os.getenv("MEMORY_L2_PRUNE_IMPORTANCE_THRESHOLD", "0.5"))
+
+MEMORY_L3_RANK_BOOST = float(os.getenv("MEMORY_L3_RANK_BOOST", "1.2"))
+MEMORY_L4_MAX_ENTRIES = int(os.getenv("MEMORY_L4_MAX_ENTRIES", "20"))
+MEMORY_L4_WARN_TOKENS = int(os.getenv("MEMORY_L4_WARN_TOKENS", "1500"))
+
 SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly personal assistant with access to various tools.
         Current Location: {CURRENT_LOCATION}
         Zip Code: {CURRENT_ZIPCODE}

@@ -68,7 +68,7 @@ class LokiHandler(logging.Handler):
             response.raise_for_status()
         except Exception as e:
             # Avoid infinite recursion by not using the logger here
-            print(f"Failed to send log to Loki: {e}")
+            print(f"Failed to send log to Loki: {e}", file=sys.stderr)
             self.handleError(record)
 
 def get_loki_handler():
@@ -95,7 +95,7 @@ LOGGING_CONFIG = {
             'class': 'logging.StreamHandler',
             'level': 'DEBUG',
             'formatter': 'standard',
-            'stream': 'ext://sys.stdout',
+            'stream': 'ext://sys.stderr',
         }
     },
     'loggers': {
@@ -115,92 +115,3 @@ LOGGING_CONFIG = {
 def get_logger(name):
     dictConfig(LOGGING_CONFIG)
     return logging.getLogger(name)
-
-
-
-############ LogScale Replacement code for Loki ##########
-#
-# Replace the matching Loki code with the following
-#
-#########################################################
-
-# LOG_LEVEL_APP = logging.INFO # Log level for custom code
-# LOG_LEVEL_OTHERS = logging.INFO  # Log level for other loggers
-# # LogScale configuration
-# LOGSCALE_URL = 'https://YOUR_LOGSCALE_URL/api/v1/ingest/raw'
-# LOGSCALE_INGEST_TOKEN = 'INGEST_TOKEN'
-
-# class LogScaleHandler(logging.Handler):
-#     def __init__(self, url, ingest_token):
-#         super().__init__()
-#         self.url = url
-#         self.headers = {
-#             'Authorization': f'Bearer {ingest_token}'#,
-# #            'Content-Type': 'application/text'
-#         }
-
-#     def emit(self, record):
-#         #log_entry = self.format(record)
-#         if hasattr(record, 'trace_id'):
-#             trace_id = record.trace_id
-#         else:
-#             trace_id = ''
-#         payload = json.dumps({
-#                     '@timestamp': int(record.created * 1000),
-#                     'function': record.funcName,
-#                     'filename': record.filename,
-#                     'message': record.msg,
-#                     'level': record.levelname,
-#                     'logger': record.name,
-#                     'trace_id': trace_id
-#                 })
-#         try:
-#             response = requests.post(self.url, data=payload, headers=self.headers)
-#             response.raise_for_status()
-#         except Exception:
-#             self.handleError(record)
-
-# def get_log_scale_handler():
-#     return LogScaleHandler
-
-# LOGGING_CONFIG = {
-#     'version': 1,
-#     'disable_existing_loggers': False,
-#     'formatters': {
-#         'standard': {
-#             'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-#         },
-#     },
-#     'handlers': {
-#         'logscale': {
-#             '()': get_log_scale_handler(),
-#             'level': 'DEBUG',
-#             'formatter': 'standard',
-#             'url': LOGSCALE_URL,
-#             'ingest_token': LOGSCALE_INGEST_TOKEN
-#         },
-#         'console': {
-#             'class': 'logging.StreamHandler',
-#             'level': 'DEBUG',
-#             'formatter': 'standard',
-#             'stream': 'ext://sys.stdout',
-#         }
-#     },
-#     'loggers': {
-#         '': {  # root logger
-#             'handlers': ['console'],
-#             'level': LOG_LEVEL_OTHERS,
-#             'propagate': True
-#         },
-#         'custom': {
-# #            'handlers': ['logscale', 'console'],
-#             'handlers': ['console'],
-#             'level': LOG_LEVEL_APP,
-#             'propagate': False
-#         },
-#     }
-# }
-
-# def get_logger(name):
-#     dictConfig(LOGGING_CONFIG)
-#     return logging.getLogger(name)

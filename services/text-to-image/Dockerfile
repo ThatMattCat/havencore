@@ -24,12 +24,14 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Clone ComfyUI
-RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app
+# Clone ComfyUI at a pinned commit so fresh builds stay reproducible.
+RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app \
+    && git -C /app checkout 31283d2892f54caf9bfdf6edb9c98cbfa88c5f0c
 
-# Install Python dependencies
+# Install Python dependencies. Torch is pinned to the last trio verified
+# working on NVIDIA driver 580.x; newer torch has required newer drivers.
 RUN pip3 install --no-cache-dir \
-    torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
     && pip3 install --no-cache-dir -r requirements.txt
 
 # Install additional useful packages for API usage

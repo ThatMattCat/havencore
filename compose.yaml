@@ -1,5 +1,7 @@
 services:
   postgres:
+    # Rollback digest (known-good 2026-04-12):
+    #   postgres@sha256:fceb6f86328c36f2438fae3b851b0cc57c4a7e69a58c866d9ce24281f2cf0c9c
     image: postgres:15-alpine
     env_file:
       - .env
@@ -15,6 +17,8 @@ services:
       retries: 5
     restart: unless-stopped
   nginx:
+    # Rollback digest (known-good 2026-04-12):
+    #   nginx@sha256:582c496ccf79d8aa6f8203a79d32aaf7ffd8b13362c60a701a2f9ac64886c93d
     image: nginx:alpine
     ports:
       - "80:80"
@@ -36,7 +40,7 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6002/"]
+      test: ["CMD", "curl", "-f", "http://localhost:6002/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -45,8 +49,7 @@ services:
       - ./services/agent/:/app
       # - ./shared:/app/shared:ro
     ports:
-      - "6002:6002"
-      - "6006:6006" # /v1/chat/completions OpenAI-compat API
+      - "6002:6002" # FastAPI: UI, API, and OpenAI-compat endpoints
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,8 +64,6 @@ services:
       - ./shared:/app/shared:ro
     ports:
       - "6001:6001" # /v1/audio/transcriptions OpenAI-compat API
-      - "6000:6000"
-      - "5999:5999"
     env_file:
       - .env
     deploy:
@@ -80,12 +81,10 @@ services:
     image: text-to-speech:${VERSION:-latest}
     ports:
       - "6005:6005" # OpenAI API-compatible /v1/audio/speech
-      - "6004:6004" # UI/API
-      - "6003:6003" # Serving audio files
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6004/"]
+      test: ["CMD", "curl", "-f", "http://localhost:6005/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -103,7 +102,9 @@ services:
       - ./shared:/app/shared:ro
     restart: unless-stopped
   vllm:
-    image: vllm/vllm-openai:latest
+    # Pinned to vLLM v0.19.0 — last version verified working on NVIDIA driver 580.x.
+    # Floating `:latest` has shipped builds requiring driver newer than our host.
+    image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
     runtime: nvidia
     # profiles: ["vllm"]
     env_file:
@@ -170,6 +171,8 @@ services:
                 capabilities: [gpu]
       restart: unless-stopped
   mosquitto:
+    # Rollback digest (known-good 2026-04-12):
+    #   eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
     image: eclipse-mosquitto:latest
     container_name: mosquitto
     restart: unless-stopped
@@ -278,6 +281,8 @@ services:
   #   restart: unless-stopped
 
   qdrant:
+    # Rollback digest (known-good 2026-04-12):
+    #   qdrant/qdrant@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
     image: qdrant/qdrant:latest
     container_name: qdrant
     ports:

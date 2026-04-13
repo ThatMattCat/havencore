@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 **/__pycache__/
 *.py[cod]
@@ -7,48 +8,57 @@ __pycache__/
 *.so
 **/*.so
 .Python
+**/.Python
+*.egg-info/
+**/*.egg-info/
+*.egg
+**/*.egg
+.installed.cfg
+**/.installed.cfg
+MANIFEST
+**/MANIFEST
 build/
+**/build/
 develop-eggs/
+**/develop-eggs/
 dist/
+**/dist/
 downloads/
+**/downloads/
 eggs/
+**/eggs/
 .eggs/
+**/.eggs/
 lib/
 lib64/
 parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-**/.Python
-**/build/
-**/develop-eggs/
-**/dist/
-**/downloads/
-**/eggs/
-**/.eggs/
-**/lib/
-**/lib64/
 **/parts/
+sdist/
 **/sdist/
+var/
 **/var/
+wheels/
 **/wheels/
+share/python-wheels/
 **/share/python-wheels/
-**/*.egg-info/
-**/.installed.cfg
-**/*.egg
-**/MANIFEST
+**/venv/
 
+# Node / Frontend
+node_modules/
+**/node_modules/
+**/.svelte-kit/
+
+# Environment / secrets
 .env
 **/.env
 *.crt
 **/*.crt
+
+# IDE
 **/.vscode/
 .vscode
+
+# Project-specific
 audio-management/
 audio-management-backup/
 speech-to-text/audio_files/*
@@ -64,20 +74,22 @@ text-to-speech/models/**
 **/input/**
 **/*.bak
 **/ha_media_library.json
-**/venv/
 services/text-to-image/*/**
-
-.git
 services/speech-to-text/app/whisper_streaming/**
-volumes/**/*
-**/uploads/**
 services/mosquitto/data/**
 services/mosquitto/log/**
 
+# Data / volumes
+.git
+volumes/**/*
+**/uploads/**
+
+# Claude Code
 CLAUDE.md
 .claude/*
+.worktrees/
 
-
+# Overrides (keep at end)
 !/.gitkeep
 !**/.gitkeep
 !volumes/**/.gitkeeptest_env/

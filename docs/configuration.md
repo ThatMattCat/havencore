@@ -1,0 +1,512 @@
+# Configuration Guide
+
+This guide covers all configuration options for HavenCore, including environment variables, service settings, and integration parameters.
+
+## Overview
+
+HavenCore configuration is managed through:
+1. **Environment Variables** (`.env` file) - Primary configuration
+2. **Docker Compose** (`compose.yaml`) - Service orchestration
+3. **Service Configs** - Individual service settings
+4. **Runtime Configuration** - Dynamic settings via API
+
+## Environment Variables Reference
+
+### Core System Configuration
+
+#### Host and Network Settings
+```bash
+# Required: Docker host IP address
+HOST_IP_ADDRESS="192.168.1.100"  # Find with: ip route get 1.1.1.1 | awk '{print $7}'
+
+# Required: API access key
+DEV_CUSTOM_API_KEY="your_secret_key"  # Set to any value for API access
+
+# Debug and logging
+DEBUG_LOGGING=0  # 0 = INFO, 1 = DEBUG
+LOKI_URL="http://localhost:3100/loki/api/v1/push"  # Loki logging endpoint
+```
+
+#### Agent Configuration
+```bash
+# Agent identity
+AGENT_NAME="Selene"  # AI assistant name
+
+# Location and timezone
+CURRENT_LOCATION="San Francisco, CA, USA"
+CURRENT_TIMEZONE="America/Los_Angeles" 
+CURRENT_ZIPCODE="94102"
+
+# Language settings
+SRC_LAN="en"  # Source language code
+```
+
+### AI Model Configuration
+
+#### GPU Settings
+```bash
+# Text-to-Speech GPU allocation
+TTS_DEVICE="cuda:0"  # GPU index for TTS model
+
+# Speech-to-Text GPU allocation  
+STT_DEVICE="0"       # GPU index for STT model
+
+# TTS Voice Settings
+TTS_LANGUAGE="a"     # Kokoro TTS language option
+TTS_VOICE="af_heart" # Voice model selection
+```
+
+#### Model Tokens
+```bash
+# Hugging Face access token
+HF_HUB_TOKEN="hf_your_token_here"  # For model downloads
+HUGGING_FACE_HUB_TOKEN="${HF_HUB_TOKEN}"  # Alternative name
+```
+
+### Database Configuration
+
+#### PostgreSQL Settings
+```bash
+POSTGRES_HOST="postgres"           # Service name in Docker network
+POSTGRES_PORT=5432                 # Database port
+POSTGRES_DB="havencore"           # Database name
+POSTGRES_USER="havencore"         # Database user
+POSTGRES_PASSWORD="havencore_password"  # Database password
+```
+
+#### Database Usage
+- **Conversation History**: Automatic storage after timeouts
+- **User Sessions**: Session state persistence
+- **Configuration**: Runtime settings storage
+- **Analytics**: Usage metrics and logs
+
+### External Service Integration
+
+#### Home Assistant
+```bash
+# Home Assistant API configuration
+HAOS_URL="https://homeassistant.local:8123"  # Your HA URL (with or without trailing /api)
+HAOS_TOKEN="eyJ0eXAiOiJKV1QiLCJ..."          # Long-lived access token
+```
+
+**Getting Home Assistant Token**:
+1. Go to Home Assistant → Profile → Long-Lived Access Tokens
+2. Click "Create Token"
+3. Copy the token and set as `HAOS_TOKEN`
+
+#### Plex (media control)
+```bash
+# Plex server (reached via plexapi cloud relay — LAN URL is fine)
+PLEX_URL="http://10.0.50.110:32400"
+PLEX_TOKEN="xxxxxxxxxxxxxxxxxxxx"
+
+# Optional: wake/launch mapping per Plex client — JSON object keyed by Plex client name.
+# See docs/integrations/media-control.md for the full schema.
+PLEX_CLIENT_HA_MAP='{
+  "BRAVIA 4K VH21": {
+    "state_entity": "media_player.living_room_tv_bravia_4k_vh21",
+    "adb_entity":   "media_player.living_room_bravia_adb"
+  }
+}'
+```
+
+#### External APIs
+```bash
+# Weather service (weatherapi.com)
+WEATHER_API_KEY="your_weather_api_key"
+
+# Web search (Brave Search API)
+BRAVE_SEARCH_API_KEY="your_brave_api_key"
+
+# Computational queries (WolframAlpha)
+WOLFRAM_ALPHA_API_KEY="your_wolfram_api_key"
+```
+
+Each key is credential-gated: tools that need a missing key simply don't
+register, so the agent stays healthy without them.
+
+**API Key Setup**:
+- **Weather**: Register at [weatherapi.com](https://www.weatherapi.com/)
+- **Brave Search**: Get key from [Brave Search API](https://api.search.brave.com/)
+- **WolframAlpha**: Register at [Wolfram Developer Portal](https://developer.wolframalpha.com/)
+
+### Semantic memory (Qdrant + embeddings)
+
+```bash
+# Qdrant vector DB (service on the compose network)
+QDRANT_HOST="qdrant"
+QDRANT_PORT=6333
+
+# Text embeddings service (HuggingFace TEI)
+EMBEDDINGS_URL="http://embeddings:3000"
+EMBEDDING_DIM=1024   # Match the model: bge-large-en-v1.5 = 1024, MiniLM-L6 = 384, mpnet = 768
+```
+
+### Agent runtime tuning
+
+```bash
+# Seconds of inactivity before a conversation is flushed to Postgres
+CONVERSATION_TIMEOUT=600
+
+# Cap on tool-result text before it's summarized back to the LLM
+TOOL_RESULT_MAX_CHARS=8000
+```
+
+### Autonomy engine
+
+Proactive background behaviors — morning briefings, ambient anomaly sweeps.
+Full reference: [services/agent/autonomy/README.md](services/agent/autonomy/README.md).
+
+```bash
+# Master switch (set false to disable dispatch at startup)
+AUTONOMY_ENABLED=true
+
+# Dispatcher tick interval (seconds) — how often the engine checks for due items
+AUTONOMY_DISPATCH_INTERVAL_SECONDS=30
+
+# Cron schedules (interpreted in CURRENT_TIMEZONE, stored as UTC)
+AUTONOMY_BRIEFING_CRON="0 8 * * *"
+AUTONOMY_ANOMALY_CRON="*/15 * * * *"
+
+# Anomaly-sweep cooldown: minutes before re-notifying on the same signature
+AUTONOMY_ANOMALY_COOLDOWN_MIN=30
+
+# Global ceiling on scheduled dispatches per rolling hour
+AUTONOMY_MAX_RUNS_PER_HOUR=20
+
+# Per-turn hard timeout (seconds)
+AUTONOMY_TURN_TIMEOUT_SEC=60
+
+# Notification targets
+AUTONOMY_BRIEFING_EMAIL_TO=""           # recipient for the morning briefing
+AUTONOMY_HA_NOTIFY_TARGET=""            # e.g. notify.mobile_app_pixel_8
+
+# Handler inputs
+AUTONOMY_BRIEFING_CAMERA_ENTITIES=""    # comma-separated camera entity_ids
+AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
+```
+
+Notes:
+- `send_email` currently reads its recipient from `DEFAULT_RECIPIENT` inside
+  the general-tools MCP server. `AUTONOMY_BRIEFING_EMAIL_TO` is the intended
+  operator knob but does not yet override that value — set `DEFAULT_RECIPIENT`
+  as well if it differs.
+- `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
+  `mobile_app_<device>`; the leading `notify.` is stripped.
+
+### MCP (Model Context Protocol) Configuration
+
+The agent's tool surface is delivered by MCP servers bundled in the agent
+image (Home Assistant, Plex, general, Qdrant, MQTT). They are spawned as
+subprocesses and advertise tools over stdio — no separate container.
+
+```bash
+# Master switch for the MCP client manager
+MCP_ENABLED=true
+
+# Whether MCP-registered tools win over any same-named legacy registration
+MCP_PREFER_OVER_LEGACY=true
+
+# JSON array of MCP server definitions to spawn
+MCP_SERVERS='[
+  {"name": "homeassistant", "command": "python", "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"], "enabled": true},
+  {"name": "plex",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_plex_tools"],          "enabled": true},
+  {"name": "general",       "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],       "enabled": true},
+  {"name": "qdrant",        "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],        "enabled": true},
+  {"name": "mqtt",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],          "enabled": true}
+]'
+```
+
+Per-server reference docs live under
+[`services/agent/tools/`](services/agent/tools/README.md).
+
+## Service-Specific Configuration
+
+### LLM Backend Configuration
+
+#### vLLM Configuration (Default)
+Defined in `compose.yaml` (Qwen2.5-72B-Instruct-AWQ, served under the
+OpenAI-compat name `gpt-3.5-turbo` for client convenience):
+
+```yaml
+command: [
+  "--model", "Qwen/Qwen2.5-72B-Instruct-AWQ",
+  "--served-model-name", "gpt-3.5-turbo",
+  "--gpu-memory-utilization", "0.9",
+  "--max-model-len", "16384",
+  "--dtype", "auto",
+  "--api-key", "${DEV_CUSTOM_API_KEY}"
+]
+```
+
+**Key Parameters**:
+- `--model`: HuggingFace model path
+- `--served-model-name`: Name clients use in `model`; lets an OpenAI SDK
+  that hardcodes `gpt-3.5-turbo` talk to this backend.
+- `--gpu-memory-utilization`: GPU memory usage (0.0-1.0)
+- `--max-model-len`: Maximum sequence length
+- `--dtype`: Data type (auto, float16, bfloat16)
+
+#### LlamaCPP Configuration (Alternative)
+Commented out in `compose.yaml`. Uncomment the `llamacpp` service block to
+swap it in for vLLM. It uses `ghcr.io/ggml-org/llama.cpp:server-cuda` and
+reads a GGUF model mounted at `/models/`.
+
+### Nginx Gateway Configuration
+
+Located in `services/nginx/nginx.conf`:
+```nginx
+upstream agent_backend {
+    server agent:6002;
+}
+
+upstream tts_backend {
+    server text-to-speech:6005;
+}
+
+upstream stt_backend {
+    server speech-to-text:6001;
+}
+```
+
+**Customization Options**:
+- Load balancing algorithms
+- SSL/TLS termination
+- Rate limiting rules
+- CORS policies
+
+### Speech Services Configuration
+
+#### Speech-to-Text
+The Whisper model is pinned in `services/speech-to-text/app/config.py`
+(currently `distil-large-v3`); it is not driven by `.env`. Set the GPU
+via `STT_DEVICE` and the source language via `SRC_LAN` above.
+
+#### Text-to-Speech
+Kokoro voice and language come from `TTS_VOICE` / `TTS_LANGUAGE` above.
+The model files are baked into the image. GPU is selected by `TTS_DEVICE`.
+
+## Advanced Configuration
+
+### Resource Allocation
+
+#### Memory Limits
+```yaml
+services:
+  agent:
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+```
+
+#### GPU Allocation
+```yaml
+speech-to-text:
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+```
+
+### Health Check Configuration
+
+#### Service Health Checks
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:6002/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+```
+
+#### Custom Health Check Endpoints
+- **Agent**: `GET /health`
+- **TTS**: `GET /health` 
+- **STT**: `GET /health`
+- **vLLM**: `GET /v1/models`
+
+### Network Configuration
+
+#### Internal Networks
+```yaml
+networks:
+  havencore-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+```
+
+#### Port Mapping
+```yaml
+ports:
+  - "80:80"          # Nginx gateway
+  - "6002:6002"      # Agent web interface
+  - "8000:8000"      # LLM API (optional external access)
+```
+
+### Volume Configuration
+
+#### Persistent Storage
+```yaml
+volumes:
+  postgres_data:    # Database persistence
+  model_cache:      # AI model storage
+  audio_cache:      # Generated audio files
+```
+
+#### Bind Mounts
+```yaml
+volumes:
+  - ./services/agent/app:/app              # Live code reload
+  - ./shared:/app/shared:ro                # Shared configuration
+  - ./models:/models                       # Local model storage
+```
+
+## Environment Profiles
+
+### Development Profile
+```bash
+# .env.dev
+DEBUG_LOGGING=1
+HOST_IP_ADDRESS="127.0.0.1"
+DEV_CUSTOM_API_KEY="dev123"
+POSTGRES_PASSWORD="dev_password"
+```
+
+### Production Profile
+```bash
+# .env.prod
+DEBUG_LOGGING=0
+HOST_IP_ADDRESS="your.production.ip"
+DEV_CUSTOM_API_KEY="secure_random_key"
+POSTGRES_PASSWORD="secure_database_password"
+HAOS_TOKEN="production_ha_token"
+```
+
+### Testing Profile
+```bash
+# .env.test
+DEBUG_LOGGING=1
+HOST_IP_ADDRESS="127.0.0.1"
+POSTGRES_DB="havencore_test"
+MCP_ENABLED=true  # Test MCP features
+```
+
+## Configuration Validation
+
+### Validation Commands
+```bash
+# Validate Docker Compose configuration
+docker compose config --quiet
+
+# Test database connection
+docker compose exec postgres psql -U havencore -d havencore -c "SELECT 1;"
+
+# Test GPU access
+docker compose exec agent nvidia-smi
+
+# Validate API keys
+curl -H "Authorization: Bearer ${DEV_CUSTOM_API_KEY}" http://localhost/health
+```
+
+### Common Configuration Issues
+
+#### GPU Not Available
+```bash
+# Check NVIDIA drivers
+nvidia-smi
+
+# Check Docker GPU support
+docker run --rm --gpus all nvidia/cuda:11.0.3-base-ubuntu20.04 nvidia-smi
+
+# Install NVIDIA Container Toolkit if needed
+```
+
+#### Network Connectivity Issues
+```bash
+# Check internal service connectivity
+docker compose exec agent curl http://postgres:5432
+docker compose exec agent curl http://text-to-speech:6005/health
+
+# Check external API connectivity
+docker compose exec agent curl https://api.weatherapi.com
+```
+
+#### Model Download Failures
+```bash
+# Check HuggingFace token
+echo $HF_HUB_TOKEN
+
+# Pre-download models
+huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
+
+# Check disk space
+df -h
+```
+
+## Security Configuration
+
+### API Security
+```bash
+# Use strong API keys
+DEV_CUSTOM_API_KEY="$(openssl rand -base64 32)"
+
+# Enable rate limiting in nginx.conf
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+```
+
+### Network Security
+```bash
+# Restrict external access
+# Only expose necessary ports
+ports:
+  - "127.0.0.1:80:80"  # Only local access
+
+# Use internal networks
+networks:
+  havencore-internal:
+    internal: true
+```
+
+### Secret Management
+```bash
+# Use Docker secrets for sensitive data
+secrets:
+  haos_token:
+    external: true
+  api_keys:
+    external: true
+```
+
+## Backup and Recovery Configuration
+
+### Database Backup
+```bash
+# Configure automatic backups
+docker compose exec postgres pg_dump -U havencore havencore > backup.sql
+
+# Scheduled backup script
+#!/bin/bash
+docker compose exec postgres pg_dump -U havencore havencore | gzip > "backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+```
+
+### Configuration Backup
+```bash
+# Backup essential configurations
+tar -czf havencore_config_backup.tar.gz .env compose.yaml services/nginx/nginx.conf
+```
+
+---
+
+**Next Steps**:
+- [API Reference](api-reference.md) - Complete API documentation
+- [Troubleshooting](troubleshooting.md) - Common configuration issues
+- [Home Assistant Integration](integrations/home-assistant.md) - Smart home setup

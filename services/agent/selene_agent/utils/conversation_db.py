@@ -3,14 +3,15 @@ Database operations for conversation history storage
 """
 import asyncio
 import json
-import logging
 import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import asyncpg
 import uuid
 
-logger = logging.getLogger(__name__)
+from selene_agent.utils import logger as custom_logger
+
+logger = custom_logger.get_logger('loki')
 
 class ConversationHistoryDB:
     """Database operations for storing conversation histories"""
@@ -122,6 +123,46 @@ class ConversationHistoryDB:
             logger.error(f"Failed to retrieve conversation history: {e}")
             return None
     
+    async def list_conversations(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """List recent conversations with pagination"""
+        if not self.pool:
+            logger.error("Database pool not initialized")
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT session_id, created_at, metadata
+                    FROM conversation_histories
+                    ORDER BY created_at DESC
+                    LIMIT $1 OFFSET $2
+                    """,
+                    limit,
+                    offset,
+                )
+
+            conversations = []
+            for row in rows:
+                metadata = json.loads(row['metadata']) if row['metadata'] else {}
+                conversations.append({
+                    'session_id': row['session_id'],
+                    'created_at': row['created_at'].isoformat(),
+                    'message_count': metadata.get('message_count', 0),
+                    'agent_name': metadata.get('agent_name', ''),
+                    'metadata': metadata,
+                })
+
+            return conversations
+
+        except Exception as e:
+            logger.error(f"Failed to list conversations: {e}")
+            return None
+
     async def close(self):
         """Close database connection pool"""
         if self.pool:

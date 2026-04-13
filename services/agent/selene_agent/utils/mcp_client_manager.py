@@ -5,19 +5,19 @@ Manages connections to MCP servers and provides tool discovery and execution
 
 import json
 import asyncio
-import logging
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-import subprocess
 import traceback
 import sys
 import os
 
 from mcp import StdioServerParameters, ClientSession, Tool
-from mcp.client.stdio import stdio_client  # Fixed import
+from mcp.client.stdio import stdio_client
 
-logger = logging.getLogger(__name__)
+from selene_agent.utils import logger as custom_logger
+
+logger = custom_logger.get_logger('loki')
 
 
 class ToolSource(Enum):
@@ -130,6 +130,7 @@ class MCPClientManager:
         self.connections: Dict[str, MCPServerConnection] = {}
         self.mcp_tools: Dict[str, UnifiedTool] = {}  # tool_name -> UnifiedTool
         self.server_tools: Dict[str, List[str]] = {}  # server_name -> [tool_names]
+        self.failed_servers: Dict[str, str] = {}  # server_name -> error message
         self._initialized = False
         
     def add_server(self, mcp_config: MCPServerConfig):
@@ -138,7 +139,7 @@ class MCPClientManager:
             self.servers[mcp_config.name] = mcp_config
             logger.info(f"Added MCP server configuration: {mcp_config.name}")
     
-    async def initialize(self, connection_timeout: float = 600.0):
+    async def initialize(self, connection_timeout: float = 30.0):
         """Initialize connections to all configured MCP servers"""
         if self._initialized:
             logger.debug("MCP Client Manager already initialized")
@@ -168,8 +169,9 @@ class MCPClientManager:
             successful_connections = 0
             for i, (server_name, result) in enumerate(zip(server_names, results)):
                 if isinstance(result, Exception):
-                    logger.error(f"Failed to connect to MCP server {server_name}: {result}")
-                    logger.debug(traceback.format_exc())
+                    error_msg = str(result)
+                    logger.error(f"Failed to connect to MCP server {server_name}: {error_msg}")
+                    self.failed_servers[server_name] = error_msg
                 else:
                     successful_connections += 1
                     logger.info(f"Successfully connected to MCP server: {server_name}")
@@ -369,12 +371,13 @@ class MCPClientManager:
         return {
             "configured_servers": list(self.servers.keys()),
             "connected_servers": [
-                name for name, conn in self.connections.items() 
+                name for name, conn in self.connections.items()
                 if conn.is_connected()
             ],
+            "failed_servers": self.failed_servers,
             "total_mcp_tools": len(self.mcp_tools),
             "tools_by_server": {
-                server: len(tools) 
+                server: len(tools)
                 for server, tools in self.server_tools.items()
-            }
+            },
         }

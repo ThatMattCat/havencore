@@ -18,8 +18,9 @@ import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
 from mcp.server.models import InitializationOptions
 
-# TODO: Fix logger here
-logger = logging.getLogger(__name__)
+from selene_agent.utils.logger import get_logger
+
+logger = get_logger('loki')
 
 HAOS_URL = os.getenv("HAOS_URL", "NO_HAOS_URL_SET")
 HAOS_TOKEN = os.getenv("HAOS_TOKEN", "NO_HAOS_TOKEN_SET")
@@ -47,7 +48,7 @@ class HACamSnapper:
         self.mqtt_client.connect(mqtt_broker, mqtt_port, 60)
         self.mqtt_client.loop_start()  # This is correct for threaded operation
         
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
     
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:

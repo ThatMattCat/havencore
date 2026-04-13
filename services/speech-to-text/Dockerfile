@@ -19,6 +19,5 @@ RUN pip3 install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
 COPY app .
-EXPOSE 5999
-EXPOSE 6000
+EXPOSE 6001
 CMD ["python3", "main.py"]

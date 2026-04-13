@@ -72,9 +72,9 @@ HavenCore is a Docker-based microservices architecture for an AI-powered smart h
     -d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello!"}]}'
   ```
 - **UI Validation**: Access web interfaces:
-  - Agent Interface: http://localhost:6002
-  - TTS Interface: http://localhost:6004/
-  - System Gateway: http://localhost/
+  - Agent Dashboard: http://localhost/ (SPA; chat, playgrounds, metrics)
+  - Agent (direct): http://localhost:6002/
+  - System Gateway health: http://localhost/health
 - **End-to-End Scenario Testing**: 
   - Always test complete voice workflow when modifying speech services
   - Test Home Assistant integration when modifying agent tools
@@ -109,9 +109,9 @@ WOLFRAM_ALPHA_API_KEY=""   # For computational queries
 | Service | Ports | Purpose | Build Time |
 |---------|-------|---------|------------|
 | **nginx** | 80 | API Gateway & Load Balancer | 2-5 minutes |
-| **agent** | 6002, 6006 | LLM Logic & Tool Calling | 10-15 minutes |
-| **speech-to-text** | 6000, 6001, 5999 | Audio Transcription | 30-45 minutes |
-| **text-to-speech** | 6003, 6004, 6005 | Audio Generation | 15-25 minutes |
+| **agent** | 6002 | LLM logic, tool calling, SvelteKit dashboard | 10-15 minutes |
+| **speech-to-text** | 6001 | Audio Transcription | 30-45 minutes |
+| **text-to-speech** | 6005 | Audio Generation | 15-25 minutes |
 | **postgres** | 5432 | Database & Conversation Storage | 2-5 minutes |
 | **vLLM** | 8000 | LLM Inference Backend | Pre-built image |
 | **qdrant** | 6333, 6334 | Vector Database | Pre-built image |
@@ -283,8 +283,9 @@ docker compose up -d --timeout 1800
 ```bash
 # Test all API endpoints (run after startup completes)
 curl http://localhost/health                    # Gateway health
-curl http://localhost:6002/                     # Agent health  
-curl http://localhost:6004/                     # TTS UI health
+curl http://localhost:6002/health               # Agent health
+curl http://localhost:6001/health               # STT health
+curl http://localhost:6005/health               # TTS health
 curl http://localhost:8000/v1/models            # LLM models
 ```
 
@@ -301,8 +302,7 @@ curl http://localhost:8000/v1/models            # LLM models
 - Agent can control devices, read states, and execute services
 
 ### Web Interfaces
-- **Agent Chat**: http://localhost:6002 - Interactive conversation interface
-- **TTS Testing**: http://localhost:6004 - Text-to-speech testing and controls
-- **API Gateway**: http://localhost - Service status and routing information
+- **Agent Dashboard**: http://localhost - SvelteKit SPA (chat, devices, history, metrics, service playgrounds including TTS/STT/vision/ComfyUI)
+- **Agent (direct)**: http://localhost:6002 - same SPA + API surface
 
 **Remember: ALWAYS follow these instructions first. Only search or explore further when information here is incomplete or appears incorrect.**
