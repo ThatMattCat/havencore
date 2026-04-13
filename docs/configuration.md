@@ -152,6 +152,48 @@ CONVERSATION_TIMEOUT=600
 TOOL_RESULT_MAX_CHARS=8000
 ```
 
+### Autonomy engine
+
+Proactive background behaviors — morning briefings, ambient anomaly sweeps.
+Full reference: [services/agent/autonomy/README.md](services/agent/autonomy/README.md).
+
+```bash
+# Master switch (set false to disable dispatch at startup)
+AUTONOMY_ENABLED=true
+
+# Dispatcher tick interval (seconds) — how often the engine checks for due items
+AUTONOMY_DISPATCH_INTERVAL_SECONDS=30
+
+# Cron schedules (interpreted in CURRENT_TIMEZONE, stored as UTC)
+AUTONOMY_BRIEFING_CRON="0 8 * * *"
+AUTONOMY_ANOMALY_CRON="*/15 * * * *"
+
+# Anomaly-sweep cooldown: minutes before re-notifying on the same signature
+AUTONOMY_ANOMALY_COOLDOWN_MIN=30
+
+# Global ceiling on scheduled dispatches per rolling hour
+AUTONOMY_MAX_RUNS_PER_HOUR=20
+
+# Per-turn hard timeout (seconds)
+AUTONOMY_TURN_TIMEOUT_SEC=60
+
+# Notification targets
+AUTONOMY_BRIEFING_EMAIL_TO=""           # recipient for the morning briefing
+AUTONOMY_HA_NOTIFY_TARGET=""            # e.g. notify.mobile_app_pixel_8
+
+# Handler inputs
+AUTONOMY_BRIEFING_CAMERA_ENTITIES=""    # comma-separated camera entity_ids
+AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
+```
+
+Notes:
+- `send_email` currently reads its recipient from `DEFAULT_RECIPIENT` inside
+  the general-tools MCP server. `AUTONOMY_BRIEFING_EMAIL_TO` is the intended
+  operator knob but does not yet override that value — set `DEFAULT_RECIPIENT`
+  as well if it differs.
+- `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
+  `mobile_app_<device>`; the leading `notify.` is stripped.
+
 ### MCP (Model Context Protocol) Configuration
 
 The agent's tool surface is delivered by MCP servers bundled in the agent

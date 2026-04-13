@@ -6,6 +6,7 @@ The core AI agent — Python + FastAPI + a built-in SvelteKit dashboard, all ser
 
 - [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, general, Qdrant, MQTT, plus a tool-development guide.
 - [Conversation history](conversation-history.md) — how timed-out conversations get persisted to Postgres.
+- [Autonomy engine (v1)](autonomy/README.md) — proactive background behaviors (morning briefing, ambient anomaly sweep) that wake on a schedule, run a tier-filtered autonomous turn, and notify via email or HA push.
 - [Revamp 2026](revamp-2026.md) — architectural notes on the April 2026 rewrite (Gradio removal, async FastAPI, dashboard, streaming).
 
 ## Responsibilities
@@ -47,6 +48,12 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/stt/*` | POST/GET | Proxies to speech-to-text |
 | `/api/vision/*` | POST/GET | Proxies to iav-to-text |
 | `/api/comfy/*` | POST/GET | Proxies to text-to-image (ComfyUI) |
+| `/api/autonomy/status` | GET | Autonomy engine state (running/paused, last dispatch, next-due) |
+| `/api/autonomy/pause` | POST | Runtime kill switch — stop dispatch without restart |
+| `/api/autonomy/resume` | POST | Clear runtime kill switch |
+| `/api/autonomy/items` | GET | List agenda items (scheduled autonomous behaviors) |
+| `/api/autonomy/runs` | GET | Recent run history; `include_messages=1` for full traces |
+| `/api/autonomy/trigger/{id}` | POST | Fire an agenda item immediately, bypassing schedule + rate limit |
 | `/ws/chat` | WS | Streaming chat with tool visibility + metric events |
 | `/ws/logs` | WS | Live server log tail |
 | `/v1/chat/completions` | POST | OpenAI-compatible chat (used by the voice pipeline) |

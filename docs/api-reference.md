@@ -368,6 +368,12 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/comfy/status/{prompt_id}` | Poll generation status |
 | `GET`  | `/api/comfy/view` | Stream a generated image |
 | `GET`  | `/api/{tts,stt,vision,comfy}/health` | Per-service health proxies |
+| `GET`  | `/api/autonomy/status` | Autonomy engine state (running/paused, last dispatch, next-due) |
+| `POST` | `/api/autonomy/pause` | Runtime kill switch — stop dispatch without restart |
+| `POST` | `/api/autonomy/resume` | Clear runtime kill switch |
+| `GET`  | `/api/autonomy/items` | List agenda items (scheduled autonomous behaviors) |
+| `GET`  | `/api/autonomy/runs` | Recent run history; `?include_messages=1` for full traces |
+| `POST` | `/api/autonomy/trigger/{id}` | Fire an agenda item immediately (bypasses schedule + rate limit) |
 
 ### WebSockets
 
