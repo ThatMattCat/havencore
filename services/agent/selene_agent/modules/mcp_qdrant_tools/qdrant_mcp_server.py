@@ -190,11 +190,18 @@ class QdrantMCPServer:
                 "importance": importance,
                 "tags": tags,
                 "source": "mcp_server",
-                # Memory tiering (v1 = all new memories are L2; v2 consolidation
-                # will promote select entries into L3 / L4). source_ids links
-                # consolidated memories back to their originating L2 rows.
+                # Memory tiering: new rows are L2. source_ids links consolidated
+                # (L3/L4) entries back to originating L2 rows.
                 "tier": "L2",
                 "source_ids": [],
+                # v2 access tracking + importance dynamics.
+                "access_count": 0,
+                "last_accessed_at": None,
+                "importance_effective": importance,
+                # v2 L4 proposal queue.
+                "pending_l4_approval": False,
+                "proposed_at": None,
+                "proposal_rationale": None,
             }
             
             if expires_in_days:
@@ -290,10 +297,15 @@ class QdrantMCPServer:
                     "timestamp": result.payload.get("timestamp", ""),
                     "importance": result.payload.get("importance", 0),
                     "tags": result.payload.get("tags", []),
-                    # Tier defaults to 'L2' for pre-tier-field rows (backward compat).
                     "tier": result.payload.get("tier", "L2"),
                     "source_ids": result.payload.get("source_ids", []),
-                    "relevance_score": float(result.score)
+                    # v2 fields with backward-compat defaults for pre-v2 rows.
+                    "access_count": result.payload.get("access_count", 0),
+                    "last_accessed_at": result.payload.get("last_accessed_at"),
+                    "importance_effective": result.payload.get(
+                        "importance_effective", result.payload.get("importance", 0)
+                    ),
+                    "relevance_score": float(result.score),
                 }
                 
                 # Include expiry info if present
