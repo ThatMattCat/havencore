@@ -551,9 +551,19 @@ class HomeAssistantMCPServer:
                 Tool(
                     name="ha_control_media_player",
                     description=(
-                        "Control a media player: playback (play/pause/stop/next/previous/seek), "
+                        "Control a media player: playback (play/pause/stop/toggle/next/previous/seek), "
                         "volume, power, or input source. The 'value' field is required for "
-                        "volume_set, seek, and select_source; ignored otherwise."
+                        "volume_set, seek, and select_source; ignored otherwise.\n"
+                        "\n"
+                        "Playback semantics (IMPORTANT — play and pause are NOT toggles):\n"
+                        "- 'play'   : start/resume playback. Use only when the device is paused or stopped. "
+                        "Calling 'play' on an already-playing device is a no-op.\n"
+                        "- 'pause'  : pause playback. Use only when the device is currently playing. "
+                        "Calling 'pause' on an already-paused device is a no-op.\n"
+                        "- 'toggle' : switch between play and pause based on current state. Prefer this "
+                        "for user requests like 'unpause', 'resume', 'pause/play it' or whenever the "
+                        "current playback state is unknown or ambiguous.\n"
+                        "When in doubt between play/pause, use 'toggle'."
                     ),
                     inputSchema={
                         "type": "object",
@@ -564,7 +574,11 @@ class HomeAssistantMCPServer:
                                         "seek", "shuffle", "repeat", "volume_set", "volume_up",
                                         "volume_down", "mute", "unmute", "turn_on", "turn_off",
                                         "select_source"],
-                                "description": "Action to perform on the media player"
+                                "description": (
+                                    "Action to perform on the media player. Note: 'play' and 'pause' "
+                                    "are directional (not toggles) — use 'toggle' for 'unpause'/'resume' "
+                                    "or when the current state is unknown."
+                                )
                             },
                             "device": {
                                 "type": "string",
