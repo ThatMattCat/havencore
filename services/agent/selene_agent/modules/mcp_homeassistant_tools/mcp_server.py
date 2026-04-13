@@ -59,6 +59,50 @@ def _format_entity_not_found(err: "EntityNotFoundError", device_label: str = "en
     )
 
 
+# Per-domain attribute projection. friendly_name is always included; anything
+# listed here is surfaced when HA reports it. Kept deliberately tight so the
+# LLM sees signal, not noise.
+DOMAIN_ATTRS: Dict[str, tuple] = {
+    "light":        ("brightness", "color_mode", "rgb_color", "hs_color",
+                     "xy_color", "color_temp_kelvin", "effect",
+                     "supported_color_modes"),
+    "media_player": ("source", "volume_level", "is_volume_muted",
+                     "media_title", "media_artist", "media_album_name",
+                     "app_id", "source_list"),
+    "climate":      ("current_temperature", "temperature",
+                     "target_temp_high", "target_temp_low",
+                     "hvac_action", "hvac_modes", "fan_mode",
+                     "current_humidity", "humidity", "preset_mode"),
+    "cover":        ("current_position", "current_tilt_position", "device_class"),
+    "fan":          ("percentage", "preset_mode", "oscillating", "direction"),
+    "sensor":       ("unit_of_measurement", "device_class"),
+    "binary_sensor":("device_class",),
+    "lock":         ("device_class",),
+    "vacuum":       ("battery_level", "status", "fan_speed"),
+    "water_heater": ("current_temperature", "temperature", "operation_mode"),
+    "humidifier":   ("current_humidity", "humidity", "mode"),
+    "weather":      ("temperature", "humidity", "pressure",
+                     "wind_speed", "wind_bearing"),
+    "person":       (),
+    "device_tracker":(),
+}
+
+
+def _project_attrs(domain: str, raw_attrs: Dict[str, Any]) -> Dict[str, Any]:
+    """Pick the subset of HA attributes worth returning for the given domain.
+
+    Always includes friendly_name. Drops keys whose value is None so the
+    payload stays compact when HA doesn't report a field.
+    """
+    keys = ("friendly_name",) + DOMAIN_ATTRS.get(domain, ())
+    out: Dict[str, Any] = {}
+    for k in keys:
+        v = raw_attrs.get(k)
+        if v is not None:
+            out[k] = v
+    return out
+
+
 class HomeAssistantClient:
     """Async Home Assistant REST API client using aiohttp."""
 
@@ -120,14 +164,17 @@ class HomeAssistantClient:
     async def get_domain_entity_states(self, domain: str) -> str:
         if TEST_MODE:
             return json.dumps({
-                f"{domain}.entity1": "on",
-                f"{domain}.entity2": "off",
-                f"{domain}.entity3": "unavailable",
+                f"{domain}.entity1": {"state": "on", "attributes": {"friendly_name": "Entity 1"}},
+                f"{domain}.entity2": {"state": "off", "attributes": {"friendly_name": "Entity 2"}},
+                f"{domain}.entity3": {"state": "unavailable", "attributes": {"friendly_name": "Entity 3"}},
             })
         states = await self._get("/api/states")
         prefix = f"{domain}."
         filtered = {
-            s["entity_id"]: s["state"]
+            s["entity_id"]: {
+                "state": s.get("state"),
+                "attributes": _project_attrs(domain, s.get("attributes") or {}),
+            }
             for s in states
             if s.get("entity_id", "").startswith(prefix)
         }
@@ -222,7 +269,18 @@ class HomeAssistantMCPServer:
             tools.extend([
                 Tool(
                     name="ha_get_domain_entity_states",
-                    description="Get the current states of all entities in a Home Assistant domain (e.g., media_player, light, switch, sensor)",
+                    description=(
+                        "Get the current states of all entities in a Home Assistant domain "
+                        "(e.g. light, switch, climate, cover, media_player, sensor). Returns a "
+                        "JSON object keyed by entity_id with shape "
+                        "{'state': <str>, 'attributes': {...}}. Attributes are curated per "
+                        "domain: lights include brightness / rgb_color / hs_color / "
+                        "color_temp_kelvin / color_mode; climate includes current_temperature "
+                        "/ temperature / hvac_action; covers include current_position; etc. "
+                        "The attribute values in the response round-trip back into the matching "
+                        "ha_control_* tool (e.g. pass an rgb_color from here straight into "
+                        "ha_control_light)."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -287,9 +345,13 @@ class HomeAssistantMCPServer:
                 Tool(
                     name="ha_control_light",
                     description=(
-                        "Turn a light on/off/toggle with optional brightness, color, and color "
-                        "temperature. Only include optional fields when the user requested that "
-                        "attribute; turn_off and toggle ignore brightness/color."
+                        "Turn a light on/off/toggle with optional brightness and color. "
+                        "Color can be specified as rgb_color, hs_color, hex_color, "
+                        "color_temp_kelvin, or color_name — specify at most ONE of these. "
+                        "The rgb_color / hs_color / color_temp_kelvin values returned by "
+                        "ha_get_domain_entity_states and ha_get_entity_history can be passed "
+                        "back here unchanged to reproduce a prior color. turn_off and toggle "
+                        "ignore brightness/color."
                     ),
                     inputSchema={
                         "type": "object",
@@ -316,6 +378,24 @@ class HomeAssistantMCPServer:
                             "color_temp_kelvin": {
                                 "type": "integer",
                                 "description": "Color temperature in Kelvin, e.g. 2700-6500 (on only)"
+                            },
+                            "rgb_color": {
+                                "type": "array",
+                                "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "description": "Color as [R,G,B] integers 0-255 (on only). Matches the rgb_color shape returned by ha_get_domain_entity_states."
+                            },
+                            "hs_color": {
+                                "type": "array",
+                                "items": {"type": "number"},
+                                "minItems": 2,
+                                "maxItems": 2,
+                                "description": "Color as [hue 0-360, saturation 0-100] (on only). Matches the hs_color shape returned by ha_get_domain_entity_states."
+                            },
+                            "hex_color": {
+                                "type": "string",
+                                "description": "Color as a hex string like '#FF8040' or 'FF8040' (on only). Converted to rgb_color before calling HA."
                             }
                         },
                         "required": ["entity_id", "state"]
@@ -471,7 +551,11 @@ class HomeAssistantMCPServer:
                     description=(
                         "List entities assigned to an area. Accepts area_id or case-insensitive "
                         "area name. Entities inherit from their device's area when they have no "
-                        "direct area assignment. Results are grouped by domain."
+                        "direct area assignment. Results are grouped by domain. By default "
+                        "returns bare entity_id strings (cheap directory lookup); set "
+                        "include_state=true to also attach each entity's current state and "
+                        "curated attributes (one extra /api/states fetch — prefer the default "
+                        "for large areas)."
                     ),
                     inputSchema={
                         "type": "object",
@@ -484,6 +568,11 @@ class HomeAssistantMCPServer:
                                 "type": "array",
                                 "items": {"type": "string"},
                                 "description": "Optional domain filter, e.g. ['light','switch']"
+                            },
+                            "include_state": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "When true, replace each entity_id string with {entity_id, state, attributes}. Attributes follow the same curated-per-domain shape as ha_get_domain_entity_states."
                             }
                         },
                         "required": ["area"]
@@ -558,9 +647,11 @@ class HomeAssistantMCPServer:
                     name="ha_get_entity_history",
                     description=(
                         "Get recent state history for an entity over the last N hours. Returns a "
-                        "list of {state, last_changed} points, sampled if very dense. Use for "
-                        "questions like \"has the garage been open today?\" or \"when did the "
-                        "thermostat last change?\"."
+                        "list of {state, last_changed, attributes?} points, sampled if very dense. "
+                        "Attributes are curated per domain (same shape as ha_get_domain_entity_states) "
+                        "so you can see e.g. how a light's brightness or rgb_color changed over "
+                        "time — useful for questions like \"what color was the lamp before?\" or "
+                        "\"when did the thermostat setpoint last change?\"."
                     ),
                     inputSchema={
                         "type": "object",
@@ -703,6 +794,9 @@ class HomeAssistantMCPServer:
                         arguments.get("brightness_pct"),
                         arguments.get("color_name"),
                         arguments.get("color_temp_kelvin"),
+                        arguments.get("rgb_color"),
+                        arguments.get("hs_color"),
+                        arguments.get("hex_color"),
                     )
                     return [types.TextContent(type="text", text=result)]
 
@@ -754,6 +848,7 @@ class HomeAssistantMCPServer:
                     result = await self._get_entities_in_area(
                         arguments.get("area"),
                         arguments.get("domains"),
+                        bool(arguments.get("include_state", False)),
                     )
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -842,6 +937,9 @@ class HomeAssistantMCPServer:
         brightness_pct: Optional[int] = None,
         color_name: Optional[str] = None,
         color_temp_kelvin: Optional[int] = None,
+        rgb_color: Optional[List[int]] = None,
+        hs_color: Optional[List[float]] = None,
+        hex_color: Optional[str] = None,
     ) -> str:
         state = (state or "").lower()
         if state not in ("on", "off", "toggle"):
@@ -849,12 +947,40 @@ class HomeAssistantMCPServer:
         service = {"on": "turn_on", "off": "turn_off", "toggle": "toggle"}[state]
         extras: Dict[str, Any] = {}
         if state == "on":
+            color_sources = {
+                "rgb_color": rgb_color,
+                "hs_color": hs_color,
+                "hex_color": hex_color,
+                "color_temp_kelvin": color_temp_kelvin,
+                "color_name": color_name,
+            }
+            provided = [k for k, v in color_sources.items() if v is not None]
+            if len(provided) > 1:
+                return (
+                    "Error: ha_control_light accepts only one of rgb_color, hs_color, "
+                    f"hex_color, color_temp_kelvin, color_name (got {provided})"
+                )
+
             if brightness_pct is not None:
                 extras["brightness_pct"] = brightness_pct
-            if color_name is not None:
-                extras["color_name"] = color_name
-            if color_temp_kelvin is not None:
+
+            if hex_color is not None:
+                h = hex_color.strip().lstrip("#")
+                if len(h) != 6 or any(c not in "0123456789abcdefABCDEF" for c in h):
+                    return f"Error: hex_color must be 6 hex chars (got '{hex_color}')"
+                extras["rgb_color"] = [int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)]
+            elif rgb_color is not None:
+                if not (isinstance(rgb_color, list) and len(rgb_color) == 3):
+                    return f"Error: rgb_color must be [R,G,B] (got {rgb_color})"
+                extras["rgb_color"] = [int(c) for c in rgb_color]
+            elif hs_color is not None:
+                if not (isinstance(hs_color, list) and len(hs_color) == 2):
+                    return f"Error: hs_color must be [hue,sat] (got {hs_color})"
+                extras["hs_color"] = [float(c) for c in hs_color]
+            elif color_temp_kelvin is not None:
                 extras["color_temp_kelvin"] = color_temp_kelvin
+            elif color_name is not None:
+                extras["color_name"] = color_name
         try:
             return await self.ha_client.execute_service(entity_id, service, **extras)
         except EntityNotFoundError as e:
@@ -972,6 +1098,7 @@ class HomeAssistantMCPServer:
         self,
         area: str,
         domains: Optional[List[str]] = None,
+        include_state: bool = False,
     ) -> Dict[str, Any]:
         if not area:
             return {"error": "'area' is required"}
@@ -997,7 +1124,15 @@ class HomeAssistantMCPServer:
         device_area = {d["id"]: d.get("area_id") for d in devices if d.get("id")}
         domain_filter = set(d.lower() for d in domains) if domains else None
 
-        grouped: Dict[str, List[str]] = {}
+        state_by_id: Dict[str, Dict[str, Any]] = {}
+        if include_state:
+            try:
+                raw_states = await self.ha_client._get("/api/states")
+                state_by_id = {s.get("entity_id"): s for s in (raw_states or []) if s.get("entity_id")}
+            except Exception as e:
+                return {"error": f"failed to fetch states: {e}"}
+
+        grouped: Dict[str, List[Any]] = {}
         for ent in entities:
             if ent.get("disabled_by") or ent.get("hidden_by"):
                 continue
@@ -1010,10 +1145,21 @@ class HomeAssistantMCPServer:
             dom = eid.split(".", 1)[0]
             if domain_filter and dom not in domain_filter:
                 continue
-            grouped.setdefault(dom, []).append(eid)
+            if include_state:
+                s = state_by_id.get(eid) or {}
+                grouped.setdefault(dom, []).append({
+                    "entity_id": eid,
+                    "state": s.get("state"),
+                    "attributes": _project_attrs(dom, s.get("attributes") or {}),
+                })
+            else:
+                grouped.setdefault(dom, []).append(eid)
 
         for dom in grouped:
-            grouped[dom].sort()
+            if include_state:
+                grouped[dom].sort(key=lambda e: e["entity_id"])
+            else:
+                grouped[dom].sort()
         return {"area_id": area_id, "entities_by_domain": grouped, "total": sum(len(v) for v in grouped.values())}
 
     async def _get_presence(self) -> Dict[str, Any]:
@@ -1086,19 +1232,24 @@ class HomeAssistantMCPServer:
         start = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0).isoformat()
         path = (
             f"/api/history/period/{quote(start, safe='')}"
-            f"?filter_entity_id={quote(entity_id)}&minimal_response"
+            f"?filter_entity_id={quote(entity_id)}"
         )
         try:
             data = await self.ha_client._get(path)
         except Exception as e:
             return {"error": str(e)}
+        domain = entity_id.split(".", 1)[0]
         points: List[Dict[str, Any]] = []
         for series in data or []:
             for p in series or []:
-                points.append({
+                point: Dict[str, Any] = {
                     "state": p.get("state"),
                     "last_changed": p.get("last_changed") or p.get("last_updated"),
-                })
+                }
+                attrs = _project_attrs(domain, p.get("attributes") or {})
+                if attrs:
+                    point["attributes"] = attrs
+                points.append(point)
         MAX_POINTS = 200
         result: Dict[str, Any] = {
             "entity_id": entity_id,
