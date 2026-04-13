@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timezone
+
 import pytest
 
 
@@ -54,6 +56,9 @@ async def test_end_to_end_consolidation(tmp_path):
         "Morning dog walk continues",
     ]
 
+    # Use an ISO timestamp newer than the last memory_review run so step 3
+    # (which filters by ``timestamp >= last_fired_at``) picks these up.
+    seed_ts = datetime.now(timezone.utc).isoformat()
     ids: list[str] = []
     for text in theme_a + theme_b:
         r = requests.post(f"{embed_url}/embed", json={"inputs": text})
@@ -65,21 +70,22 @@ async def test_end_to_end_consolidation(tmp_path):
             id=pid, vector=vec, payload={
                 "text": text, "tier": "L2", "importance": 3,
                 "importance_effective": 3.0,
-                "timestamp": "2026-04-10T00:00:00+00:00",
+                "timestamp": seed_ts,
                 "tags": [], "source_ids": [], "access_count": 0,
                 "last_accessed_at": None, "pending_l4_approval": False,
                 "proposed_at": None, "proposal_rationale": None,
             },
         )])
 
-    # Trigger the run via the engine.
-    from selene_agent.autonomy import db as autonomy_db
-    items = await autonomy_db.list_all_items()
-    target = next(i for i in items if i["kind"] == "memory_review")
-    from selene_agent.selene_agent import app
-    engine = app.state.autonomy_engine
-    result = await engine.trigger(target["id"])
-    assert result["status"] == "ok"
+    # Trigger the run via the live agent's HTTP endpoint. The agent process
+    # owns the engine + DB pool (both init in FastAPI lifespan); importing
+    # ``app`` from a pytest subprocess gives us an un-started copy with no
+    # pool, so we go through the wire instead.
+    agent_base = os.getenv("AGENT_BASE_URL", "http://localhost:6002")
+    trigger = requests.post(f"{agent_base}/api/memory/runs/trigger", timeout=180)
+    trigger.raise_for_status()
+    result = trigger.json().get("result", {})
+    assert result.get("status") == "ok", f"trigger result: {trigger.json()}"
 
     # Assert at least one L3 was created with source_ids pointing into our seeded set.
     flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])
