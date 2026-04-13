@@ -58,7 +58,7 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 - **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
 - **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 
-**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate port 6006 FastAPI app were removed during the 2025 revamp.
+**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate port 6006 FastAPI app were removed during the 2026 revamp.
 
 ### 3. Speech-to-Text Service (Port 6001)
 **Purpose**: Audio Transcription and Processing
@@ -273,4 +273,3 @@ services:
 **Next Steps**: 
 - [Service Documentation](services/README.md) - Detailed service specifications
 - [API Reference](api-reference.md) - Complete API documentation
-- [Deployment Guide](Deployment.md) - Production deployment considerations

@@ -27,17 +27,21 @@ havencore/
 ├── compose.yaml              # Docker orchestration
 ├── docs/                     # Documentation (this wiki)
 ├── services/                 # All microservices
-│   ├── agent/               # Main AI agent
-│   │   ├── app/             # Python application code
-│   │   │   ├── selene_agent.py          # Core agent logic
-│   │   │   ├── conversation_db.py       # Database interface
-│   │   │   └── utils/                   # Utilities and tools
-│   │   │       ├── haos/               # Home Assistant integration
-│   │   │       ├── mcp_client_manager.py
-│   │   │       ├── unified_tool_registry.py
-│   │   │       └── *_tools_defs.py     # Tool definitions
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
+│   ├── agent/               # Main AI agent (Python package: selene-agent)
+│   │   ├── selene_agent/    # Python package source
+│   │   │   ├── selene_agent.py          # FastAPI app entry point
+│   │   │   ├── orchestrator.py          # Event-based agent loop
+│   │   │   ├── api/                     # REST/WS routers
+│   │   │   ├── modules/                 # Bundled MCP server modules
+│   │   │   │   ├── mcp_homeassistant_tools/
+│   │   │   │   ├── mcp_plex_tools/
+│   │   │   │   ├── mcp_general_tools/
+│   │   │   │   ├── mcp_qdrant_tools/
+│   │   │   │   └── mcp_mqtt_tools/
+│   │   │   └── utils/                   # Config, MCP client, DB
+│   │   ├── dashboard/       # SvelteKit SPA (built into the image)
+│   │   ├── pyproject.toml
+│   │   └── Dockerfile
 │   ├── nginx/               # API gateway
 │   ├── postgres/            # Database initialization
 │   ├── speech-to-text/      # STT service
@@ -45,7 +49,7 @@ havencore/
 │   └── vllm/                # LLM backend config
 └── shared/                  # Shared utilities
     ├── configs/             # Common configuration
-    └── scripts/             # Shared utilities
+    └── libs/                # Logger, trace IDs
 ```
 
 ### Initial Setup
@@ -88,16 +92,18 @@ docker compose up -d postgres qdrant nginx
 
 #### Live Development with Volume Mounts
 
-The development setup uses volume mounts for live code reloading:
+The development setup mounts the `selene_agent` package into the agent
+container so Python edits land without a rebuild. See the `agent` service
+entry in `compose.yaml` for the authoritative list of mounts.
 
-```yaml
-# In compose.yaml
-volumes:
-  - ./services/agent/app:/app              # Live code reload
-  - ./shared:/app/shared:ro                # Shared configuration
+After editing Python files, restart the container to pick up the change:
+
+```bash
+docker compose restart agent
 ```
 
-This means changes to Python files are immediately reflected in the running containers.
+The SvelteKit dashboard is a compiled SPA baked into the image; UI changes
+require a rebuild (`docker compose build agent`).
 
 #### Making Changes
 
@@ -129,14 +135,14 @@ git commit -m "Add: descriptive commit message"
 ```bash
 # Test agent service
 docker compose exec agent python -c "
-import selene_agent
+from selene_agent import selene_agent
 print('Agent module loaded successfully')
 "
 
-# Test imports
+# Test MCP client manager import
 docker compose exec agent python -c "
-from utils.unified_tool_registry import UnifiedToolRegistry
-print('Tool registry imported successfully')
+from selene_agent.utils.mcp_client_manager import MCPClientManager
+print('MCP client manager imported successfully')
 "
 
 # Run service health checks
@@ -298,100 +304,14 @@ Any additional information for reviewers.
 
 ### Adding New Tools
 
-#### 1. Legacy Tool Development
+All tool surface is delivered by MCP servers bundled inside the agent
+package at `services/agent/selene_agent/modules/mcp_*`. New tools
+either belong in an existing server (e.g., adding an HA tool to
+`mcp_homeassistant_tools`) or in a new server module alongside them.
 
-Create a new tool in `services/agent/app/utils/`:
-
-```python
-# services/agent/app/utils/custom_tools.py
-
-import requests
-from typing import Dict, Any, Optional
-
-def get_stock_price(symbol: str, api_key: str) -> Dict[str, Any]:
-    """Get current stock price for a given symbol.
-    
-    Args:
-        symbol: Stock symbol (e.g., 'AAPL')
-        api_key: API key for stock service
-        
-    Returns:
-        Dict containing stock price information
-    """
-    try:
-        url = f"https://api.example.com/quote/{symbol}"
-        headers = {"Authorization": f"Bearer {api_key}"}
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        return {
-            "symbol": symbol,
-            "price": data.get("price"),
-            "change": data.get("change"),
-            "timestamp": data.get("timestamp")
-        }
-    except Exception as e:
-        return {"error": f"Failed to get stock price: {str(e)}"}
-```
-
-#### 2. Tool Definition
-
-Add tool definition in `services/agent/app/utils/general_tools_defs.py`:
-
-```python
-# Tool definition for the stock price function
-stock_price_tool = {
-    "type": "function",
-    "function": {
-        "name": "get_stock_price",
-        "description": "Get current stock price for a given stock symbol",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Stock symbol (e.g., AAPL, GOOGL, TSLA)"
-                }
-            },
-            "required": ["symbol"]
-        }
-    }
-}
-```
-
-#### 3. Register the Tool
-
-In `services/agent/app/selene_agent.py`:
-
-```python
-from utils.custom_tools import get_stock_price
-
-class SeleneAgent:
-    def _setup_tool_functions(self) -> Dict[str, callable]:
-        return {
-            # Existing tools...
-            'get_stock_price': lambda symbol: get_stock_price(
-                symbol, 
-                os.getenv('STOCK_API_KEY', '')
-            ),
-        }
-    
-    def _get_available_tools(self) -> List[Dict[str, Any]]:
-        return [
-            # Existing tools...
-            stock_price_tool,
-        ]
-```
-
-#### 4. Environment Configuration
-
-Add to `.env.tmpl`:
-```bash
-# Stock API Configuration
-STOCK_API_KEY=""  # API key for stock price service
-```
+For the authoring workflow — module layout, tool-definition pattern,
+configuration, logging, and testing — see
+[Tool Development](services/agent/tools/development.md).
 
 ### Adding New Services
 
@@ -481,106 +401,13 @@ server {
 
 ### MCP Server Development
 
-#### 1. Create MCP Server
-
-Create a new MCP server using Node.js:
-```bash
-mkdir -p mcp-servers/my-server
-cd mcp-servers/my-server
-
-# package.json
-{
-  "name": "my-mcp-server",
-  "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "latest"
-  }
-}
-
-npm install
-```
-
-#### 2. Implement MCP Server
-
-```javascript
-// server.js
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-
-const server = new Server(
-  {
-    name: "my-server",
-    version: "1.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
-
-// Define tools
-server.setRequestHandler("tools/list", async () => {
-  return {
-    tools: [
-      {
-        name: "my_tool",
-        description: "A custom tool that does something useful",
-        inputSchema: {
-          type: "object",
-          properties: {
-            input: {
-              type: "string",
-              description: "Input for the tool"
-            }
-          },
-          required: ["input"]
-        }
-      }
-    ]
-  };
-});
-
-// Handle tool calls
-server.setRequestHandler("tools/call", async (request) => {
-  const { name, arguments: args } = request.params;
-  
-  if (name === "my_tool") {
-    // Implement your tool logic here
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Processed: ${args.input}`
-        }
-      ]
-    };
-  }
-  
-  throw new Error(`Unknown tool: ${name}`);
-});
-
-// Start server
-const transport = new StdioServerTransport();
-await server.connect(transport);
-console.error("My MCP Server running on stdio");
-```
-
-#### 3. Configure MCP Integration
-
-Add to `.env`:
-```bash
-MCP_ENABLED=true
-MCP_SERVERS='[
-  {
-    "name": "my-server",
-    "command": "node",
-    "args": ["mcp-servers/my-server/server.js"],
-    "enabled": true
-  }
-]'
-```
+HavenCore's in-tree MCP servers are Python modules under
+`services/agent/selene_agent/modules/`. Each exposes a stdio server and is
+spawned by the agent's `MCPClientManager` per the `MCP_SERVERS` JSON in
+`.env`. See [Tool Development](services/agent/tools/development.md) for
+the full authoring guide and
+[Agent tools overview](services/agent/tools/README.md) for examples of
+existing modules.
 
 ---
 
@@ -591,37 +418,14 @@ MCP_SERVERS='[
 Create test files in the service directories:
 
 ```python
-# services/agent/app/tests/test_tools.py
+# services/agent/tests/test_example.py
 import pytest
-from unittest.mock import Mock, patch
-from utils.custom_tools import get_stock_price
+from unittest.mock import patch
 
-class TestCustomTools:
-    def test_get_stock_price_success(self):
-        """Test successful stock price retrieval."""
-        with patch('requests.get') as mock_get:
-            mock_response = Mock()
-            mock_response.json.return_value = {
-                "price": 150.00,
-                "change": 2.50,
-                "timestamp": "2024-01-15T10:30:00Z"
-            }
-            mock_response.raise_for_status.return_value = None
-            mock_get.return_value = mock_response
-            
-            result = get_stock_price("AAPL", "test_key")
-            
-            assert result["symbol"] == "AAPL"
-            assert result["price"] == 150.00
-            assert result["change"] == 2.50
-    
-    def test_get_stock_price_error(self):
-        """Test error handling in stock price retrieval."""
-        with patch('requests.get', side_effect=Exception("API Error")):
-            result = get_stock_price("INVALID", "test_key")
-            
-            assert "error" in result
-            assert "Failed to get stock price" in result["error"]
+from selene_agent.modules.mcp_general_tools import mcp_server  # example import
+
+def test_example():
+    assert True
 
 # Run tests
 # docker compose exec agent python -m pytest tests/
@@ -703,35 +507,15 @@ def test_response_time():
 #### Python Virtual Environment
 ```bash
 # Create virtual environment for local development
-cd services/agent/app
+cd services/agent
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Set PYTHONPATH
-export PYTHONPATH="/path/to/havencore:$PYTHONPATH"
+# Install the agent package in editable mode (pulls deps from pyproject.toml)
+pip install -e .
 
 # Test imports
-python -c "from utils.unified_tool_registry import UnifiedToolRegistry; print('OK')"
-```
-
-#### IDE Configuration
-
-**VS Code Settings** (`.vscode/settings.json`):
-```json
-{
-    "python.defaultInterpreterPath": "./services/agent/app/venv/bin/python",
-    "python.formatting.provider": "black",
-    "python.linting.enabled": true,
-    "python.linting.flake8Enabled": true,
-    "docker.defaultRegistryPath": "",
-    "files.exclude": {
-        "**/__pycache__": true,
-        "**/*.pyc": true
-    }
-}
+python -c "from selene_agent.utils.mcp_client_manager import MCPClientManager; print('OK')"
 ```
 
 ### Debugging Techniques
@@ -752,9 +536,8 @@ docker compose exec agent env | grep -E "(API_KEY|HOST_IP)"
 
 # Test specific modules
 docker compose exec agent python -c "
-from selene_agent import SeleneAgent
-agent = SeleneAgent()
-print('Agent initialized successfully')
+from selene_agent import selene_agent
+print('Agent module imported successfully')
 "
 ```
 
@@ -820,16 +603,16 @@ dev_shell() {
 pip install black flake8 mypy pytest
 
 # Format code
-black services/agent/app/
+black services/agent/selene_agent/
 
 # Lint code
-flake8 services/agent/app/
+flake8 services/agent/selene_agent/
 
 # Type checking
-mypy services/agent/app/
+mypy services/agent/selene_agent/
 
 # Run tests
-pytest services/agent/app/tests/
+pytest services/agent/tests/
 ```
 
 ---
@@ -878,5 +661,4 @@ docker push registry.example.com/havencore_agent:v1.2.0
 
 **Next Steps**:
 - [Tool Development](services/agent/tools/development.md) - Deep dive into tool creation
-- [MCP Integration](MCP-Integration.md) - Model Context Protocol details
-- [Performance Tuning](Performance.md) - Optimization techniques
+- [Agent tools overview](services/agent/tools/README.md) - Tool inventory and per-module docs

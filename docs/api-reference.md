@@ -133,7 +133,7 @@ HavenCore supports tool calling for external integrations:
 Tools are grouped into MCP servers. Each server has its own reference
 doc with the full tool list, arguments, config, and troubleshooting.
 
-- **Home Assistant** — 21 tools (domain state / services, light & climate
+- **Home Assistant** — 19 tools (domain state / services, light & climate
   helpers, scenes, scripts, automations, notifications, areas, presence,
   timers, Jinja templates, history, calendar, media transport). See
   [MCP Home Assistant](services/agent/tools/home-assistant.md).
@@ -317,40 +317,6 @@ curl http://localhost/health
 | STT | `GET http://localhost:6001/health` | Speech-to-text service |
 | LLM | `GET http://localhost:8000/health` | LLM backend status |
 
-### Tool Management APIs
-
-#### GET /tools/status
-Get status of all registered tools.
-
-**Endpoint**: `GET http://localhost:6002/tools/status`
-
-#### Response
-```json
-{
-  "total_tools": 12,
-  "legacy_tools": 8,
-  "mcp_tools": 4,
-  "conflicts": [],
-  "tool_preference": "legacy",
-  "tools": [
-    {
-      "name": "get_weather_forecast",
-      "source": "legacy",
-      "description": "Get weather forecast for a location"
-    }
-  ]
-}
-```
-
-#### POST /tools/preference
-Set tool preference when conflicts exist between legacy and MCP tools.
-
-```bash
-curl -X POST http://localhost:6002/tools/preference \
-  -H "Content-Type: application/json" \
-  -d '{"prefer_mcp": true}'
-```
-
 ### MCP Management APIs
 
 #### GET /mcp/status
@@ -376,7 +342,7 @@ Get status of MCP (Model Context Protocol) connections.
 
 ## Agent Dashboard APIs
 
-The agent service at `http://localhost:6002` serves both the SvelteKit dashboard SPA and a set of JSON/WebSocket endpoints under `/api/*` and `/ws/*`. Full endpoint detail lives in [`services/agent/README.md`](../services/agent/README.md); this section is a quick reference.
+The agent service at `http://localhost:6002` serves both the SvelteKit dashboard SPA and a set of JSON/WebSocket endpoints under `/api/*` and `/ws/*`. Full endpoint detail lives in [`services/agent/README.md`](services/agent/README.md); this section is a quick reference.
 
 ### REST (`/api/*`)
 
@@ -436,16 +402,6 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 }
 ```
 
-#### 429 Too Many Requests
-```json
-{
-  "error": {
-    "message": "Rate limit exceeded",
-    "type": "rate_limit_error"
-  }
-}
-```
-
 #### 500 Internal Server Error
 ```json
 {
@@ -463,23 +419,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `missing_parameter` | Required parameter not provided | Check request body |
 | `invalid_parameter` | Parameter value is invalid | Verify parameter format |
 | `authentication_error` | API key invalid or missing | Check Authorization header |
-| `rate_limit_error` | Too many requests | Wait and retry |
 | `internal_error` | Server-side error | Check service logs |
-
-## Rate Limiting
-
-HavenCore implements rate limiting to prevent abuse:
-
-- **Chat Completions**: 60 requests/minute per API key
-- **Audio Processing**: 100 requests/minute per API key
-- **System APIs**: 120 requests/minute per IP
-
-Rate limit headers are included in responses:
-```
-X-RateLimit-Limit: 60
-X-RateLimit-Remaining: 59
-X-RateLimit-Reset: 1640995200
-```
 
 ## SDK Examples
 

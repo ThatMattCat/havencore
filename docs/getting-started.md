@@ -7,9 +7,13 @@ This guide will help you get HavenCore up and running quickly. For detailed conf
 Before starting, ensure you have:
 
 ### Hardware Requirements
-- **NVIDIA GPU**: Required for AI model inference (CUDA-compatible)
-- **RAM**: Minimum 16GB, recommended 32GB+
-- **Storage**: At least 50GB free space for models and containers
+- **NVIDIA GPU(s)**: Required for AI model inference. The default vLLM
+  model (Qwen2.5-72B-Instruct-AWQ) needs roughly 48GB of VRAM on its own.
+  STT, TTS, vision, and image-gen each want additional GPU space — a
+  multi-GPU host is recommended.
+- **RAM**: Minimum 32GB, recommended 64GB+
+- **Storage**: At least 150GB free space for model weights, container
+  images, and Docker volumes.
 - **CPU**: Modern multi-core processor (Intel/AMD)
 
 ### Software Requirements
@@ -152,7 +156,7 @@ docker compose build --no-cache --progress=plain
 #### Model Download Issues
 ```bash
 # Pre-download models manually
-huggingface-cli download TechxGenus/Mistral-Large-Instruct-2411-AWQ
+huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
 
 # Check network connectivity
 curl -I https://huggingface.co
@@ -163,7 +167,7 @@ curl -I https://huggingface.co
 For detailed configuration options, see:
 - [Configuration Guide](configuration.md) - Complete environment variable reference
 - [Home Assistant Integration](integrations/home-assistant.md) - Smart home setup
-- [External Services](External-Services.md) - API key configuration
+- [Media Control](integrations/media-control.md) - Plex + HA TV/media playback
 
 ## Architecture Overview
 

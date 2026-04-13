@@ -47,23 +47,32 @@ curl -X POST http://localhost/v1/audio/transcriptions \
 
 ## Configuration
 
-Environment variables:
+Env-driven:
 
 ```bash
-STT_DEVICE="0"           # GPU device index
-WHISPER_MODEL="base"     # Model size: tiny, base, small, medium, large
-SRC_LAN="en"             # Default language
+STT_DEVICE="0"   # GPU device index (passed to Faster Whisper)
+SRC_LAN="en"     # Default source language
+```
+
+The Whisper model is *not* an env var — it's a Python constant in
+`services/speech-to-text/app/config.py` (currently `distil-large-v3`).
+Edit the file and restart the service to change it:
+
+```python
+# services/speech-to-text/app/config.py
+WHISPER_MODEL = "distil-large-v3"
 ```
 
 ## Model options
 
-| Model  | Size    | VRAM  | Speed   | Accuracy |
-|--------|---------|-------|---------|----------|
-| tiny   | 39 MB   | ~1GB  | Fastest | Lowest   |
-| base   | 74 MB   | ~1GB  | Fast    | Good     |
-| small  | 244 MB  | ~2GB  | Medium  | Better   |
-| medium | 769 MB  | ~5GB  | Slow    | High     |
-| large  | 1550 MB | ~10GB | Slowest | Best     |
+| Model              | Size    | VRAM  | Speed   | Accuracy |
+|--------------------|---------|-------|---------|----------|
+| tiny               | 39 MB   | ~1GB  | Fastest | Lowest   |
+| base               | 74 MB   | ~1GB  | Fast    | Good     |
+| small              | 244 MB  | ~2GB  | Medium  | Better   |
+| medium             | 769 MB  | ~5GB  | Slow    | High     |
+| large-v3           | 1550 MB | ~10GB | Slow    | Best     |
+| distil-large-v3    | ~750 MB | ~4GB  | Fast    | Near-best (default) |
 
 ## Performance optimization
 

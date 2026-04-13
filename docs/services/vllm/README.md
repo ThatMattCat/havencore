@@ -11,18 +11,23 @@ Primary LLM inference backend. Exposes an OpenAI-compatible API that the agent t
 
 ## Configuration
 
-Located in `compose.yaml`:
+Located in `compose.yaml`. The image is pinned to a specific digest
+(vLLM v0.19.0 — the last release verified against NVIDIA driver 580.x;
+`:latest` has shipped builds requiring a newer host driver). The model is
+served under the OpenAI-compat name `gpt-3.5-turbo` so stock OpenAI SDKs
+work without reconfiguration.
 
 ```yaml
 vllm:
-  image: vllm/vllm-openai:latest
-  command: [
-    "--model", "TechxGenus/Mistral-Large-Instruct-2411-AWQ",
-    "--gpu-memory-utilization", "0.9",
-    "--max-model-len", "32768",
-    "--dtype", "auto",
-    "--api-key", "${DEV_CUSTOM_API_KEY}"
-  ]
+  image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
+  command: >
+    --model Qwen/Qwen2.5-72B-Instruct-AWQ
+    --served-model-name gpt-3.5-turbo
+    --quantization awq_marlin
+    --max-num-seqs 1
+    --enforce-eager
+    -tp 2
+    --max-model-len 16384
 ```
 
 ## Command-line options
@@ -45,12 +50,12 @@ vllm:
 Popular model options:
 
 ```yaml
-# High performance, lower memory
-"TechxGenus/Mistral-Large-Instruct-2411-AWQ"
+# Default — high quality, fits on a pair of 24GB GPUs with AWQ-Marlin
+"Qwen/Qwen2.5-72B-Instruct-AWQ"
 
-# Alternative options
-"hugging-quants/Llama-3.2-3B-Instruct-Q4_K_M-GGUF"
-"microsoft/Phi-3-mini-4k-instruct"
+# Smaller alternatives
+"Qwen/Qwen2.5-14B-Instruct-AWQ"
+"microsoft/Phi-3-medium-4k-instruct"
 ```
 
 ## Performance tuning

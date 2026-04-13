@@ -73,7 +73,7 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 
 | MCP server | Tools | Doc |
 |------------|-------|-----|
-| Home Assistant | 21 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
+| Home Assistant | 19 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
 | General Tools | Up to 7 (credential-gated) — `generate_image`, `send_email`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
 | Qdrant | 2 — `create_memory`, `search_memories` | [tools/qdrant.md](tools/qdrant.md) |

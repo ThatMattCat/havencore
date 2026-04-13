@@ -85,17 +85,30 @@ POSTGRES_PASSWORD="havencore_password"  # Database password
 #### Home Assistant
 ```bash
 # Home Assistant API configuration
-HAOS_URL="https://homeassistant.local:8123/api"  # Your HA URL
-HAOS_TOKEN="eyJ0eXAiOiJKV1QiLCJ..."              # Long-lived access token
-
-# Legacy settings (still supported)
-SOURCE_IP="10.0.0.100"  # Edge device IP (deprecated)
+HAOS_URL="https://homeassistant.local:8123"  # Your HA URL (with or without trailing /api)
+HAOS_TOKEN="eyJ0eXAiOiJKV1QiLCJ..."          # Long-lived access token
 ```
 
 **Getting Home Assistant Token**:
 1. Go to Home Assistant → Profile → Long-Lived Access Tokens
 2. Click "Create Token"
 3. Copy the token and set as `HAOS_TOKEN`
+
+#### Plex (media control)
+```bash
+# Plex server (reached via plexapi cloud relay — LAN URL is fine)
+PLEX_URL="http://10.0.50.110:32400"
+PLEX_TOKEN="xxxxxxxxxxxxxxxxxxxx"
+
+# Optional: wake/launch mapping per Plex client — JSON object keyed by Plex client name.
+# See docs/integrations/media-control.md for the full schema.
+PLEX_CLIENT_HA_MAP='{
+  "BRAVIA 4K VH21": {
+    "state_entity": "media_player.living_room_tv_bravia_4k_vh21",
+    "adb_entity":   "media_player.living_room_bravia_adb"
+  }
+}'
+```
 
 #### External APIs
 ```bash
@@ -109,60 +122,76 @@ BRAVE_SEARCH_API_KEY="your_brave_api_key"
 WOLFRAM_ALPHA_API_KEY="your_wolfram_api_key"
 ```
 
+Each key is credential-gated: tools that need a missing key simply don't
+register, so the agent stays healthy without them.
+
 **API Key Setup**:
 - **Weather**: Register at [weatherapi.com](https://www.weatherapi.com/)
 - **Brave Search**: Get key from [Brave Search API](https://api.search.brave.com/)
 - **WolframAlpha**: Register at [Wolfram Developer Portal](https://developer.wolframalpha.com/)
 
-### MCP (Model Context Protocol) Configuration
+### Semantic memory (Qdrant + embeddings)
 
-#### MCP Enable/Disable
 ```bash
-# Enable MCP support (experimental)
-MCP_ENABLED=false  # Set to true to enable MCP tools
+# Qdrant vector DB (service on the compose network)
+QDRANT_HOST="qdrant"
+QDRANT_PORT=6333
 
-# Tool preference when conflicts exist
-MCP_PREFER_OVER_LEGACY=false  # false = use legacy, true = use MCP
+# Text embeddings service (HuggingFace TEI)
+EMBEDDINGS_URL="http://embeddings:3000"
+EMBEDDING_DIM=1024   # Match the model: bge-large-en-v1.5 = 1024, MiniLM-L6 = 384, mpnet = 768
 ```
 
-#### MCP Server Configuration
+### Agent runtime tuning
+
 ```bash
-# JSON array of MCP server configurations
+# Seconds of inactivity before a conversation is flushed to Postgres
+CONVERSATION_TIMEOUT=600
+
+# Cap on tool-result text before it's summarized back to the LLM
+TOOL_RESULT_MAX_CHARS=8000
+```
+
+### MCP (Model Context Protocol) Configuration
+
+The agent's tool surface is delivered by MCP servers bundled in the agent
+image (Home Assistant, Plex, general, Qdrant, MQTT). They are spawned as
+subprocesses and advertise tools over stdio — no separate container.
+
+```bash
+# Master switch for the MCP client manager
+MCP_ENABLED=true
+
+# Whether MCP-registered tools win over any same-named legacy registration
+MCP_PREFER_OVER_LEGACY=true
+
+# JSON array of MCP server definitions to spawn
 MCP_SERVERS='[
-  {
-    "name": "filesystem",
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/files"],
-    "enabled": true
-  },
-  {
-    "name": "brave-search",
-    "command": "npx", 
-    "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-    "enabled": false
-  }
+  {"name": "homeassistant", "command": "python", "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"], "enabled": true},
+  {"name": "plex",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_plex_tools"],          "enabled": true},
+  {"name": "general",       "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],       "enabled": true},
+  {"name": "qdrant",        "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],        "enabled": true},
+  {"name": "mqtt",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],          "enabled": true}
 ]'
 ```
 
-#### Individual MCP Server Environment Variables
-```bash
-# Alternative to JSON configuration
-MCP_SERVER_EXAMPLE_ENABLED=false
-MCP_SERVER_EXAMPLE_COMMAND="node"
-MCP_SERVER_EXAMPLE_ARGS="server.js,--port,3000"  # Comma-separated
-```
+Per-server reference docs live under
+[`services/agent/tools/`](services/agent/tools/README.md).
 
 ## Service-Specific Configuration
 
 ### LLM Backend Configuration
 
 #### vLLM Configuration (Default)
-Located in `compose.yaml`:
+Defined in `compose.yaml` (Qwen2.5-72B-Instruct-AWQ, served under the
+OpenAI-compat name `gpt-3.5-turbo` for client convenience):
+
 ```yaml
 command: [
-  "--model", "TechxGenus/Mistral-Large-Instruct-2411-AWQ",
+  "--model", "Qwen/Qwen2.5-72B-Instruct-AWQ",
+  "--served-model-name", "gpt-3.5-turbo",
   "--gpu-memory-utilization", "0.9",
-  "--max-model-len", "32768",
+  "--max-model-len", "16384",
   "--dtype", "auto",
   "--api-key", "${DEV_CUSTOM_API_KEY}"
 ]
@@ -170,21 +199,16 @@ command: [
 
 **Key Parameters**:
 - `--model`: HuggingFace model path
+- `--served-model-name`: Name clients use in `model`; lets an OpenAI SDK
+  that hardcodes `gpt-3.5-turbo` talk to this backend.
 - `--gpu-memory-utilization`: GPU memory usage (0.0-1.0)
 - `--max-model-len`: Maximum sequence length
 - `--dtype`: Data type (auto, float16, bfloat16)
 
 #### LlamaCPP Configuration (Alternative)
-```yaml
-llamacpp:
-  command: [
-    "python", "-m", "llama_cpp.server",
-    "--model", "/models/model.gguf",
-    "--n_gpu_layers", "33",
-    "--host", "0.0.0.0",
-    "--port", "8000"
-  ]
-```
+Commented out in `compose.yaml`. Uncomment the `llamacpp` service block to
+swap it in for vLLM. It uses `ghcr.io/ggml-org/llama.cpp:server-cuda` and
+reads a GGUF model mounted at `/models/`.
 
 ### Nginx Gateway Configuration
 
@@ -211,21 +235,14 @@ upstream stt_backend {
 
 ### Speech Services Configuration
 
-#### Speech-to-Text Settings
-```bash
-# In speech-to-text service environment
-WHISPER_MODEL="base"  # tiny, base, small, medium, large
-DEVICE="cuda:0"       # GPU device
-BATCH_SIZE=1          # Processing batch size
-```
+#### Speech-to-Text
+The Whisper model is pinned in `services/speech-to-text/app/config.py`
+(currently `distil-large-v3`); it is not driven by `.env`. Set the GPU
+via `STT_DEVICE` and the source language via `SRC_LAN` above.
 
-#### Text-to-Speech Settings
-```bash
-# In text-to-speech service environment
-KOKORO_MODEL_PATH="/models/kokoro"
-VOICE_SELECTION="af_heart"
-SAMPLE_RATE=22050
-```
+#### Text-to-Speech
+Kokoro voice and language come from `TTS_VOICE` / `TTS_LANGUAGE` above.
+The model files are baked into the image. GPU is selected by `TTS_DEVICE`.
 
 ## Advanced Configuration
 
@@ -387,7 +404,7 @@ docker compose exec agent curl https://api.weatherapi.com
 echo $HF_HUB_TOKEN
 
 # Pre-download models
-huggingface-cli download TechxGenus/Mistral-Large-Instruct-2411-AWQ
+huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
 
 # Check disk space
 df -h

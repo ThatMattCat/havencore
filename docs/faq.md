@@ -34,9 +34,9 @@ HavenCore is a self-hosted AI smart home assistant that provides:
 
 **Minimum Requirements**:
 - **CPU**: Modern multi-core processor (Intel i5/AMD Ryzen 5 or better)
-- **RAM**: 16GB (32GB recommended for optimal performance)
-- **Storage**: 50GB free space for models and containers
-- **GPU**: NVIDIA GPU with 8GB+ VRAM (for best performance)
+- **RAM**: 32GB (64GB recommended)
+- **Storage**: 150GB free space for model weights, container images, and Docker volumes
+- **GPU**: NVIDIA GPU(s) with enough VRAM for the default 72B-AWQ model (≈48GB), plus headroom for STT/TTS/vision
 - **Network**: Reliable internet for initial setup and external services
 
 **Recommended Setups**:
@@ -134,10 +134,9 @@ vllm:
   # or
   command: ["--model", "/local/path/to/your-model"]
 
-# Different audio models
-speech-to-text:
-  environment:
-    - WHISPER_MODEL=large-v3  # or medium, small, base, tiny
+# Different Whisper model: edit services/speech-to-text/app/config.py
+# (WHISPER_MODEL is a Python constant, not an env var). Valid values
+# include distil-large-v3 (default), large-v3, medium, small, base, tiny.
 ```
 
 ### How do I update HavenCore?
@@ -325,7 +324,7 @@ docker compose exec agent env | grep HAOS
 ```
 
 **Common fixes**:
-- Ensure Home Assistant URL includes `/api` at the end
+- `HAOS_URL` may or may not include a trailing `/api`; both are accepted.
 - Regenerate long-lived access token in Home Assistant
 - Check network connectivity between HavenCore and HA
 - Verify Home Assistant is accessible from HavenCore's network
@@ -352,7 +351,7 @@ vllm:
 vllm:
   command: [
     "--model", "your-model",
-    "--max-model-len", "8192"  # Reduce from 32768
+    "--max-model-len", "8192"  # Reduce from the default 16384
   ]
 ```
 
@@ -489,17 +488,20 @@ response = client.chat.completions.create(
 ### What's the maximum conversation history?
 
 **Default limits**:
-- **Active conversation**: No hard limit (limited by memory)
-- **Database storage**: Unlimited (limited by disk space)
-- **Auto-cleanup**: Conversations stored after 3 minutes of inactivity
+- **Active conversation**: No hard limit (in-memory, bounded by session length)
+- **Database storage**: Unlimited (bounded by disk space)
+- **Auto-flush**: a conversation is flushed to Postgres after
+  `CONVERSATION_TIMEOUT` seconds of inactivity (default `600` = 10 min).
 
 **Configuration options**:
-```python
-# Adjust conversation timeout in agent service
-CONVERSATION_TIMEOUT = 180  # seconds (3 minutes)
+```bash
+# .env — tune how quickly idle conversations are persisted
+CONVERSATION_TIMEOUT=600
+```
 
-# Database retention policy
-DELETE FROM conversation_histories 
+```sql
+-- Database retention policy (run periodically)
+DELETE FROM conversation_histories
 WHERE created_at < NOW() - INTERVAL '30 days';
 ```
 

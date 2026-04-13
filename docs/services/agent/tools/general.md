@@ -65,9 +65,10 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 ## Internals worth knowing
 
 - **`generate_image` uses the `SimpleComfyUI` helper** in
-  `comfyui_tools.py` with workflow `default`. Generated images are served
-  at `http://<host>:6006/outputs/<filename>` (the ComfyUI static output
-  endpoint) — the returned JSON contains both the filepath and the URL.
+  `comfyui_tools.py` with workflow `default`. The returned JSON contains
+  both the filepath and a URL pointing at the ComfyUI service
+  (`text-to-image:8188`) — the dashboard proxies these through
+  `/api/comfy/view` on the agent (port 6002).
 - **`query_multimodal_api` routes through nginx, not the service directly.**
   The endpoint is `http://nginx/iav/api`, which proxies to
   `iav-to-text:8100`. This keeps the routing configurable in one place.
@@ -150,6 +151,4 @@ the standard AppID — verify you're using the LLM endpoint's key.
 
 ## See also
 
-- [External Services](../../../External-Services.md) — if you're adding a new
-  third-party API, this is where the lifecycle pattern is documented.
 - [Tool Development](development.md) — adding new MCP tools.

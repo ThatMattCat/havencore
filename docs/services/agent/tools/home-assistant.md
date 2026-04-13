@@ -16,7 +16,7 @@ TV playback specifics live in [Media Control](../../../integrations/media-contro
 | Server name | `havencore-homeassistant` |
 | HA REST client | `aiohttp`-based `HomeAssistantClient` (replaces the older blocking `homeassistant_api.Client`) |
 | HA WebSocket client | `ha_media_controller.MediaController` (used for registry lookups + media transport) |
-| Tool count | 21 |
+| Tool count | 19 |
 
 The module registers a single MCP stdio server. On startup it constructs a
 REST `HomeAssistantClient` and a WS `MediaController` and initializes the

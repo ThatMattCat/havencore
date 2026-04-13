@@ -6,7 +6,7 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 
 | Server | Module | Tools | Doc |
 |--------|--------|-------|-----|
-| Home Assistant | `mcp_homeassistant_tools` | 21 — REST/WS control, registry, presence, timer/template/history/calendar, media transport | [home-assistant.md](home-assistant.md) |
+| Home Assistant | `mcp_homeassistant_tools` | 19 — REST/WS control, registry, presence, timer/template/history/calendar, media transport | [home-assistant.md](home-assistant.md) |
 | Plex | `mcp_plex_tools` | 5 — library search + cloud-relay playback | [plex.md](plex.md) |
 | General Tools | `mcp_general_tools` | Up to 7 (credential-gated) — weather, Brave, Wolfram, Wikipedia, ComfyUI, email, multimodal vision | [general.md](general.md) |
 | Qdrant | `mcp_qdrant_tools` | 2 — semantic memory store/search on Qdrant + bge embeddings | [qdrant.md](qdrant.md) |

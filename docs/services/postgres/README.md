@@ -11,6 +11,9 @@ Conversation history storage, per-turn metrics, and other agent-side persistent 
 
 ## Database schema
 
+Both tables are created by `services/postgres/init.sql` when the container
+first starts. The canonical source of truth is that SQL file.
+
 ### `conversation_histories`
 
 ```sql
@@ -23,7 +26,30 @@ CREATE TABLE conversation_histories (
 );
 ```
 
-See the agent's [Conversation history](../agent/conversation-history.md) doc for how rows get populated.
+See the agent's [Conversation history](../agent/conversation-history.md)
+doc for how rows get populated.
+
+### `turn_metrics`
+
+Per-turn LLM / tool-call timings written by the orchestrator. The
+dashboard's `/metrics` page and the `/api/metrics/*` endpoints read
+directly from this table.
+
+```sql
+CREATE TABLE turn_metrics (
+    id BIGSERIAL PRIMARY KEY,
+    session_id TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    llm_ms INTEGER NOT NULL,
+    tool_ms_total INTEGER NOT NULL,
+    total_ms INTEGER NOT NULL,
+    iterations INTEGER NOT NULL,
+    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+```
+
+`tool_calls` is a JSONB array of `{name, duration_ms, ok}` entries — one
+per tool call in the turn.
 
 ## Configuration
 

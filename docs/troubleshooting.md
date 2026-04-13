@@ -122,7 +122,7 @@ export HF_HUB_TOKEN="your_token_here"
 
 # Pre-download models manually
 huggingface-cli login
-huggingface-cli download TechxGenus/Mistral-Large-Instruct-2411-AWQ
+huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
 
 # Check token in container
 docker compose exec agent env | grep HF_HUB_TOKEN
@@ -139,7 +139,7 @@ Downloading... (very slow or hanging)
 export HF_ENDPOINT="https://hf-mirror.com"
 
 # Download with resume capability
-huggingface-cli download --resume-download TechxGenus/Mistral-Large-Instruct-2411-AWQ
+huggingface-cli download --resume-download Qwen/Qwen2.5-72B-Instruct-AWQ
 
 # Check network connectivity
 curl -I https://huggingface.co
@@ -331,7 +331,7 @@ nvidia-smi
 # Reduce GPU memory utilization
 # Edit compose.yaml:
 command: [
-  "--model", "TechxGenus/Mistral-Large-Instruct-2411-AWQ",
+  "--model", "Qwen/Qwen2.5-72B-Instruct-AWQ",
   "--gpu-memory-utilization", "0.7",  # Reduced from 0.9
   "--max-model-len", "16384"          # Reduced context length
 ]
@@ -495,13 +495,6 @@ time curl http://localhost/v1/chat/completions
 
 **Solution**:
 ```bash
-# Enable request caching
-# Add Redis for caching (optional)
-redis:
-  image: redis:alpine
-  ports:
-    - "6379:6379"
-
 # Optimize model inference
 command: [
   "--model", "your-model",
@@ -894,7 +887,7 @@ docker compose exec postgres psql -U havencore -d havencore -f /docker-entrypoin
 #### Model Recovery
 ```bash
 # Re-download models
-docker compose exec agent huggingface-cli download TechxGenus/Mistral-Large-Instruct-2411-AWQ
+docker compose exec agent huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
 
 # Clear model cache and restart
 docker compose exec vllm rm -rf /root/.cache/huggingface/
@@ -947,6 +940,5 @@ When reporting issues, include:
 ---
 
 **Next Steps**:
-- [Performance Tuning](Performance.md) - Optimize your setup
 - [Development Guide](development.md) - Modify and extend HavenCore
 - [Configuration Guide](configuration.md) - Advanced configuration options

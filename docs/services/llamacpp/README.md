@@ -11,47 +11,42 @@ Alternative LLM backend using llama.cpp with GGUF models. Commented out in `comp
 
 ## Configuration
 
+The stanza in `compose.yaml` is commented out — uncomment it (and comment
+out `vllm`) to switch backends. It uses the official llama.cpp server
+image and reads GGUF weights from `./services/llamacpp/models`:
+
 ```yaml
 llamacpp:
-  build:
-    context: ./services/llamacpp
-  command: [
-    "python", "-m", "llama_cpp.server",
-    "--model", "/models/model.gguf",
-    "--n_gpu_layers", "33",
-    "--host", "0.0.0.0",
-    "--port", "8000"
-  ]
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda-backup-20250816
+  volumes:
+    - ./services/llamacpp/models:/models
+  ports:
+    - "8000:8000"
+  command: >
+    -m /models/Qwen2.5-72B-Instruct-Q6_K/Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf
+    -dev CUDA0,CUDA1,CUDA2
+    --alias gpt-3.5-turbo
+    -md /models/Qwen2.5-7B-Instruct-Q6_K_L.gguf
+    -devd CUDA3
+    --draft-max 64
+    --batch-size 2048
+    --ubatch-size 512
+    -fa
+    -sm layer
 ```
+
+`--alias gpt-3.5-turbo` is the llama.cpp-server equivalent of vLLM's
+`--served-model-name` — it's what lets OpenAI-SDK clients talk to this
+backend unchanged.
 
 ## Model format
 
-Uses GGUF format models:
+Uses GGUF files under `./services/llamacpp/models/`. Example download:
 
 ```bash
-# Download GGUF model
-huggingface-cli download microsoft/Phi-3-mini-4k-instruct-gguf \
-  Phi-3-mini-4k-instruct-q4.gguf --local-dir ./models/
-```
-
-## Performance options
-
-```yaml
-# CPU-only inference
-command: [
-  "python", "-m", "llama_cpp.server",
-  "--model", "/models/model.gguf",
-  "--n_gpu_layers", "0",        # CPU only
-  "--n_threads", "8"            # CPU threads
-]
-
-# GPU acceleration
-command: [
-  "python", "-m", "llama_cpp.server",
-  "--model", "/models/model.gguf",
-  "--n_gpu_layers", "33",       # GPU layers
-  "--n_batch", "512"            # Batch size
-]
+huggingface-cli download Qwen/Qwen2.5-72B-Instruct-GGUF \
+  Qwen2.5-72B-Instruct-Q6_K-00001-of-00002.gguf \
+  --local-dir ./services/llamacpp/models/Qwen2.5-72B-Instruct-Q6_K/
 ```
 
 ## When to use LlamaCPP
