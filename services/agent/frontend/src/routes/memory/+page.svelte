@@ -30,6 +30,26 @@
   let newL4Text = '';
   let newL4Importance = 5;
 
+  let l3Entries: L4Entry[] = [];
+  let l3Offset = 0;
+  let l3HasMore = false;
+  let sourcesModal: any[] | null = null;
+
+  async function refreshL3() {
+    const r = await fetch(`/api/memory/l3?limit=50&offset=${l3Offset}`).then(r => r.json());
+    l3Entries = r.entries ?? [];
+    l3HasMore = !!r.has_more;
+  }
+  async function showSources(id: string) {
+    const r = await fetch(`/api/memory/l3/${id}/sources`).then(r => r.json());
+    sourcesModal = r.sources ?? [];
+  }
+  async function deleteL3(id: string) {
+    if (!confirm('Delete this L3 entry? Source L2 entries will remain untouched.')) return;
+    await fetch(`/api/memory/l3/${id}`, { method: 'DELETE' });
+    await refreshL3();
+  }
+
   async function refresh() {
     loading = true;
     error = '';
@@ -45,6 +65,7 @@
       proposals = p.proposals ?? [];
       runs = r.runs ?? [];
       lastRunTime = runs.length ? runs[0].triggered_at : null;
+      await refreshL3();
     } catch (e: any) {
       error = e?.message ?? String(e);
     } finally {
@@ -206,6 +227,95 @@
           </div>
         {/each}
       </div>
+    {/if}
+  </section>
+
+  <!-- L3 browser -->
+  <section class="mb-8">
+    <h2 class="text-xl font-semibold mb-3">L3 — Consolidated memories</h2>
+    {#if l3Entries.length === 0}
+      <div class="text-gray-400 italic">No L3 entries yet.</div>
+    {:else}
+      <table class="w-full text-sm">
+        <thead class="text-left text-gray-400 border-b border-gray-700">
+          <tr><th class="py-2">Text</th><th>Importance (eff)</th><th>Sources</th><th>Age</th><th></th></tr>
+        </thead>
+        <tbody>
+          {#each l3Entries as e}
+            <tr class="border-b border-gray-800">
+              <td class="py-2">{e.text}</td>
+              <td>{e.importance_effective?.toFixed(2)}</td>
+              <td>
+                <button class="text-blue-400 hover:text-blue-200 underline"
+                        on:click={() => showSources(e.id)}>
+                  {e.source_ids.length}
+                </button>
+              </td>
+              <td>{e.timestamp?.slice(0, 10)}</td>
+              <td class="text-right">
+                <button class="text-red-400 hover:text-red-200"
+                        on:click={() => deleteL3(e.id)}>Delete</button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <div class="mt-2 flex gap-2 text-sm">
+        <button class="px-2 py-1 bg-gray-700 rounded disabled:opacity-50"
+                disabled={l3Offset === 0}
+                on:click={() => { l3Offset = Math.max(0, l3Offset - 50); refreshL3(); }}>Prev</button>
+        <button class="px-2 py-1 bg-gray-700 rounded disabled:opacity-50"
+                disabled={!l3HasMore}
+                on:click={() => { l3Offset += 50; refreshL3(); }}>Next</button>
+      </div>
+    {/if}
+  </section>
+
+  {#if sourcesModal}
+    <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+         on:click={() => (sourcesModal = null)}>
+      <div class="bg-gray-900 p-6 rounded max-w-2xl max-h-[80vh] overflow-auto"
+           on:click|stopPropagation>
+        <h3 class="text-lg font-semibold mb-3">Source L2 entries</h3>
+        {#each sourcesModal as src}
+          <div class="p-2 border-b border-gray-800 text-sm">
+            <div>{src.text}</div>
+            <div class="text-xs text-gray-500">{src.timestamp}</div>
+          </div>
+        {/each}
+        <button class="mt-3 px-3 py-1 bg-gray-700 rounded"
+                on:click={() => (sourcesModal = null)}>Close</button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Run history -->
+  <section>
+    <h2 class="text-xl font-semibold mb-3">Consolidation runs</h2>
+    {#if runs.length === 0}
+      <div class="text-gray-400 italic">No runs yet.</div>
+    {:else}
+      <table class="w-full text-sm">
+        <thead class="text-left text-gray-400 border-b border-gray-700">
+          <tr><th class="py-2">When</th><th>Status</th><th>Summary</th><th>Stats</th></tr>
+        </thead>
+        <tbody>
+          {#each runs as r}
+            <tr class="border-b border-gray-800 align-top"
+                class:text-red-400={r.status === 'error'}>
+              <td class="py-2">{r.triggered_at}</td>
+              <td>{r.status}</td>
+              <td>{r.summary}</td>
+              <td class="text-xs">
+                L3+{r.metrics?.l3_created ?? 0}
+                · L4?{r.metrics?.l4_proposed ?? 0}
+                · pruned {r.metrics?.l2_pruned ?? 0}
+                · {r.metrics?.total_ms ?? 0}ms
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
     {/if}
   </section>
 </div>
