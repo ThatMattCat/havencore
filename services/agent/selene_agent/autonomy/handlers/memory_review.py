@@ -13,16 +13,30 @@ provided async OpenAI client.
 """
 from __future__ import annotations
 
+import os
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+import numpy as np
+import requests
+
+from selene_agent.autonomy import memory_clustering
 from selene_agent.autonomy import memory_math
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 
 logger = custom_logger.get_logger('loki')
+
+
+def _embed(text: str) -> List[float]:
+    """Get a single embedding via the TEI service (same host as mcp_qdrant_tools)."""
+    url = os.getenv("EMBEDDINGS_URL", "http://embeddings:3000")
+    r = requests.post(f"{url}/embed", json={"inputs": text}, timeout=30)
+    r.raise_for_status()
+    return r.json()[0]
 
 
 def _now() -> datetime:
@@ -113,40 +127,135 @@ async def _scan_and_decay(client, stats: Dict[str, Any]) -> None:
     stats["importance_adjusted"] = adjusted
 
 
+async def _cluster_to_l3(
+    client,
+    stats: Dict[str, Any],
+    *,
+    since: datetime,
+    llm_client,
+    model_name: str,
+) -> None:
+    """Step 3: cluster new L2 entries (since last successful run) → L3 entries."""
+    from qdrant_client.models import (
+        Filter, FieldCondition, MatchValue, DatetimeRange, PointStruct,
+    )
+    from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
+
+    flt = Filter(must=[
+        FieldCondition(key="tier", match=MatchValue(value="L2")),
+        FieldCondition(key="timestamp", range=DatetimeRange(gte=since.isoformat())),
+    ])
+    points = _scroll_all(
+        client, flt=flt, collection=COLLECTION_NAME,
+        cap=config.AUTONOMY_MEMORY_MAX_SCAN, with_vectors=True,
+    )
+    if len(points) < config.MEMORY_HDBSCAN_MIN_CLUSTER_SIZE:
+        logger.info(f"[memory_review] only {len(points)} new L2 entries; skip clustering")
+        return
+
+    vectors = np.array([p.vector for p in points], dtype=float)
+    labels = memory_clustering.cluster_vectors(
+        vectors,
+        min_cluster_size=config.MEMORY_HDBSCAN_MIN_CLUSTER_SIZE,
+        min_samples=config.MEMORY_HDBSCAN_MIN_SAMPLES,
+    )
+    clusters: Dict[int, List[int]] = defaultdict(list)
+    noise = 0
+    for idx, lbl in enumerate(labels):
+        if lbl == -1:
+            noise += 1
+        else:
+            clusters[lbl].append(idx)
+    stats["clusters_found"] = len(clusters)
+    stats["noise_points"] = noise
+
+    llm_budget = config.AUTONOMY_MEMORY_LLM_CALL_CAP
+    for lbl, member_indices in clusters.items():
+        if stats["llm_calls"] >= llm_budget:
+            stats["llm_call_cap_hit"] = True
+            break
+        members = [points[i] for i in member_indices]
+        texts = [str((m.payload or {}).get("text", "")) for m in members]
+
+        stats["llm_calls"] += 1
+        summary_obj = await memory_clustering.summarize_cluster(
+            client=llm_client,
+            model_name=model_name,
+            member_texts=texts,
+        )
+        if summary_obj is None:
+            continue
+
+        try:
+            embedding = _embed(summary_obj["summary"])
+        except Exception as e:
+            logger.warning(f"[memory_review] embedding failed: {e}; skipping cluster")
+            continue
+
+        importances = [float((m.payload or {}).get("importance", 0) or 0) for m in members]
+        importances.sort()
+        median_imp = importances[len(importances) // 2] if importances else 3.0
+
+        new_id = str(uuid.uuid4())
+        client.upsert(
+            collection_name=COLLECTION_NAME,
+            points=[PointStruct(
+                id=new_id,
+                vector=embedding,
+                payload={
+                    "text": summary_obj["summary"],
+                    "timestamp": _now().isoformat(),
+                    "importance": median_imp,
+                    "importance_effective": median_imp,
+                    "tags": summary_obj["tags"],
+                    "source": "memory_review",
+                    "tier": "L3",
+                    "source_ids": [str(m.id) for m in members],
+                    "access_count": 0,
+                    "last_accessed_at": None,
+                    "pending_l4_approval": False,
+                    "proposed_at": None,
+                    "proposal_rationale": None,
+                    "rationale": summary_obj.get("rationale"),
+                },
+            )],
+        )
+        stats["l3_created"] += 1
+
+
 async def handle(
     item: Dict[str, Any],
     *,
-    client,             # AsyncOpenAI (unused in steps 1+2, used later)
-    mcp_manager,        # unused — handler talks to Qdrant directly
+    client,             # AsyncOpenAI
+    mcp_manager,
     model_name: str,
     base_tools,
 ) -> Dict[str, Any]:
-    """Top-level entry. Subsequent tasks will flesh out steps 3-5."""
     start = time.perf_counter()
     qc = _qdrant_client()
     stats: Dict[str, Any] = {
-        "l2_scanned": 0,
-        "l3_created": 0,
-        "l3_updated": 0,
-        "l4_proposed": 0,
-        "l2_pruned": 0,
-        "importance_adjusted": 0,
-        "clusters_found": 0,
-        "noise_points": 0,
-        "llm_calls": 0,
+        "l2_scanned": 0, "l3_created": 0, "l3_updated": 0,
+        "l4_proposed": 0, "l2_pruned": 0, "importance_adjusted": 0,
+        "clusters_found": 0, "noise_points": 0, "llm_calls": 0,
     }
+
+    last_fired = item.get("last_fired_at")
+    since = last_fired if isinstance(last_fired, datetime) else _now().replace(
+        year=_now().year - 1
+    )
 
     try:
         await _scan_and_decay(qc, stats)
     except Exception as e:
         logger.error(f"[memory_review] step 1/2 failed: {e}")
-        return {
-            "status": "error",
-            "summary": "memory_review: scan/decay failed",
-            "messages": [],
-            "metrics": {**stats, "total_ms": int((time.perf_counter() - start) * 1000)},
-            "error": f"{type(e).__name__}: {e}",
-        }
+
+    try:
+        await _cluster_to_l3(
+            qc, stats,
+            since=since, llm_client=client, model_name=model_name,
+        )
+    except Exception as e:
+        logger.error(f"[memory_review] step 3 failed: {e}")
 
     total_ms = int((time.perf_counter() - start) * 1000)
     summary = (

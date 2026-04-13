@@ -65,3 +65,52 @@ async def test_scan_and_decay_updates_importance_effective(qdrant_stub, monkeypa
     assert got["fresh"] == pytest.approx(4.0, abs=0.01)
     # 60 days -> half-life decay ~= 4 * 1/e ~= 1.47
     assert got["old"] == pytest.approx(4 * 2.718281828 ** -1, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_cluster_step_creates_l3_with_source_ids(qdrant_stub, monkeypatch):
+    from selene_agent.autonomy.handlers import memory_review
+    from selene_agent.autonomy import memory_clustering
+
+    # 6 L2 points, all recent. Pretend HDBSCAN clusters them into label 0.
+    pts = [_stub_point(f"e{i}", "text", 3) for i in range(6)]
+    for p in pts:
+        p.vector = [float(i) for i in range(8)]
+    qdrant_stub.scroll.return_value = (pts, None)
+
+    monkeypatch.setattr(memory_clustering, "cluster_vectors", lambda v, **k: [0] * len(v))
+    async def _summarize(**kw):
+        return {"summary": "unified topic", "tags": ["t1", "t2"], "rationale": "because"}
+    monkeypatch.setattr(memory_clustering, "summarize_cluster", _summarize)
+
+    # Embedding service stub.
+    monkeypatch.setattr(memory_review, "_embed", lambda text: [0.0] * 1024)
+
+    stats = {"l3_created": 0, "clusters_found": 0, "noise_points": 0, "llm_calls": 0}
+    since = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    await memory_review._cluster_to_l3(
+        qdrant_stub, stats,
+        since=since, llm_client=MagicMock(), model_name="gpt-3.5-turbo",
+    )
+    assert stats["l3_created"] == 1
+    assert stats["clusters_found"] == 1
+    # upsert was called once with a PointStruct whose payload has tier=L3 + source_ids.
+    upsert_call = qdrant_stub.upsert.call_args
+    point = upsert_call.kwargs["points"][0]
+    assert point.payload["tier"] == "L3"
+    assert set(point.payload["source_ids"]) == {f"e{i}" for i in range(6)}
+
+
+@pytest.mark.asyncio
+async def test_cluster_step_skips_when_too_few_new_points(qdrant_stub, monkeypatch):
+    from selene_agent.autonomy.handlers import memory_review
+
+    qdrant_stub.scroll.return_value = ([_stub_point("a", "x", 3)], None)
+    stats = {"l3_created": 0, "clusters_found": 0, "noise_points": 0, "llm_calls": 0}
+    await memory_review._cluster_to_l3(
+        qdrant_stub, stats,
+        since=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        llm_client=MagicMock(), model_name="gpt-3.5-turbo",
+    )
+    assert stats["l3_created"] == 0
+    qdrant_stub.upsert.assert_not_called()
