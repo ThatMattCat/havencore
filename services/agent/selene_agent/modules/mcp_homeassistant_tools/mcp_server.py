@@ -91,6 +91,32 @@ class HomeAssistantClient:
                 resp.raise_for_status()
                 return await resp.text()
 
+    async def _ws_call(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        """Open a WS connection to HA, auth, send one command, return the result frame.
+
+        HA's registry endpoints (config/*_registry/list) are WS-only, so we need this
+        for area/entity/device lookups even though the rest of the client uses REST.
+        """
+        if TEST_MODE:
+            return {"success": True, "result": []}
+        if not HA_WS_URL:
+            raise RuntimeError("HA_WS_URL not configured")
+        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+            async with session.ws_connect(HA_WS_URL) as ws:
+                first = await ws.receive_json()
+                if first.get("type") != "auth_required":
+                    raise RuntimeError(f"Unexpected HA WS greeting: {first}")
+                await ws.send_json({"type": "auth", "access_token": HAOS_TOKEN})
+                auth = await ws.receive_json()
+                if auth.get("type") != "auth_ok":
+                    raise RuntimeError(f"HA WS auth failed: {auth.get('message') or auth}")
+                msg_id = 1
+                await ws.send_json({"id": msg_id, **command})
+                while True:
+                    frame = await ws.receive_json()
+                    if frame.get("id") == msg_id:
+                        return frame
+
     async def get_domain_entity_states(self, domain: str) -> str:
         if TEST_MODE:
             return json.dumps({
@@ -923,11 +949,7 @@ class HomeAssistantMCPServer:
     # Registry & Presence Methods
     async def _ws_registry(self, registry: str) -> List[Dict[str, Any]]:
         """Call config/<registry>_registry/list and return the result list."""
-        if not self.media_controller:
-            raise RuntimeError("Media controller not available for WS registry access")
-        resp = await self.media_controller.library_manager.send_ws_command(
-            {"type": f"config/{registry}_registry/list"}
-        )
+        resp = await self.ha_client._ws_call({"type": f"config/{registry}_registry/list"})
         if not resp.get("success", True):
             raise RuntimeError(f"WS registry {registry} call failed: {resp.get('error')}")
         return resp.get("result") or []

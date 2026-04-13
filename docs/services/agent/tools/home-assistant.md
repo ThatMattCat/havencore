@@ -14,16 +14,15 @@ TV playback specifics live in [Media Control](../../../integrations/media-contro
 | Entry point | `python -m selene_agent.modules.mcp_homeassistant_tools` |
 | Transport | MCP stdio (spawned by the agent's `MCPClientManager`) |
 | Server name | `havencore-homeassistant` |
-| HA REST client | `aiohttp`-based `HomeAssistantClient` (replaces the older blocking `homeassistant_api.Client`) |
-| HA WebSocket client | `ha_media_controller.MediaController` (used for registry lookups + media transport) |
+| HA REST client | `aiohttp`-based `HomeAssistantClient` (replaces the older blocking `homeassistant_api.Client`); also owns the short-lived WS client used for registry lookups |
+| Media controller | REST-only `ha_media_controller.MediaController` (transport / volume / power on any `media_player` entity) |
 | Tool count | 19 |
 
 The module registers a single MCP stdio server. On startup it constructs a
-REST `HomeAssistantClient` and a WS `MediaController` and initializes the
-latter (persistent WS connection with one-shot reconnect on
-`ConnectionClosed` / `TimeoutError`). If initialization fails the server
-still starts and every tool returns `"Home Assistant unavailable: <reason>"`
-so the agent can surface the error in chat instead of crashing.
+`HomeAssistantClient` (REST + on-demand WS) and a REST `MediaController`.
+If initialization fails the server still starts and every tool returns
+`"Home Assistant unavailable: <reason>"` so the agent can surface the error
+in chat instead of crashing.
 
 When `HAOS_URL` or `HAOS_TOKEN` are unset, the server runs in **TEST
 MODE**: tools return mock data so the agent can boot even without an HA
@@ -37,7 +36,7 @@ Tools are grouped here by purpose; names match the MCP registrations.
 
 | Tool | Purpose |
 |------|---------|
-| `ha_get_domain_entity_states(domain)` | `GET /api/states`, filtered by domain prefix. For `media_player` this hands off to the WS media controller so you also get playback state. |
+| `ha_get_domain_entity_states(domain)` | `GET /api/states`, filtered by domain prefix. For `media_player` this hands off to the media controller (which also reads `/api/states`) so you also get playback state. |
 | `ha_get_domain_services(domain)` | `GET /api/services`, narrowed to one domain. Use this to discover which `notify.*` services exist on a given HA instance. |
 | `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch: `POST /api/services/<domain>/<service>`. Domain is inferred from the entity ID. `service_data` is forwarded as a JSON object. |
 
@@ -55,10 +54,11 @@ Tools are grouped here by purpose; names match the MCP registrations.
 
 ### Registry + presence (Phase B)
 
-These use the Home Assistant WebSocket API under the hood via the media
-controller's `send_ws_command`. They depend on the WS connection being
-healthy — if initialization failed, they'll surface an `error` in the
-payload.
+These use the Home Assistant WebSocket API under the hood via
+`HomeAssistantClient._ws_call` — HA's `config/*_registry/list` endpoints
+are WS-only, so a short-lived WS connection is opened per call (auth
+handshake → one command → close). Errors from the WS call surface as an
+`error` key in the tool payload.
 
 | Tool | WS / REST call | Notes |
 |------|----------------|-------|
@@ -142,10 +142,11 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   script-less services pass `entity_id=None` and an explicit `domain`
   (e.g. `domain="notify"`). Other tools let the client derive the domain
   from the entity ID.
-- **`get_all_media_players` has a 10s TTL cache** on the media controller
-  to keep repeated LLM prompts from hammering HA.
-- **WS reconnect is one-shot.** On `ConnectionClosed` / `TimeoutError` the
-  controller reconnects once and retries; a second failure propagates.
+- **Registry WS calls are short-lived.** Each `_ws_call` opens a new
+  connection, does the HA auth handshake, sends one command, and closes.
+  `ha_get_entities_in_area` therefore costs three connections (area +
+  entity + device registry). Fine in practice — these tools run
+  interactively, not in a hot loop.
 - **Area lookup is tolerant.** `ha_get_entities_in_area` accepts the raw
   `area_id`, the display name, or any alias — all case-insensitive. If no
   area matches, it returns `{"error": ..., "known_areas": [...]}` to help
@@ -190,9 +191,10 @@ corresponding REST / WS request. Common causes:
 
 ### `ha_list_areas` / `ha_get_entities_in_area` return `{"error": "WS registry … call failed"}`
 
-The WebSocket connection is broken. `MediaController` has a one-shot
-reconnect, but if HA is down or the token is wrong, the second attempt
-also fails. Restart the agent after fixing HA:
+The WebSocket call to HA failed. Typical causes: HA is down, `HAOS_URL`
+isn't reachable from the agent container, or `HAOS_TOKEN` is wrong (the
+auth handshake will raise `HA WS auth failed: …`). Check `docker compose
+logs agent` for the specific error and restart after fixing HA:
 
 ```bash
 docker compose restart agent
@@ -219,8 +221,8 @@ If the list is empty, add a `timer:` block to HA's `configuration.yaml`.
 - `services/agent/selene_agent/modules/mcp_homeassistant_tools/mcp_server.py`
   — tool registrations + dispatch, aiohttp REST client.
 - `services/agent/selene_agent/modules/mcp_homeassistant_tools/ha_media_controller.py`
-  — trimmed transport-only media controller (WS + generic REST passthrough
-  via the shared client).
+  — REST-only `media_player` transport controller (play/pause/volume/power
+  on any HA media_player entity).
 - `services/agent/selene_agent/utils/config.py` — agent-side config passthrough,
   including `HA_WS_URL` derivation.
 - `shared/configs/shared_config.py` — canonical env-var surface.
