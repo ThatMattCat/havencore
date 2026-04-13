@@ -15,7 +15,7 @@ import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, DatetimeRange,
-    Filter, FieldCondition
+    Filter, FieldCondition, PayloadSchemaType
 )
 
 from mcp.server import Server
@@ -67,7 +67,27 @@ class QdrantMCPServer:
                 )
             )
             logger.info(f"Created collection: {self.collection_name}")
-    
+        self._init_payload_indexes()
+
+    def _init_payload_indexes(self) -> None:
+        """Idempotently create payload indexes required for v2 scroll/filter queries."""
+        indexes = [
+            ("tier", PayloadSchemaType.KEYWORD),
+            ("pending_l4_approval", PayloadSchemaType.BOOL),
+            ("importance_effective", PayloadSchemaType.FLOAT),
+        ]
+        for field_name, schema in indexes:
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=schema,
+                )
+                logger.info(f"Payload index created or already existed: {field_name}")
+            except Exception as e:
+                # Qdrant returns an error on re-create; log and continue.
+                logger.debug(f"Payload index {field_name}: {e}")
+
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding vector from the embeddings service"""
         try:
