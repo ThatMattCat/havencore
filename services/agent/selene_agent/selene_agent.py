@@ -390,6 +390,26 @@ async def health_check():
             }
         except Exception as e:
             payload["autonomy"] = {"error": str(e)}
+    try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from selene_agent.api.memory import _qdrant_client, _collection
+        qc = _qdrant_client()
+        def _c(flt):
+            return qc.count(collection_name=_collection(), count_filter=flt, exact=True).count
+        payload["memory_stats"] = {
+            "l2": _c(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))])),
+            "l3": _c(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])),
+            "l4": _c(Filter(must=[
+                FieldCondition(key="tier", match=MatchValue(value="L4")),
+                FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
+            ])),
+            "pending": _c(Filter(must=[
+                FieldCondition(key="tier", match=MatchValue(value="L3")),
+                FieldCondition(key="pending_l4_approval", match=MatchValue(value=True)),
+            ])),
+        }
+    except Exception:
+        payload["memory_stats"] = {"error": "unavailable"}
     return payload
 
 

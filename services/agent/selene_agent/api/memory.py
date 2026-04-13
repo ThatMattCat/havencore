@@ -208,3 +208,113 @@ def reject_proposal(entry_id: str):
     )
     l4_context.invalidate_cache()
     return {"id": entry_id, "stays_tier": "L3"}
+
+
+# ---------- L3 browse ----------
+
+@router.get("/memory/l3")
+def list_l3(limit: int = 50, offset: int = 0):
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    c = _qdrant_client()
+    flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])
+    # Scroll-based paging: gather `offset+limit`, slice.
+    gathered: List[Any] = []
+    next_offset = None
+    while len(gathered) < offset + limit:
+        pts, next_offset = c.scroll(
+            collection_name=_collection(), scroll_filter=flt,
+            limit=min(256, offset + limit - len(gathered)),
+            with_payload=True, with_vectors=False, offset=next_offset,
+        )
+        gathered.extend(pts)
+        if next_offset is None:
+            break
+    page = gathered[offset: offset + limit]
+    return {"entries": [_point_out(p) for p in page], "has_more": next_offset is not None}
+
+
+@router.get("/memory/l3/{entry_id}/sources")
+def l3_sources(entry_id: str):
+    c = _qdrant_client()
+    l3s = c.retrieve(collection_name=_collection(), ids=[entry_id], with_payload=True)
+    if not l3s:
+        raise HTTPException(404, "L3 entry not found")
+    src_ids = (l3s[0].payload or {}).get("source_ids") or []
+    if not src_ids:
+        return {"sources": []}
+    sources = c.retrieve(collection_name=_collection(), ids=list(src_ids),
+                         with_payload=True)
+    return {"sources": [_point_out(s) for s in sources]}
+
+
+@router.delete("/memory/l3/{entry_id}")
+def delete_l3(entry_id: str):
+    from qdrant_client.models import PointIdsList
+    c = _qdrant_client()
+    c.delete(collection_name=_collection(),
+             points_selector=PointIdsList(points=[entry_id]))
+    return {"id": entry_id, "deleted": True}
+
+
+# ---------- Runs + stats ----------
+
+@router.get("/memory/runs")
+async def list_runs(limit: int = 20):
+    from selene_agent.autonomy import db as autonomy_db
+    rows = await autonomy_db.list_runs(limit=limit, include_messages=False)
+    return {"runs": [r for r in rows if r["kind"] == "memory_review"]}
+
+
+@router.post("/memory/runs/trigger")
+async def trigger_run():
+    from selene_agent.autonomy import db as autonomy_db
+    # Find the system-owned memory_review agenda item.
+    items = await autonomy_db.list_all_items()
+    target = next((i for i in items if i["kind"] == "memory_review"), None)
+    if target is None:
+        raise HTTPException(404, "memory_review agenda item not found")
+    # Delegate to the engine via the app state.
+    from selene_agent.selene_agent import app
+    engine = getattr(app.state, "autonomy_engine", None)
+    if engine is None:
+        raise HTTPException(503, "autonomy engine not available")
+    result = await engine.trigger(target["id"])
+    return {"agenda_item_id": target["id"], "result": result}
+
+
+@router.get("/memory/stats")
+def stats():
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    c = _qdrant_client()
+
+    def _count(flt):
+        return c.count(collection_name=_collection(), count_filter=flt, exact=True).count
+
+    l2 = _count(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))]))
+    l3 = _count(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))]))
+    l4 = _count(Filter(must=[
+        FieldCondition(key="tier", match=MatchValue(value="L4")),
+        FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
+    ]))
+    pending = _count(Filter(must=[
+        FieldCondition(key="tier", match=MatchValue(value="L3")),
+        FieldCondition(key="pending_l4_approval", match=MatchValue(value=True)),
+    ]))
+
+    # Approximate token count: ~4 chars per token applied to the rendered block.
+    import asyncio
+    try:
+        block = asyncio.get_event_loop().run_until_complete(
+            __import__("selene_agent.utils.l4_context", fromlist=["build_l4_block"]).build_l4_block()
+        )
+        l4_est_tokens = max(0, len(block) // 4)
+    except Exception:
+        l4_est_tokens = 0
+
+    return {
+        "l2_count": l2,
+        "l3_count": l3,
+        "l4_count": l4,
+        "pending_proposals": pending,
+        "l4_est_tokens": l4_est_tokens,
+    }
