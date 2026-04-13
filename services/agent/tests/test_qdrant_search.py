@@ -36,3 +36,49 @@ async def test_payload_has_v2_fields(server):
     assert payload["pending_l4_approval"] is False
     assert payload["proposed_at"] is None
     assert payload["proposal_rationale"] is None
+
+
+def _mk_point(pid, tier, score, text="x"):
+    p = MagicMock()
+    p.id = pid
+    p.score = score
+    p.payload = {
+        "text": text,
+        "timestamp": "2026-04-13T00:00:00+00:00",
+        "importance": 3,
+        "tags": [],
+        "tier": tier,
+        "source_ids": [],
+    }
+    return p
+
+
+@pytest.mark.asyncio
+async def test_search_applies_l3_boost(server, monkeypatch):
+    from selene_agent.utils import config
+    monkeypatch.setattr(config, "MEMORY_L3_RANK_BOOST", 1.5)
+    server.client.query_points = MagicMock()
+    server.client.query_points.return_value.points = [
+        _mk_point("l2a", "L2", 0.80),
+        _mk_point("l3a", "L3", 0.60),
+    ]
+    out = await server._search_memories({"query": "q", "limit": 5})
+    ids = [m["id"] for m in out["results"]]
+    # 0.60 * 1.5 = 0.90 > 0.80 -> L3 ranks above L2.
+    assert ids[0] == "l3a"
+    assert ids[1] == "l2a"
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_l4(server):
+    server.client.query_points = MagicMock()
+    server.client.query_points.return_value.points = []
+    await server._search_memories({"query": "q", "limit": 5})
+    filt = server.client.query_points.call_args.kwargs["query_filter"]
+    # Walk the filter for a must_not tier='L4'.
+    found = False
+    if filt and filt.must_not:
+        for cond in filt.must_not:
+            if getattr(cond, "key", None) == "tier":
+                found = True
+    assert found, "expected must_not filter on tier='L4'"

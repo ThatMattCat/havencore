@@ -15,7 +15,7 @@ import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, DatetimeRange,
-    Filter, FieldCondition, PayloadSchemaType
+    Filter, FieldCondition, MatchValue, PayloadSchemaType
 )
 
 from mcp.server import Server
@@ -278,7 +278,13 @@ class QdrantMCPServer:
                     )
                 )
             )
-            
+
+            # v2: L4 entries are injected into every system prompt already — exclude
+            # them from semantic retrieval to avoid wasting token budget.
+            must_not_conditions.append(
+                FieldCondition(key="tier", match=MatchValue(value="L4"))
+            )
+
             # Filter by time range if specified
             if days_back:
                 cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back))
@@ -304,13 +310,24 @@ class QdrantMCPServer:
                 collection_name=self.collection_name,
                 query=query_embedding,
                 query_filter=search_filter,
-                limit=limit,
+                limit=limit * 2,  # over-fetch slightly so tier re-ranking has room
                 with_payload=True
             ).points
-            
-            # Format results
-            memories = []
+
+            from selene_agent.utils import config as cfg
+            TIER_WEIGHT = {"L2": 1.0, "L3": cfg.MEMORY_L3_RANK_BOOST, "L4": 1.0}
+
+            scored = []
             for result in results:
+                tier = result.payload.get("tier", "L2")
+                weight = TIER_WEIGHT.get(tier, 1.0)
+                adjusted = float(result.score) * weight
+                scored.append((adjusted, result))
+            scored.sort(key=lambda t: t[0], reverse=True)
+            scored = scored[:limit]
+
+            memories = []
+            for adjusted, result in scored:
                 memory = {
                     "id": str(result.id),
                     "text": result.payload.get("text", ""),
@@ -319,21 +336,18 @@ class QdrantMCPServer:
                     "tags": result.payload.get("tags", []),
                     "tier": result.payload.get("tier", "L2"),
                     "source_ids": result.payload.get("source_ids", []),
-                    # v2 fields with backward-compat defaults for pre-v2 rows.
                     "access_count": result.payload.get("access_count", 0),
                     "last_accessed_at": result.payload.get("last_accessed_at"),
                     "importance_effective": result.payload.get(
                         "importance_effective", result.payload.get("importance", 0)
                     ),
                     "relevance_score": float(result.score),
+                    "adjusted_score": adjusted,
                 }
-                
-                # Include expiry info if present
                 if "expires" in result.payload:
                     memory["expires"] = result.payload["expires"]
-                
                 memories.append(memory)
-            
+
             return {
                 "success": True,
                 "query": query,
