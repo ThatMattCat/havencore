@@ -100,6 +100,15 @@ async def ensure_default_agenda() -> None:
                 "cooldown_min": config.AUTONOMY_ANOMALY_COOLDOWN_MIN,
             },
         },
+        {
+            "kind": "memory_review",
+            "cron": config.AUTONOMY_MEMORY_REVIEW_CRON,
+            "autonomy_level": "observe",
+            "cfg": {
+                "max_scan": config.AUTONOMY_MEMORY_MAX_SCAN,
+                "llm_call_cap": config.AUTONOMY_MEMORY_LLM_CALL_CAP,
+            },
+        },
     ]
 
     async with pool.acquire() as conn:

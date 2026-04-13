@@ -17,6 +17,7 @@ from selene_agent.autonomy import db as autonomy_db
 from selene_agent.autonomy import schedule
 from selene_agent.autonomy.handlers import anomaly as anomaly_handler
 from selene_agent.autonomy.handlers import briefing as briefing_handler
+from selene_agent.autonomy.handlers import memory_review as memory_review_handler
 from selene_agent.autonomy.notifiers import HAPushNotifier
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
@@ -180,6 +181,7 @@ class AutonomyEngine:
             handler = {
                 "briefing": briefing_handler.handle,
                 "anomaly_sweep": anomaly_handler.handle,
+                "memory_review": memory_review_handler.handle,
             }.get(kind)
             if handler is None:
                 await autonomy_db.insert_run({
