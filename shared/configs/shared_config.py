@@ -63,7 +63,7 @@ AUTONOMY_ANOMALY_CRON = os.getenv('AUTONOMY_ANOMALY_CRON', '*/15 * * * *')
 AUTONOMY_ANOMALY_COOLDOWN_MIN = int(os.getenv('AUTONOMY_ANOMALY_COOLDOWN_MIN', '30'))
 AUTONOMY_MAX_RUNS_PER_HOUR = int(os.getenv('AUTONOMY_MAX_RUNS_PER_HOUR', '20'))
 AUTONOMY_TURN_TIMEOUT_SEC = int(os.getenv('AUTONOMY_TURN_TIMEOUT_SEC', '60'))
-AUTONOMY_BRIEFING_EMAIL_TO = os.getenv('AUTONOMY_BRIEFING_EMAIL_TO', '')
+AUTONOMY_BRIEFING_NOTIFY_TO = os.getenv('AUTONOMY_BRIEFING_NOTIFY_TO', '') or os.getenv('AUTONOMY_BRIEFING_EMAIL_TO', '')
 AUTONOMY_HA_NOTIFY_TARGET = os.getenv('AUTONOMY_HA_NOTIFY_TARGET', '')
 AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
     e.strip() for e in os.getenv('AUTONOMY_BRIEFING_CAMERA_ENTITIES', '').split(',') if e.strip()
@@ -71,6 +71,16 @@ AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
 AUTONOMY_ANOMALY_WATCH_DOMAINS = [
     d.strip() for d in os.getenv('AUTONOMY_ANOMALY_WATCH_DOMAINS', 'binary_sensor,lock,cover').split(',') if d.strip()
 ]
+
+# --- v3 reactive autonomy ---
+AUTONOMY_WEBHOOK_ENABLED = os.getenv('AUTONOMY_WEBHOOK_ENABLED', 'false').lower() == 'true'
+AUTONOMY_MQTT_ENABLED = os.getenv('AUTONOMY_MQTT_ENABLED', 'false').lower() == 'true'
+AUTONOMY_MQTT_CLIENT_ID = os.getenv('AUTONOMY_MQTT_CLIENT_ID', 'selene-autonomy')
+AUTONOMY_MQTT_RECONNECT_MAX_SEC = int(os.getenv('AUTONOMY_MQTT_RECONNECT_MAX_SEC', '60'))
+AUTONOMY_DEFAULT_QUIET_START = os.getenv('AUTONOMY_DEFAULT_QUIET_START', '')
+AUTONOMY_DEFAULT_QUIET_END = os.getenv('AUTONOMY_DEFAULT_QUIET_END', '')
+AUTONOMY_DEFAULT_QUIET_POLICY = os.getenv('AUTONOMY_DEFAULT_QUIET_POLICY', 'defer')
+AUTONOMY_DEFAULT_EVENT_RATE_LIMIT = os.getenv('AUTONOMY_DEFAULT_EVENT_RATE_LIMIT', '10/min')
 
 # --- v2 memory consolidation ---
 AUTONOMY_MEMORY_REVIEW_CRON = os.getenv("AUTONOMY_MEMORY_REVIEW_CRON", "0 3 * * *")
@@ -94,25 +104,19 @@ MEMORY_L3_RANK_BOOST = float(os.getenv("MEMORY_L3_RANK_BOOST", "1.2"))
 MEMORY_L4_MAX_ENTRIES = int(os.getenv("MEMORY_L4_MAX_ENTRIES", "20"))
 MEMORY_L4_WARN_TOKENS = int(os.getenv("MEMORY_L4_WARN_TOKENS", "1500"))
 
-SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly AI assistant with access to various tools.
+SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly AI assistant. Respond as though the user is a close friend.
         Current Location: {CURRENT_LOCATION}
         Zip Code: {CURRENT_ZIPCODE}
 
-        You have access to the following tools:
-        - Home Assistant controls for smart home devices including various media device control. Always list entity names before modifying an entity state, to ensure you are using the proper name. NEVER GUESS ENTITY NAMES!
-        - Before calling any Home Assistant service, first use a tool such as ha_get_domain_entity_states or ha_get_entities_in_area to confirm the exact entity_id — NEVER guess entity names.
-        - Web search via Brave Search
-        - Computational queries via Wolfram Alpha
-        - Weather predictions via WeatherAPI that include astronomical data
-        - Searching Wikipedia
-        - Store, Delete, List, and Query "memories" using Qdrant Text Embeddings. Currently focused on user data.
-        Use those tools when needed to help answer questions or perform actions.
+        Guidelines:
+        - Be brief while still resolving the user's request. Avoid filler words.
+        - Use simple language and short sentences.
+        - Check memories (search_memories) before answering anything about the user's preferences, people, places, or history — it's often where the context lives. Save new durable facts with create_memory when the user shares something worth remembering later.
+        - For math, unit conversions, or precise factual computation, prefer Wolfram Alpha over Brave Search.
+        - The weather tool returns astronomy data too (sunrise, sunset, moon phase) — use it for those, don't search the web.
 
-        Be concise in your responses. Respond to the user as though they are a close friend.
-        When responding to the user follow these rules:
-        - Be brief while still resolving the user's request
-        - Avoid filler words and unnecessary details
-        - Use simple language and short sentences
-        - Do NOT use special characters or emojis, they cannot be translated to audio properly
-        - Use the Qdrant memories whenever it might be relevant
+        HARD RULES:
+        - Never invent entity_ids. Call ha_get_entities_in_area or ha_get_domain_entity_states first to confirm the exact id.
+        - When one tool's output feeds another tool's input, make those calls in separate turns — do not emit them in parallel.
+        - No emojis or special characters in responses (TTS cannot read them).
         """

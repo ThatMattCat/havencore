@@ -30,6 +30,17 @@ async def test_end_to_end_consolidation(tmp_path):
 
     client = QdrantClient(host=host, port=port)
 
+    # Snapshot pre-existing L3 ids so cleanup only removes what this run creates.
+    pre_l3_flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])
+    pre_l3_ids: set[str] = set()
+    offset = None
+    while True:
+        pts, offset = client.scroll(collection_name=coll, scroll_filter=pre_l3_flt,
+                                    limit=256, with_payload=False, offset=offset)
+        pre_l3_ids.update(str(p.id) for p in pts)
+        if offset is None:
+            break
+
     # Seed 20 L2 entries across 2 planted themes.
     theme_a = [
         "Matt drinks oat milk in coffee",
@@ -97,5 +108,16 @@ async def test_end_to_end_consolidation(tmp_path):
         for p in pts
     ), "expected at least one L3 with source_ids overlapping seeded L2 set"
 
-    # Cleanup — delete seeded L2 points.
+    # Cleanup — delete seeded L2 points and any L3 rows this run produced.
     client.delete(collection_name=coll, points_selector=PointIdsList(points=ids))
+
+    new_l3_ids: list[str] = []
+    offset = None
+    while True:
+        pts, offset = client.scroll(collection_name=coll, scroll_filter=pre_l3_flt,
+                                    limit=256, with_payload=False, offset=offset)
+        new_l3_ids.extend(str(p.id) for p in pts if str(p.id) not in pre_l3_ids)
+        if offset is None:
+            break
+    if new_l3_ids:
+        client.delete(collection_name=coll, points_selector=PointIdsList(points=new_l3_ids))

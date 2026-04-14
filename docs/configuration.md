@@ -192,7 +192,7 @@ AUTONOMY_MAX_RUNS_PER_HOUR=20
 AUTONOMY_TURN_TIMEOUT_SEC=60
 
 # Notification targets
-AUTONOMY_BRIEFING_EMAIL_TO=""           # recipient for the morning briefing
+AUTONOMY_BRIEFING_NOTIFY_TO=""          # Signal recipient for the morning briefing
 AUTONOMY_HA_NOTIFY_TARGET=""            # e.g. notify.mobile_app_pixel_8
 
 # Handler inputs
@@ -201,10 +201,10 @@ AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
 ```
 
 Notes:
-- `send_email` currently reads its recipient from `DEFAULT_RECIPIENT` inside
-  the general-tools MCP server. `AUTONOMY_BRIEFING_EMAIL_TO` is the intended
-  operator knob but does not yet override that value — set `DEFAULT_RECIPIENT`
-  as well if it differs.
+- `send_signal_message` sends via the `signal-api` container (signal-cli-rest-api).
+  Recipient precedence: per-notification `to` → `AUTONOMY_BRIEFING_NOTIFY_TO` →
+  `SIGNAL_DEFAULT_RECIPIENT` → `SIGNAL_PHONE_NUMBER` (Note to Self). See
+  `docs/services/agent/tools/general.md` for the one-time QR-link setup.
 - `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
   `mobile_app_<device>`; the leading `notify.` is stripped.
 

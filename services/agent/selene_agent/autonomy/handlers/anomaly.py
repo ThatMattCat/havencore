@@ -5,6 +5,7 @@ producing strict JSON → cooldown-aware HA push notification.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
@@ -58,10 +59,23 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     match = _JSON_RE.search(text)
     if not match:
         return None
+    block = match.group(0)
     try:
-        return json.loads(match.group(0))
+        return json.loads(block)
     except Exception:
-        return None
+        pass
+    # Final fallback: Python literal_eval for mixed-quote LLM output
+    # (e.g. "summary": '' — Python syntax inside an otherwise-JSON object).
+    try:
+        py_src = re.sub(r'\bnull\b', 'None', block)
+        py_src = re.sub(r'\btrue\b', 'True', py_src)
+        py_src = re.sub(r'\bfalse\b', 'False', py_src)
+        out = ast.literal_eval(py_src)
+        if isinstance(out, dict):
+            return out
+    except Exception:
+        pass
+    return None
 
 
 async def _safe_tool(mcp: MCPClientManager, name: str, args: Dict[str, Any]) -> Any:

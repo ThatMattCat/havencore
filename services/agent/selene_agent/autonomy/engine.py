@@ -2,23 +2,28 @@
 
 Runs as an asyncio background task started from the FastAPI lifespan.
 Owns the agenda_items/autonomy_runs lifecycle, kill-switch, rate limiting,
-and per-signature cooldowns.
+per-signature cooldowns, and (v3) reactive event dispatch + quiet hours.
 """
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
 from selene_agent.autonomy import db as autonomy_db
+from selene_agent.autonomy import quiet_hours as quiet_hours_mod
 from selene_agent.autonomy import schedule
+from selene_agent.autonomy import trigger_match
+from selene_agent.autonomy.event_rate_limit import limiter as event_rate_limiter
 from selene_agent.autonomy.handlers import anomaly as anomaly_handler
 from selene_agent.autonomy.handlers import briefing as briefing_handler
 from selene_agent.autonomy.handlers import memory_review as memory_review_handler
-from selene_agent.autonomy.notifiers import HAPushNotifier
+from selene_agent.autonomy.handlers import reminder as reminder_handler
+from selene_agent.autonomy.handlers import routine as routine_handler
+from selene_agent.autonomy.handlers import watch as watch_handler
+from selene_agent.autonomy.notifiers import SignalNotifier, HAPushNotifier, NullNotifier
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.mcp_client_manager import MCPClientManager
@@ -31,6 +36,16 @@ _SEVERITY_RANK = {"none": 0, "low": 1, "med": 2, "high": 3}
 
 def _severity_escalated(prev: Optional[str], current: str) -> bool:
     return _SEVERITY_RANK.get(current or "none", 0) > _SEVERITY_RANK.get(prev or "none", 0)
+
+
+_HANDLERS = {
+    "briefing": briefing_handler.handle,
+    "anomaly_sweep": anomaly_handler.handle,
+    "memory_review": memory_review_handler.handle,
+    "reminder": reminder_handler.handle,
+    "watch": watch_handler.handle,
+    "routine": routine_handler.handle,
+}
 
 
 class AutonomyEngine:
@@ -53,6 +68,8 @@ class AutonomyEngine:
         self.started_at: Optional[datetime] = None
         self.last_dispatch_at: Optional[datetime] = None
         self._running_items: set[str] = set()
+        self._mqtt_listener = None  # wired in start() when enabled
+        self.mqtt_refresh = asyncio.Event()
 
     # --- lifecycle ------------------------------------------------------
 
@@ -63,6 +80,7 @@ class AutonomyEngine:
         await autonomy_db.ensure_default_agenda()
         self.started_at = datetime.now(timezone.utc)
         self._shutdown.clear()
+        await self._start_mqtt_listener()
         self._task = asyncio.create_task(self._loop(), name="autonomy-engine")
         logger.info("AutonomyEngine started")
 
@@ -76,7 +94,37 @@ class AutonomyEngine:
             self._task.cancel()
             logger.warning("AutonomyEngine stop: task did not exit cleanly, cancelled")
         self._task = None
+        await self._stop_mqtt_listener()
         logger.info("AutonomyEngine stopped")
+
+    async def _start_mqtt_listener(self) -> None:
+        if not getattr(config, "AUTONOMY_MQTT_ENABLED", False):
+            return
+        try:
+            from selene_agent.autonomy.mqtt_listener import MqttListener
+        except Exception as e:
+            logger.warning(f"[engine] MQTT listener unavailable: {e}")
+            return
+        self._mqtt_listener = MqttListener(engine=self)
+        try:
+            await self._mqtt_listener.start()
+        except Exception as e:
+            logger.error(f"[engine] MQTT listener failed to start: {e}")
+            self._mqtt_listener = None
+
+    async def _stop_mqtt_listener(self) -> None:
+        if self._mqtt_listener is None:
+            return
+        try:
+            await self._mqtt_listener.stop()
+        except Exception as e:
+            logger.warning(f"[engine] MQTT listener stop error: {e}")
+        self._mqtt_listener = None
+
+    def notify_agenda_changed(self) -> None:
+        """Invoked by the REST layer on agenda CRUD so the MQTT listener
+        can diff-subscribe/unsubscribe without a poll."""
+        self.mqtt_refresh.set()
 
     async def _loop(self) -> None:
         interval = max(5, int(config.AUTONOMY_DISPATCH_INTERVAL_SECONDS))
@@ -114,6 +162,7 @@ class AutonomyEngine:
             [i for i in items if i.get("enabled") and i.get("next_fire_at")],
             key=lambda i: i["next_fire_at"],
         )[:5]
+        deferred = await autonomy_db.count_deferred_runs()
         return {
             "running": self.is_running(),
             "paused": self.is_paused(),
@@ -121,7 +170,12 @@ class AutonomyEngine:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "last_dispatch_at": self.last_dispatch_at.isoformat() if self.last_dispatch_at else None,
             "runs_last_hour": runs_last_hour,
+            "deferred_runs_pending": deferred,
             "rate_limit_per_hour": config.AUTONOMY_MAX_RUNS_PER_HOUR,
+            "mqtt_connected": bool(self._mqtt_listener and self._mqtt_listener.is_connected()),
+            "subscribed_topics": (
+                self._mqtt_listener.subscribed_topics() if self._mqtt_listener else []
+            ),
             "next_due": [
                 {
                     "id": i["id"],
@@ -141,27 +195,151 @@ class AutonomyEngine:
         due = await autonomy_db.list_due_items(self.last_dispatch_at)
         for item in due:
             if item["id"] in self._running_items:
-                # Prior fire still executing — skip this tick.
                 continue
-            asyncio.create_task(self._fire_item(item, manual=False))
+            asyncio.create_task(self._fire_item(item, manual=False, trigger_source="cron"))
 
-    async def trigger(self, item_id: str) -> Dict[str, Any]:
+        # Deferred-run sweep (quiet-hours 'defer' placeholders due to fire).
+        try:
+            due_deferred = await autonomy_db.list_scheduled_runs_due(self.last_dispatch_at)
+        except Exception as e:
+            logger.error(f"[engine] deferred sweep failed: {e}")
+            return
+        for run_row in due_deferred:
+            asyncio.create_task(self._dispatch_deferred(run_row))
+
+    async def _dispatch_deferred(self, run_row: Dict[str, Any]) -> None:
+        claimed = await autonomy_db.claim_scheduled_run(run_row["id"])
+        if claimed is None:
+            return  # another tick won
+        item_id = claimed["agenda_item_id"]
+        if not item_id:
+            return
+        item = await autonomy_db.get_item(item_id)
+        if item is None or not item.get("enabled"):
+            return
+        await self._fire_item(
+            item,
+            manual=False,
+            trigger_source=claimed.get("trigger_source") or "cron",
+            trigger_event=claimed.get("trigger_event"),
+            bypass_quiet=False,
+        )
+
+    async def trigger(self, item_id: str, *, bypass_quiet: bool = False) -> Dict[str, Any]:
         """Manually fire an agenda item regardless of schedule."""
         item = await autonomy_db.get_item(item_id)
         if item is None:
             return {"status": "not_found"}
         if item["id"] in self._running_items:
             return {"status": "already_running"}
-        return await self._fire_item(item, manual=True)
+        return await self._fire_item(
+            item, manual=True, trigger_source="manual", bypass_quiet=bypass_quiet
+        )
 
-    async def _fire_item(self, item: Dict[str, Any], *, manual: bool) -> Dict[str, Any]:
+    async def trigger_event(
+        self,
+        item_id: str,
+        *,
+        source: str,
+        event: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Fire an agenda item in response to a reactive event (webhook/mqtt).
+
+        Subset-matches the event against the item's ``trigger_spec`` first —
+        the LLM never decides whether an inbound event 'counts'. Applies the
+        per-item event rate limit before the global rate-limit gate.
+        """
+        item = await autonomy_db.get_item(item_id)
+        if item is None:
+            return {"status": "not_found"}
+        if item["id"] in self._running_items:
+            return {"status": "already_running"}
+
+        # Stamp source on the event so the matcher can check.
+        enriched = {**event, "source": source}
+        spec = item.get("trigger_spec")
+        if not spec or not trigger_match.match(spec, enriched):
+            await autonomy_db.insert_run({
+                "agenda_item_id": item_id,
+                "kind": item["kind"],
+                "triggered_at": datetime.now(timezone.utc),
+                "completed_at": datetime.now(timezone.utc),
+                "status": "skipped_trigger_mismatch",
+                "summary": "event did not match trigger_spec",
+                "trigger_source": source,
+                "trigger_event": enriched,
+            })
+            return {"status": "skipped_trigger_mismatch"}
+
+        rate_spec = (item.get("config") or {}).get("event_rate_limit") or getattr(
+            config, "AUTONOMY_DEFAULT_EVENT_RATE_LIMIT", None
+        )
+        if not event_rate_limiter.try_consume(item_id, rate_spec):
+            await autonomy_db.insert_run({
+                "agenda_item_id": item_id,
+                "kind": item["kind"],
+                "triggered_at": datetime.now(timezone.utc),
+                "completed_at": datetime.now(timezone.utc),
+                "status": "rate_limited",
+                "summary": f"per-item event rate limit ({rate_spec})",
+                "trigger_source": source,
+                "trigger_event": enriched,
+            })
+            return {"status": "rate_limited"}
+
+        return await self._fire_item(
+            item,
+            manual=False,
+            trigger_source=source,
+            trigger_event=enriched,
+        )
+
+    async def _fire_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        manual: bool,
+        trigger_source: str = "cron",
+        trigger_event: Optional[Dict[str, Any]] = None,
+        bypass_quiet: bool = False,
+    ) -> Dict[str, Any]:
         item_id = item["id"]
         self._running_items.add(item_id)
         triggered_at = datetime.now(timezone.utc)
         kind = item["kind"]
-        agenda_fields = {"agenda_item_id": item_id, "kind": kind, "triggered_at": triggered_at}
+        agenda_fields = {
+            "agenda_item_id": item_id,
+            "kind": kind,
+            "triggered_at": triggered_at,
+            "trigger_source": trigger_source,
+            "trigger_event": trigger_event,
+        }
+        cfg = item.get("config") or {}
+        quiet_spec = cfg.get("quiet_hours") or _default_quiet_hours_spec()
 
         try:
+            # Quiet-hours gate (honored even for event triggers; manual can bypass).
+            if quiet_spec and not bypass_quiet and quiet_hours_mod.is_quiet(triggered_at, quiet_spec):
+                policy = quiet_hours_mod.policy(quiet_spec)
+                if policy == "defer":
+                    next_end = quiet_hours_mod.next_end_at(triggered_at, quiet_spec)
+                    await autonomy_db.insert_run({
+                        **agenda_fields,
+                        "status": "scheduled",
+                        "summary": "deferred by quiet hours",
+                        "scheduled_for": next_end,
+                    })
+                    await self._advance(item, triggered_at)
+                    return {"status": "scheduled", "scheduled_for": next_end.isoformat() if next_end else None}
+                await autonomy_db.insert_run({
+                    **agenda_fields,
+                    "completed_at": datetime.now(timezone.utc),
+                    "status": "skipped_quiet_hours",
+                    "summary": "dropped by quiet hours",
+                })
+                await self._advance(item, triggered_at)
+                return {"status": "skipped_quiet_hours"}
+
             # Rate limit gate (skips manual triggers intentionally — operator override).
             if not manual:
                 runs = await autonomy_db.count_runs_since(
@@ -178,11 +356,7 @@ class AutonomyEngine:
                     return {"status": "rate_limited"}
 
             # Dispatch handler.
-            handler = {
-                "briefing": briefing_handler.handle,
-                "anomaly_sweep": anomaly_handler.handle,
-                "memory_review": memory_review_handler.handle,
-            }.get(kind)
+            handler = _HANDLERS.get(kind)
             if handler is None:
                 await autonomy_db.insert_run({
                     **agenda_fields,
@@ -193,6 +367,10 @@ class AutonomyEngine:
                 await self._advance(item, triggered_at)
                 return {"status": "error", "error": "unknown kind"}
 
+            # Make the triggering event visible to the handler (watch reads this).
+            if trigger_event is not None:
+                item = {**item, "_trigger_event": trigger_event}
+
             result = await handler(
                 item,
                 client=self.client,
@@ -201,10 +379,10 @@ class AutonomyEngine:
                 base_tools=self.base_tools,
             )
 
-            # Anomaly-specific cooldown / notification path.
-            if kind == "anomaly_sweep" and result.get("_unusual"):
+            # Shared cooldown + notification path for anomaly_sweep and watch.
+            if kind in ("anomaly_sweep", "watch") and result.get("_unusual"):
                 sig_hash = result.get("signature_hash")
-                cooldown_min = int((item.get("config") or {}).get(
+                cooldown_min = int(cfg.get(
                     "cooldown_min", config.AUTONOMY_ANOMALY_COOLDOWN_MIN
                 ))
                 prev = await autonomy_db.last_run_for_signature(
@@ -226,17 +404,17 @@ class AutonomyEngine:
                     await self._advance(item, triggered_at)
                     return {"status": "skipped_cooldown", "signature_hash": sig_hash}
 
-                # Send HA push.
-                target = (item.get("config") or {}).get(
-                    "ha_notify_target", config.AUTONOMY_HA_NOTIFY_TARGET
-                )
-                notifier = HAPushNotifier(self.mcp_manager, target=target)
+                # Notifier selection: watch may pick its own channel/target;
+                # anomaly falls back to HA push per the v1 convention.
+                notify_channel = result.get("_notify_channel") or "ha_push"
+                notify_to = result.get("_notify_to") or ""
+                notifier = _build_notifier(self.mcp_manager, notify_channel, notify_to, cfg)
                 delivered = await notifier.send(
                     title=result.get("_notify_title") or "Selene",
                     body=result.get("_notify_body") or result.get("summary") or "",
                     severity=severity,
                 )
-                result["notified_via"] = "ha_push" if delivered else None
+                result["notified_via"] = notify_channel if delivered else None
 
             # Persist the completed run.
             await autonomy_db.insert_run({
@@ -284,3 +462,29 @@ class AutonomyEngine:
             logger.error(f"[engine] cron advance failed for {item['id']}: {e}")
             return
         await autonomy_db.advance_item(item["id"], fired_at, next_at)
+
+
+def _default_quiet_hours_spec() -> Optional[Dict[str, Any]]:
+    start = getattr(config, "AUTONOMY_DEFAULT_QUIET_START", "") or ""
+    end = getattr(config, "AUTONOMY_DEFAULT_QUIET_END", "") or ""
+    policy = getattr(config, "AUTONOMY_DEFAULT_QUIET_POLICY", "defer") or "defer"
+    if not start or not end:
+        return None
+    return {"start": start, "end": end, "policy": policy}
+
+
+def _build_notifier(mcp_manager, channel: str, to: str, cfg: Dict[str, Any]):
+    if channel in ("signal", "email"):  # "email" retained as legacy alias
+        return SignalNotifier(
+            mcp_manager,
+            default_to=to or cfg.get("to") or config.AUTONOMY_BRIEFING_NOTIFY_TO,
+        )
+    if channel == "ha_push":
+        target = (
+            to
+            or cfg.get("ha_notify_target")
+            or cfg.get("to")
+            or config.AUTONOMY_HA_NOTIFY_TARGET
+        )
+        return HAPushNotifier(mcp_manager, target=target)
+    return NullNotifier()

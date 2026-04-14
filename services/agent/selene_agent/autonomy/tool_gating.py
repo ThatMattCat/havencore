@@ -5,7 +5,7 @@ Maintain the per-tier sets here so they are easy to audit.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, Iterable, List, Set
 
 # Read-only / safe-to-read HA tools + memory + general-knowledge tools.
 OBSERVE_TOOLS: Set[str] = {
@@ -27,11 +27,13 @@ OBSERVE_TOOLS: Set[str] = {
     "search_wikipedia",
     "query_multimodal_api",
     "fetch",
+    # MQTT — camera snapshot capture (triggers HA script, waits on MQTT topic)
+    "get_camera_snapshots",
 }
 
 # Notifier tools are only added at the ``notify`` tier.
 NOTIFY_ONLY_TOOLS: Set[str] = {
-    "send_email",
+    "send_signal_message",
     "ha_send_notification",
 }
 
@@ -63,13 +65,25 @@ def tier_allow_list(tier: str) -> Set[str]:
     return set()
 
 
-def filter_tools(tools: List[Dict[str, Any]], tier: str) -> List[Dict[str, Any]]:
+def filter_tools(
+    tools: List[Dict[str, Any]],
+    tier: str,
+    override: Iterable[str] | None = None,
+) -> List[Dict[str, Any]]:
     """Filter an OpenAI-format tools list by the given tier's allow-list.
 
     Items explicitly in ``V1_DENY`` are always dropped regardless of tier —
     this is a defense-in-depth check on top of the allow-list.
+
+    When ``override`` is supplied, the allow-list narrows to
+    ``tier_allow_list(tier) ∩ override``. Overrides can only *restrict* the
+    tier; any name outside the tier raises ``ValueError`` (fail loudly —
+    the v3 routine handler relies on this to reject misconfigured items).
     """
-    allowed = tier_allow_list(tier)
+    if override is None:
+        allowed = tier_allow_list(tier)
+    else:
+        allowed = narrow(tier, override)
     out: List[Dict[str, Any]] = []
     for tool in tools:
         name = (tool.get("function") or {}).get("name") or tool.get("name")
@@ -80,3 +94,21 @@ def filter_tools(tools: List[Dict[str, Any]], tier: str) -> List[Dict[str, Any]]
         if name in allowed:
             out.append(tool)
     return out
+
+
+def narrow(tier: str, override_names: Iterable[str]) -> Set[str]:
+    """Return the intersection of ``tier_allow_list(tier)`` with ``override_names``.
+
+    Raises ``ValueError`` if any requested name is outside the tier allow-list
+    so that misconfigured routines fail at construction rather than silently
+    running with a narrower toolset than the operator intended.
+    """
+    allowed = tier_allow_list(tier)
+    requested = {n for n in override_names if n}
+    extra = requested - allowed
+    if extra:
+        raise ValueError(
+            f"tools_override contains names outside tier '{tier}': "
+            + ", ".join(sorted(extra))
+        )
+    return requested

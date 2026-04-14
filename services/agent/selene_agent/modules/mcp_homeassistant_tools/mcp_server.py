@@ -312,7 +312,9 @@ class HomeAssistantMCPServer:
                         "Execute a Home Assistant service on an entity. "
                         "Use service_data to pass service parameters such as brightness, color, "
                         "temperature, volume, etc. Example: service='turn_on' with "
-                        "service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity."
+                        "service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity. "
+                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
+                        "ha_get_domain_entity_states — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -351,7 +353,9 @@ class HomeAssistantMCPServer:
                         "The rgb_color / hs_color / color_temp_kelvin values returned by "
                         "ha_get_domain_entity_states and ha_get_entity_history can be passed "
                         "back here unchanged to reproduce a prior color. turn_off and toggle "
-                        "ignore brightness/color."
+                        "ignore brightness/color. "
+                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
+                        "ha_get_domain_entity_states — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -406,7 +410,9 @@ class HomeAssistantMCPServer:
                     description=(
                         "Control a climate entity (thermostat). Supply any combination of "
                         "temperature, hvac_mode, and fan_mode — each issued as a separate "
-                        "HA service call."
+                        "HA service call. "
+                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
+                        "ha_get_domain_entity_states — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -715,7 +721,10 @@ class HomeAssistantMCPServer:
                         "- 'toggle' : switch between play and pause based on current state. Prefer this "
                         "for user requests like 'unpause', 'resume', 'pause/play it' or whenever the "
                         "current playback state is unknown or ambiguous.\n"
-                        "When in doubt between play/pause, use 'toggle'."
+                        "When in doubt between play/pause, use 'toggle'.\n"
+                        "\n"
+                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
+                        "ha_get_domain_entity_states — do not guess."
                     ),
                     inputSchema={
                         "type": "object",

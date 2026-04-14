@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from openai import AsyncOpenAI
 
@@ -44,6 +44,7 @@ class AutonomousTurn:
         timeout_sec: int = 60,
         temperature: float = 0.3,
         max_tokens: int = 800,
+        tools_override: Optional[Iterable[str]] = None,
     ):
         self.client = client
         self.mcp_manager = mcp_manager
@@ -54,9 +55,15 @@ class AutonomousTurn:
         self.timeout_sec = timeout_sec
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.tools_override = list(tools_override) if tools_override is not None else None
+        # Eager validation: a misconfigured tools_override must fail at
+        # construction so handlers can surface the error cleanly.
+        self._tools = tool_gating.filter_tools(
+            self.base_tools, self.autonomy_level, override=self.tools_override
+        )
 
     def _filtered_tools(self) -> List[Dict[str, Any]]:
-        return tool_gating.filter_tools(self.base_tools, self.autonomy_level)
+        return self._tools
 
     async def run(self, user_message: str) -> TurnResult:
         """Drive one autonomous turn to completion and return a captured trace."""

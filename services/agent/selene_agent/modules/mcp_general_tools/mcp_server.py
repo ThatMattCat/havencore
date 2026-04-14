@@ -15,14 +15,7 @@ import requests
 from datetime import datetime
 import pytz
 
-import mimetypes
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
-from email.mime.base import MIMEBase
-from email import encoders
-from pathlib import Path
-import aiosmtplib
+import base64
 
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
@@ -42,11 +35,11 @@ BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
 TIMEZONE = os.getenv("TIMEZONE")
 WOLFRAM_ALPHA_API_KEY = os.getenv("WOLFRAM_ALPHA_API_KEY")
 
-SENDER_EMAIL = os.environ.get('GMAIL_ADDRESS')
-EMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD')
-SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
-DEFAULT_RECIPIENT = os.environ.get('DEFAULT_RECIPIENT')
+SIGNAL_API_URL = os.environ.get('SIGNAL_API_URL', 'http://signal-api:8080').rstrip('/')
+SIGNAL_PHONE_NUMBER = os.environ.get('SIGNAL_PHONE_NUMBER', '').strip()
+SIGNAL_DEFAULT_RECIPIENT = (os.environ.get('SIGNAL_DEFAULT_RECIPIENT', '').strip()
+                            or SIGNAL_PHONE_NUMBER)
+SIGNAL_MAX_ATTACHMENT_BYTES = 95 * 1024 * 1024  # Signal's practical upload cap is ~100 MB
 
 class GeneralToolsServer:
     """MCP server providing general utility tools"""
@@ -78,34 +71,26 @@ class GeneralToolsServer:
                 }
             ))
 
-            if EMAIL_APP_PASSWORD and SENDER_EMAIL:
+            if SIGNAL_PHONE_NUMBER and SIGNAL_DEFAULT_RECIPIENT:
                 tools.append(Tool(
-                    name="send_email",
-                    description="Send an email to the homeowner.",
+                    name="send_signal_message",
+                    description="Send a Signal message (text, optionally with images or short videos) to the homeowner.",
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            # "to": {
-                            #     "type": "string",
-                            #     "description": "Recipient email address"
-                            # },
-                            "subject": {
+                            "message": {
                                 "type": "string",
-                                "description": "Email subject"
-                            },
-                            "body": {
-                                "type": "string",
-                                "description": "Email body"
+                                "description": "Message text. Plain text only."
                             },
                             "attachments": {
                                 "type": "array",
                                 "items": {
                                     "type": "string",
-                                    "description": "URL of the attachment, will be automatically downloaded and attached."
+                                    "description": "URL (auto-downloaded) or local file path of an image or short video to attach."
                                 }
                             }
                         },
-                        "required": ["subject", "body"]
+                        "required": ["message"]
                     }
                 ))
 
@@ -239,11 +224,9 @@ class GeneralToolsServer:
                             workflow_name="default"
                         )
                         return [types.TextContent(type="text", text=json.dumps(result))]
-                elif name == "send_email":
-                    result = await self.send_email(
-                        # to=arguments.get("to"),
-                        subject=arguments.get("subject"),
-                        body=arguments.get("body"),
+                elif name == "send_signal_message":
+                    result = await self.send_signal_message(
+                        message=arguments.get("message"),
                         attachments=arguments.get("attachments")
                     )
                     return [types.TextContent(type="text", text=result)]
@@ -282,193 +265,93 @@ class GeneralToolsServer:
                 logger.error(f"Error executing tool {name}: {e}")
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
-    async def send_email(self,
-        subject: str, 
-        body: str,
-        to: Optional[Union[str, List[str]]] = None, 
-        cc: Optional[Union[str, List[str]]] = None,
-        bcc: Optional[Union[str, List[str]]] = None,
-        attachments: Optional[Union[str, List[str], List[tuple]]] = None,
-        html: bool = False
+    async def send_signal_message(
+        self,
+        message: str,
+        attachments: Optional[Union[str, List[str]]] = None,
+        to: Optional[Union[str, List[str]]] = None,
     ) -> str:
-        """
-        Send an email using Gmail SMTP asynchronously with attachment support.
-        
-        Args:
-            subject: Email subject
-            body: Email body (HTML or plain text)
-            to: Recipient email(s) - can be regular emails or SMS gateways like number@msg.fi.google.com
-            cc: CC recipient(s)
-            bcc: BCC recipient(s)
-            attachments: Can be:
-                - A single file path or URL as string
-                - A list of file paths or URLs
-                - A list of tuples: (filename, file_content_bytes)
-            html: Whether body is HTML (default: False)
-        
-        Environment variables required:
-            - GMAIL_ADDRESS: Your Gmail address
-            - GMAIL_APP_PASSWORD: Your Gmail app-specific password
-            - SMTP_SERVER: SMTP server (default: smtp.gmail.com)
-            - SMTP_PORT: SMTP port (default: 587)
-            - DEFAULT_RECIPIENT: Default recipient if none provided
-        
-        Returns:
-            str: Success status and message
-        """
-        # Get config from environment
-        sender_email = SENDER_EMAIL
-        password = EMAIL_APP_PASSWORD
-        smtp_server = SMTP_SERVER
-        smtp_port = SMTP_PORT
-        default_recipient = DEFAULT_RECIPIENT
+        """Send a Signal message via signal-cli-rest-api.
 
-        if not sender_email or not password:
-            return '{"success": false, "error": "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD environment variables"}'
-        
+        Attachments may be URLs (auto-downloaded) or local file paths; each is
+        base64-encoded and passed to ``POST /v2/send``. Recipient defaults to
+        ``SIGNAL_DEFAULT_RECIPIENT`` (which itself defaults to
+        ``SIGNAL_PHONE_NUMBER`` — i.e. Note to Self).
+        """
+        sender = SIGNAL_PHONE_NUMBER
+        if not sender:
+            return '{"success": false, "error": "SIGNAL_PHONE_NUMBER is not configured"}'
+
         if not to:
-            to = default_recipient
-            if not to:
-                return '{"success": false, "error": "No recipient specified and no DEFAULT_RECIPIENT set"}'
+            to = SIGNAL_DEFAULT_RECIPIENT
+        if not to:
+            return '{"success": false, "error": "No recipient specified and no SIGNAL_DEFAULT_RECIPIENT set"}'
 
-        # Normalize recipients to lists
-        to_list = [to] if isinstance(to, str) else to
-        cc_list = [] if cc is None else ([cc] if isinstance(cc, str) else cc)
-        bcc_list = [] if bcc is None else ([bcc] if isinstance(bcc, str) else bcc)
-        
-        # Track attachment errors
-        attachment_errors = []
-        
+        recipients = [to] if isinstance(to, str) else list(to)
+
+        attachment_errors: List[str] = []
+        base64_attachments: List[str] = []
+
+        if attachments:
+            if isinstance(attachments, str):
+                attachments = [attachments]
+
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for idx, attachment in enumerate(attachments):
+                    try:
+                        if not isinstance(attachment, str):
+                            raise ValueError(f"Invalid attachment type: {type(attachment)}")
+
+                        if attachment.startswith(('http://', 'https://')):
+                            file_content, _ = await self.download_file_safe(attachment, session)
+                        else:
+                            if not os.path.exists(attachment):
+                                raise FileNotFoundError("Local file not found")
+                            with open(attachment, 'rb') as f:
+                                file_content = f.read()
+
+                        if not file_content:
+                            raise ValueError("Attachment is empty")
+                        if len(file_content) > SIGNAL_MAX_ATTACHMENT_BYTES:
+                            raise ValueError(
+                                f"Attachment exceeds {SIGNAL_MAX_ATTACHMENT_BYTES // (1024*1024)} MB cap"
+                            )
+
+                        base64_attachments.append(base64.b64encode(file_content).decode('ascii'))
+                    except Exception as e:
+                        ref = attachment if isinstance(attachment, str) else f"attachment_{idx}"
+                        attachment_errors.append(f"{ref}: {str(e)}")
+
+            if attachments and len(attachment_errors) == len(attachments):
+                return (f'{{"success": false, "error": "All attachments failed", '
+                        f'"details": {json.dumps(attachment_errors)}}}')
+
+        payload: Dict[str, Any] = {
+            "message": message or "",
+            "number": sender,
+            "recipients": recipients,
+        }
+        if base64_attachments:
+            payload["base64_attachments"] = base64_attachments
+
+        url = f"{SIGNAL_API_URL}/v2/send"
         try:
-            # Create message - use 'mixed' for attachments
-            msg = MIMEMultipart('mixed')
-            msg['From'] = sender_email
-            msg['To'] = ', '.join(to_list)
-            msg['Subject'] = subject
-            
-            if cc_list:
-                msg['Cc'] = ', '.join(cc_list)
-            
-            # Create body part
-            body_part = MIMEMultipart('alternative')
-            mime_type = 'html' if html else 'plain'
-            body_part.attach(MIMEText(body, mime_type))
-            msg.attach(body_part)
-            
-            # Handle attachments
-            if attachments:
-                # Normalize to list
-                if isinstance(attachments, str):
-                    attachments = [attachments]
-                
-                # Set timeout for HTTP operations
-                timeout = aiohttp.ClientTimeout(total=30)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    for idx, attachment in enumerate(attachments):
-                        file_content = None
-                        filename = None
-                        
-                        try:
-                            # Handle different attachment types
-                            if isinstance(attachment, tuple):
-                                # Direct (filename, content) tuple
-                                filename, file_content = attachment
-                                if not filename or not file_content:
-                                    raise ValueError("Invalid attachment tuple: missing filename or content")
-                                    
-                            elif isinstance(attachment, str):
-                                if attachment.startswith(('http://', 'https://')):
-                                    # Download from URL with error handling
-                                    try:
-                                        file_content, filename = await self.download_file_safe(attachment, session)
-                                        if not file_content or not filename:
-                                            raise ValueError(f"Failed to download: empty content or filename")
-                                    except asyncio.TimeoutError:
-                                        raise ValueError(f"Download timeout after 30 seconds")
-                                    except aiohttp.ClientError as e:
-                                        raise ValueError(f"HTTP error: {str(e)}")
-                                    except Exception as e:
-                                        raise ValueError(f"Download failed: {str(e)}")
-                                else:
-                                    # Local file path
-                                    if not os.path.exists(attachment):
-                                        raise FileNotFoundError(f"Local file not found")
-                                    try:
-                                        with open(attachment, 'rb') as f:
-                                            file_content = f.read()
-                                        filename = os.path.basename(attachment)
-                                        if not file_content:
-                                            raise ValueError("File is empty")
-                                    except IOError as e:
-                                        raise ValueError(f"Failed to read file: {str(e)}")
-                            else:
-                                raise ValueError(f"Invalid attachment type: {type(attachment)}")
-                            
-                            if file_content and filename:
-                                # Guess the content type
-                                mime_type, _ = mimetypes.guess_type(filename)
-                                
-                                if mime_type and mime_type.startswith('image/'):
-                                    # Handle images specially
-                                    part = MIMEImage(file_content)
-                                    part.add_header('Content-Disposition', 'attachment', filename=filename)
-                                else:
-                                    # Generic binary attachment
-                                    part = MIMEBase('application', 'octet-stream')
-                                    part.set_payload(file_content)
-                                    encoders.encode_base64(part)
-                                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-                                
-                                msg.attach(part)
-                                
-                        except Exception as e:
-                            # Track the error but continue processing other attachments
-                            attachment_ref = attachment if isinstance(attachment, str) else f"attachment_{idx}"
-                            attachment_errors.append(f"{attachment_ref}: {str(e)}")
-                
-                # If ALL attachments failed, return error immediately
-                if attachments and len(attachment_errors) == len(attachments):
-                    return f'{{"success": false, "error": "All attachments failed", "details": {json.dumps(attachment_errors)}}}'
-            
-            # All recipients for sending
-            all_recipients = to_list + cc_list + bcc_list
-            
-            if not all_recipients:
-                return '{"success": false, "error": "No valid recipients specified"}'
-            
-            # Send email asynchronously with timeout
-            try:
-                await asyncio.wait_for(
-                    aiosmtplib.send(
-                        msg,
-                        sender=sender_email,
-                        recipients=all_recipients,
-                        hostname=smtp_server,
-                        port=smtp_port,
-                        start_tls=True,
-                        username=sender_email,
-                        password=password,
-                    ),
-                    timeout=60  # 60 second timeout for sending
-                )
-            except asyncio.TimeoutError:
-                return '{"success": false, "error": "Email send timeout after 60 seconds"}'
-            except aiosmtplib.SMTPException as e:
-                return f'{{"success": false, "error": "SMTP error: {str(e)}"}}'
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+                async with session.post(url, json=payload) as response:
+                    body = await response.text()
+                    if response.status >= 400:
+                        return (f'{{"success": false, "error": "Signal API returned {response.status}", '
+                                f'"detail": {json.dumps(body[:500])}}}')
+        except asyncio.TimeoutError:
+            return '{"success": false, "error": "Signal API send timeout after 60 seconds"}'
+        except aiohttp.ClientError as e:
+            return f'{{"success": false, "error": "Signal API connection error: {str(e)}"}}'
 
-            # Build success message
-            if attachment_errors:
-                # Some attachments failed but email was sent
-                return f'{{"success": true, "message": "Email sent to {", ".join(all_recipients)}", "warnings": {json.dumps(attachment_errors)}}}'
-            else:
-                return f'{{"success": true, "message": "Email sent successfully to {", ".join(all_recipients)}"}}'
-
-        except Exception as e:
-            # Catch-all for any unexpected errors
-            error_msg = f"Unexpected error: {str(e)}"
-            if attachment_errors:
-                return f'{{"success": false, "error": "{error_msg}", "attachment_errors": {json.dumps(attachment_errors)}}}'
-            return f'{{"success": false, "error": "{error_msg}"}}'
+        if attachment_errors:
+            return (f'{{"success": true, "message": "Signal message sent to {", ".join(recipients)}", '
+                    f'"warnings": {json.dumps(attachment_errors)}}}')
+        return f'{{"success": true, "message": "Signal message sent to {", ".join(recipients)}"}}'
 
 
     async def download_file_safe(self, url: str, session: aiohttp.ClientSession) -> tuple:

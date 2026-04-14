@@ -11,6 +11,6 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY selene_agent ./selene_agent/
 RUN pip install -e .
-COPY --from=frontend-build /frontend/build /app/static
+COPY --from=frontend-build /frontend/build /srv/agent-static
 EXPOSE 6002
 CMD ["agent"]

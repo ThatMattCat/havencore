@@ -36,7 +36,7 @@ from selene_agent.api.tts import router as tts_router
 from selene_agent.api.stt import router as stt_router
 from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
-from selene_agent.api.autonomy import router as autonomy_router
+from selene_agent.api.autonomy import router as autonomy_router, ws_router as autonomy_ws_router
 from selene_agent.api.memory import router as memory_router
 from selene_agent.api.logs import ws_router as logs_ws_router
 from selene_agent.utils import log_stream
@@ -255,6 +255,7 @@ app.include_router(autonomy_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")
+app.include_router(autonomy_ws_router, prefix="/ws")
 
 
 # --- OpenAI-compatible endpoints (kept on /v1/* for voice pipeline backward compat) ---
@@ -383,10 +384,15 @@ async def health_check():
     engine = getattr(app.state, "autonomy_engine", None)
     if engine is not None:
         try:
+            listener = getattr(engine, "_mqtt_listener", None)
+            from selene_agent.autonomy import db as autonomy_db  # local import
             payload["autonomy"] = {
                 "running": engine.is_running(),
                 "paused": engine.is_paused(),
                 "last_dispatch_at": engine.last_dispatch_at.isoformat() if engine.last_dispatch_at else None,
+                "mqtt_connected": bool(listener and listener.is_connected()),
+                "subscribed_topics": len(listener.subscribed_topics()) if listener else 0,
+                "deferred_runs_pending": await autonomy_db.count_deferred_runs(),
             }
         except Exception as e:
             payload["autonomy"] = {"error": str(e)}
@@ -425,11 +431,9 @@ async def get_mcp_status():
 
 # --- Mount SvelteKit static frontend (MUST be after all route definitions) ---
 
-_static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
+_static_dir = "/srv/agent-static"
 if not os.path.isdir(_static_dir):
     _static_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "build")
-if not os.path.isdir(_static_dir):
-    _static_dir = "/app/static"
 if os.path.isdir(_static_dir):
     from fastapi.responses import FileResponse
 
