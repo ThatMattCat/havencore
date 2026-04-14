@@ -194,6 +194,54 @@ class MassAgent:
         await client.player_queues.clear(player.player_id)
         return {"cleared": True, "player": player.name}
 
+    async def play_announcement(
+        self,
+        player_name: str,
+        url: str,
+        volume: Optional[float] = None,
+        pre_announce: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Play a short announcement URL on a player. Ducks current playback
+        on MA's side, resumes after.
+
+        ``volume`` accepts either a 0.0-1.0 float (treated as a level) or a
+        0-100 int percentage. The MA API wants ``volume_level: int | None``
+        (percentage), so we normalize.
+        """
+        client = self._require_client()
+        player = self._resolve_player(player_name)
+        if player is None:
+            return {
+                "played": False,
+                "error": f"no player matches {player_name!r}",
+                "available_players": [
+                    p.name for p in client.players if not getattr(p, "hide_in_ui", False)
+                ],
+            }
+        volume_level: Optional[int] = None
+        if volume is not None:
+            try:
+                v = float(volume)
+            except (TypeError, ValueError):
+                v = None  # type: ignore[assignment]
+            if v is not None:
+                # 0.0-1.0 treated as a fraction, anything else clamped into 0-100.
+                volume_level = int(round(v * 100 if 0.0 <= v <= 1.0 else v))
+                volume_level = max(0, min(100, volume_level))
+        await client.players.play_announcement(
+            player.player_id,
+            url=url,
+            volume_level=volume_level,
+            pre_announce=pre_announce,
+        )
+        return {
+            "played": True,
+            "player": player.name,
+            "player_id": player.player_id,
+            "url": url,
+            "volume_level": volume_level,
+        }
+
     async def playback_control(
         self, player_name: str, action: str
     ) -> Dict[str, Any]:

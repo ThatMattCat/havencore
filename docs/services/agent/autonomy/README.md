@@ -16,9 +16,11 @@ FastAPI process; no extra container.
   `routine` kinds; reactive HA webhook + live MQTT triggers; quiet-hours
   defer/drop; per-item event rate limits; live run WebSocket feed;
   `/autonomy` dashboard page. Full detail in [v3.md](v3.md).
-
-`speak` / `act` tiers and a per-action permission model remain deferred to
-v4 — see the bottom of this page.
+- **v4** (implemented; `act` tier flagged off): `speak` tier with a
+  `SpeakerNotifier` that renders Kokoro TTS and plays through Music
+  Assistant, LLM-judged `watch_llm` kind, and a supervised `act` tier with
+  per-item `action_allow_list` + optional confirmation gate. Full detail in
+  [v4.md](v4.md).
 
 ## What v1 does
 

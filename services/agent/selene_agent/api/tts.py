@@ -1,8 +1,9 @@
 """TTS proxy — exposes the text-to-speech service to the dashboard."""
+import json
 from typing import Optional
 
 import aiohttp
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -76,6 +77,92 @@ async def voices():
     ]
     formats = ["mp3", "wav", "opus", "aac", "flac", "pcm"]
     return {"voices": native + aliases, "formats": formats}
+
+
+class AnnounceRequest(BaseModel):
+    text: str
+    device: str
+    voice: Optional[str] = None
+    volume: Optional[float] = None
+
+
+@router.post("/tts/announce")
+async def announce(payload: AnnounceRequest, req: Request):
+    """Render ``text`` with TTS and play it as an MA announcement on
+    ``device``. One-off convenience endpoint used by the dashboard; reuses
+    ``SpeakerNotifier`` so behavior matches autonomy speak-tier delivery.
+    """
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    if not payload.device.strip():
+        raise HTTPException(status_code=400, detail="device is required")
+
+    mcp_mgr = getattr(req.app.state, "mcp_manager", None)
+    if mcp_mgr is None:
+        raise HTTPException(status_code=503, detail="MCP manager not initialized")
+
+    from selene_agent.autonomy.notifiers import SpeakerNotifier
+
+    notifier = SpeakerNotifier(
+        mcp_mgr,
+        device=payload.device,
+        voice=payload.voice or "",
+        volume=payload.volume,
+    )
+    ok = await notifier.send(title="", body=payload.text)
+    if not ok:
+        raise HTTPException(status_code=502, detail="announcement failed; see logs")
+    return {"ok": True, "device": payload.device}
+
+
+@router.get("/tts/players")
+async def players(req: Request):
+    """Proxy ``mass_list_players`` so the dashboard can populate a dropdown."""
+    mcp_mgr = getattr(req.app.state, "mcp_manager", None)
+    if mcp_mgr is None:
+        raise HTTPException(status_code=503, detail="MCP manager not initialized")
+    try:
+        result = await mcp_mgr.execute_tool("mass_list_players", {})
+    except Exception as e:
+        logger.warning(f"tts/players: mass_list_players failed: {e}")
+        return {"players": [], "error": str(e)}
+
+    # MCP execute_tool returns a JSON-serialized string; older paths may yield
+    # a list/dict directly. Normalize all three.
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            logger.warning(f"tts/players: non-JSON result: {result[:200]!r}")
+            return {"players": []}
+
+    raw: list
+    if isinstance(result, list):
+        raw = result
+    elif isinstance(result, dict):
+        raw = result.get("players") or []
+    else:
+        raw = []
+
+    # MA players expose ``display_name`` — the dashboard and
+    # ``mass_play_announcement`` both key off a plain ``name`` field.
+    players_out = []
+    for p in raw:
+        if isinstance(p, str):
+            players_out.append({"name": p})
+            continue
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name") or p.get("display_name") or p.get("player_id")
+        if not name:
+            continue
+        players_out.append({
+            "name": name,
+            "player_id": p.get("player_id"),
+            "available": p.get("available"),
+            "powered": p.get("powered"),
+        })
+    return {"players": players_out}
 
 
 @router.get("/tts/health")

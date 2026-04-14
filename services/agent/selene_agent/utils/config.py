@@ -95,6 +95,20 @@ AUTONOMY_DEFAULT_QUIET_END = os.getenv("AUTONOMY_DEFAULT_QUIET_END", "")
 AUTONOMY_DEFAULT_QUIET_POLICY = os.getenv("AUTONOMY_DEFAULT_QUIET_POLICY", "defer")
 AUTONOMY_DEFAULT_EVENT_RATE_LIMIT = os.getenv("AUTONOMY_DEFAULT_EVENT_RATE_LIMIT", "10/min")
 
+# --- v4 voice + actuation ---
+AUTONOMY_SPEAKER_DEFAULT_DEVICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_DEVICE", "")
+AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOICE", "af_heart")
+AUTONOMY_SPEAKER_DEFAULT_VOLUME = float(os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOLUME", "0.5"))
+AUTONOMY_TTS_AUDIO_TTL_SEC = int(os.getenv("AUTONOMY_TTS_AUDIO_TTL_SEC", "600"))
+AUTONOMY_ACT_ENABLED = os.getenv("AUTONOMY_ACT_ENABLED", "false").lower() == "true"
+AUTONOMY_ACT_DEFAULT_CONFIRMATION_TIMEOUT_SEC = int(
+    os.getenv("AUTONOMY_ACT_DEFAULT_CONFIRMATION_TIMEOUT_SEC", "300")
+)
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "")
+# Agent's own HTTP base as seen from inside the Docker network (for audio URLs
+# handed to Music Assistant). Defaults to the service hostname on port 6002.
+AGENT_INTERNAL_BASE_URL = os.getenv("AGENT_INTERNAL_BASE_URL", "http://agent:6002")
+
 # --- v2 memory consolidation ---
 AUTONOMY_MEMORY_REVIEW_CRON = os.getenv("AUTONOMY_MEMORY_REVIEW_CRON", "0 3 * * *")
 AUTONOMY_MEMORY_MAX_SCAN = int(os.getenv("AUTONOMY_MEMORY_MAX_SCAN", "5000"))

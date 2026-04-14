@@ -24,7 +24,12 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from selene_agent.autonomy.notifiers import SignalNotifier, HAPushNotifier, NullNotifier
+from selene_agent.autonomy.notifiers import (
+    HAPushNotifier,
+    NullNotifier,
+    SignalNotifier,
+    SpeakerNotifier,
+)
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.mcp_client_manager import MCPClientManager

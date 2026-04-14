@@ -2,6 +2,19 @@
 
 Filtered at ``AutonomousTurn`` construction, not delegated to the LLM.
 Maintain the per-tier sets here so they are easy to audit.
+
+Tiers:
+- ``observe`` — read-only HA + memory + general knowledge (safe for any LLM turn).
+- ``notify`` — observe + notifier tools (Signal, HA push). Handlers usually
+  invoke notifiers directly rather than through the LLM, but keeping the
+  allow-list set here means the surface is auditable in one place.
+- ``speak`` — same tool surface as ``notify`` (speaker delivery happens via
+  the SpeakerNotifier, not an LLM tool). Listed as its own tier so the engine
+  can distinguish it for metrics / UI / quiet-hours policy.
+- ``act`` (v4) — observe + notify + a bounded set of HA actuator tools, and
+  only under a per-item ``action_allow_list`` (enforced via ``narrow()``).
+  An ``act`` item must always supply an override — running with the full
+  surface is an anti-pattern.
 """
 from __future__ import annotations
 
@@ -37,15 +50,28 @@ NOTIFY_ONLY_TOOLS: Set[str] = {
     "ha_send_notification",
 }
 
-# Tools that NEVER run under any autonomy tier in v1 (explicit denial for audit).
-V1_DENY: Set[str] = {
+# v4 ``act`` tier — actuator tools. The per-item ``action_allow_list`` always
+# narrows this set; the handler validates non-empty overrides at item
+# validation time so operators cannot accidentally grant the full surface.
+# Explicitly excluded (out of v4 scope): ha_trigger_automation, ha_toggle_automation,
+# create_memory, delete_memory.
+ACT_TOOLS: Set[str] = {
     "ha_control_light",
     "ha_control_switch",
-    "ha_control_media_player",
     "ha_control_climate",
-    "ha_execute_service",
+    "ha_control_media_player",
     "ha_activate_scene",
     "ha_trigger_script",
+    "ha_execute_service",
+    "mass_play_media",
+    "mass_playback_control",
+}
+
+# Tools that never reach the LLM under any autonomy tier (defense-in-depth
+# block on top of the allow-list). v4 move: ACT_TOOLS are removed from this
+# global deny set — they're gated per-tier below. Everything still-denied
+# has no autonomy use case in v4.
+V1_DENY: Set[str] = {
     "ha_trigger_automation",
     "ha_toggle_automation",
     "create_memory",
@@ -59,8 +85,12 @@ def tier_allow_list(tier: str) -> Set[str]:
     """Return the set of tool names allowed for a given autonomy tier."""
     if tier == "observe":
         return set(OBSERVE_TOOLS)
-    if tier == "notify":
+    if tier in ("notify", "speak"):
+        # ``speak`` is a delivery-channel distinction — the tool surface
+        # matches ``notify`` (SpeakerNotifier invokes MA outside the LLM turn).
         return OBSERVE_TOOLS | NOTIFY_ONLY_TOOLS
+    if tier == "act":
+        return OBSERVE_TOOLS | NOTIFY_ONLY_TOOLS | ACT_TOOLS
     # Unknown tiers get nothing.
     return set()
 

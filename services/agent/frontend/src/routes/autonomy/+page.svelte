@@ -3,12 +3,14 @@
 	import Card from '$lib/components/Card.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import AgendaForm from './AgendaForm.svelte';
+	import SpeakToDevice from '$lib/components/SpeakToDevice.svelte';
 
 	let status = $state(null);
 	let events = $state(null);
 	let items = $state([]);
 	let runs = $state([]);
 	let liveRuns = $state([]);
+	let awaiting = $state([]);
 	let error = $state('');
 	let loading = $state(true);
 
@@ -34,20 +36,45 @@
 
 	async function refresh() {
 		try {
-			const [s, ev, it, rr] = await Promise.all([
+			const [s, ev, it, rr, aw] = await Promise.all([
 				fetchJSON('/api/autonomy/status'),
 				fetchJSON('/api/autonomy/events/summary'),
 				fetchJSON('/api/autonomy/items'),
 				fetchJSON(buildRunsPath()),
+				fetchJSON('/api/autonomy/runs/awaiting'),
 			]);
 			status = s;
 			events = ev;
 			items = it.items ?? [];
 			runs = rr.runs ?? [];
+			awaiting = aw.runs ?? [];
 		} catch (e) {
 			error = e.message;
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function confirmRun(runId, approved) {
+		const params = new URLSearchParams(location.search);
+		const token = params.get('token') ?? null;
+		try {
+			const r = await fetch(`/api/autonomy/runs/${runId}/confirm`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ approved, token }),
+			});
+			if (!r.ok) {
+				const text = await r.text();
+				throw new Error(`${r.status}: ${text}`);
+			}
+			// Clear deep-link query params so a reload doesn't re-pop the banner.
+			if (params.has('confirm') || params.has('token')) {
+				history.replaceState(null, '', location.pathname);
+			}
+			await refresh();
+		} catch (e) {
+			error = e.message;
 		}
 	}
 
@@ -160,6 +187,15 @@
 	onMount(() => {
 		refresh();
 		connectWS();
+		// If arriving via a confirmation deep-link, scroll the pending card
+		// into view once data lands.
+		const params = new URLSearchParams(location.search);
+		if (params.has('confirm')) {
+			queueMicrotask(() => {
+				const el = document.querySelector('.pending-list');
+				if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			});
+		}
 	});
 
 	onDestroy(() => {
@@ -255,6 +291,38 @@
 				<div class="muted">WS /ws/autonomy/runs</div>
 			</Card>
 		</div>
+
+		{#if awaiting.length > 0}
+			<Card title="Pending confirmations ({awaiting.length})">
+				<div class="pending-list">
+					{#each awaiting as run (run.id)}
+						<div class="pending-row">
+							<div class="pending-meta">
+								<div class="mono small">{run.id.slice(0, 8)}… · {formatTime(run.triggered_at)}</div>
+								<div class="pending-summary">{run.summary || '(no summary)'}</div>
+								{#if run.action_audit && run.action_audit.length > 0}
+									<ul class="audit">
+										{#each run.action_audit as step}
+											<li class:pending={step.outcome === 'pending'} class:skipped={step.outcome !== 'pending'}>
+												<span class="mono">{step.tool}</span>
+												{#if step.rationale}<span class="muted"> — {step.rationale}</span>{/if}
+												{#if step.outcome !== 'pending'}<span class="muted"> [{step.outcome}]</span>{/if}
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+							<div class="pending-actions">
+								<button class="btn primary sm" onclick={() => confirmRun(run.id, true)}>Approve</button>
+								<button class="btn danger sm" onclick={() => confirmRun(run.id, false)}>Deny</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</Card>
+		{/if}
+
+		<SpeakToDevice />
 
 		<!-- Section 2: Agenda items -->
 		<Card title="Agenda items">
@@ -559,6 +627,59 @@
 
 	.btn.danger:hover {
 		background: rgba(239, 68, 68, 0.2);
+	}
+
+	.pending-list {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.pending-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 14px;
+		padding: 10px 12px;
+		border: 1px solid #3b3d55;
+		border-radius: 8px;
+		background: rgba(167, 139, 250, 0.05);
+	}
+
+	.pending-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		flex: 1;
+	}
+
+	.pending-summary {
+		font-size: 13px;
+		color: #e1e4e8;
+	}
+
+	.audit {
+		margin: 4px 0 0;
+		padding-left: 18px;
+		font-size: 12px;
+	}
+
+	.audit li.pending {
+		color: #d1d5db;
+	}
+
+	.audit li.skipped {
+		color: #6b7280;
+	}
+
+	.pending-actions {
+		display: flex;
+		gap: 6px;
+	}
+
+	.small {
+		font-size: 11px;
+		color: #6b7280;
 	}
 
 	.table-wrapper {

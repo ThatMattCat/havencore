@@ -21,7 +21,12 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from selene_agent.autonomy.notifiers import SignalNotifier, HAPushNotifier, NullNotifier
+from selene_agent.autonomy.notifiers import (
+    HAPushNotifier,
+    NullNotifier,
+    SignalNotifier,
+    SpeakerNotifier,
+)
 from selene_agent.autonomy.turn import AutonomousTurn
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
@@ -38,11 +43,24 @@ DEFAULT_ROUTINE_SYSTEM_PROMPT = (
 )
 
 
-def _make_notifier(channel: str, to: str, mcp_manager: MCPClientManager):
+def _make_notifier(
+    channel: str,
+    to: str,
+    mcp_manager: MCPClientManager,
+    deliver_cfg: Dict[str, Any] | None = None,
+):
+    deliver_cfg = deliver_cfg or {}
     if channel in ("signal", "email"):
         return SignalNotifier(mcp_manager, default_to=to or config.AUTONOMY_BRIEFING_NOTIFY_TO)
     if channel == "ha_push":
         return HAPushNotifier(mcp_manager, target=to or config.AUTONOMY_HA_NOTIFY_TARGET)
+    if channel == "speaker":
+        return SpeakerNotifier(
+            mcp_manager,
+            device=deliver_cfg.get("device") or to or "",
+            voice=deliver_cfg.get("voice") or "",
+            volume=deliver_cfg.get("volume"),
+        )
     return NullNotifier()
 
 
@@ -116,7 +134,7 @@ async def handle(
     deliver = cfg.get("deliver") or {}
     channel = deliver.get("channel") or "signal"
     to = deliver.get("to") or ""
-    notifier = _make_notifier(channel, to, mcp_manager)
+    notifier = _make_notifier(channel, to, mcp_manager, deliver)
     title = str(cfg.get("title") or item.get("name") or f"Routine: {item['kind']}").strip()
     delivered = await notifier.send(title=title, body=result.content)
 

@@ -46,6 +46,30 @@
 	let routineToolsOverride = $state((item?.config?.tools_override ?? []).join(', '));
 	let routineDeliverChannel = $state(item?.config?.deliver?.channel ?? 'ha_push');
 	let routineDeliverTo = $state(item?.config?.deliver?.to ?? '');
+	let routineDeliverDevice = $state(item?.config?.deliver?.device ?? '');
+	let routineDeliverVoice = $state(item?.config?.deliver?.voice ?? '');
+	let routineDeliverVolume = $state(item?.config?.deliver?.volume ?? '');
+
+	// --- watch_llm config ---
+	let watchLlmSubject = $state(item?.config?.subject ?? '');
+	let watchLlmEntities = $state((item?.config?.gather?.entities ?? []).join(', '));
+	let watchLlmMemoriesK = $state(item?.config?.gather?.memories_k ?? 3);
+	let watchLlmSeverityFloor = $state(item?.config?.severity_floor ?? 'low');
+	let watchLlmCooldown = $state(item?.config?.cooldown_min ?? 15);
+	let watchLlmNotifyChannel = $state(item?.config?.notify?.channel ?? 'signal');
+	let watchLlmNotifyTo = $state(item?.config?.notify?.to ?? '');
+	let watchLlmNotifyDevice = $state(item?.config?.notify?.device ?? '');
+	let watchLlmNotifyVoice = $state(item?.config?.notify?.voice ?? '');
+	let watchLlmNotifyVolume = $state(item?.config?.notify?.volume ?? '');
+
+	// --- act config ---
+	let actPrompt = $state(item?.config?.prompt ?? '');
+	let actAllowList = $state((item?.config?.action_allow_list ?? []).join(', '));
+	let actRequireConfirmation = $state(item?.config?.require_confirmation ?? true);
+	let actConfirmTimeout = $state(item?.config?.confirmation_timeout_sec ?? 300);
+	let actStrictExecute = $state(item?.config?.strict_execute ?? false);
+	let actDeliverChannel = $state(item?.config?.deliver?.channel ?? 'signal');
+	let actDeliverTo = $state(item?.config?.deliver?.to ?? '');
 
 	// --- Quiet hours ---
 	let quietStart = $state(item?.config?.quiet_hours?.start ?? '');
@@ -107,11 +131,55 @@
 				.map((s) => s.trim())
 				.filter(Boolean);
 			if (toolsList.length > 0) cfg.tools_override = toolsList;
-			if (routineDeliverChannel || routineDeliverTo) {
-				cfg.deliver = {};
-				if (routineDeliverChannel) cfg.deliver.channel = routineDeliverChannel;
-				if (routineDeliverTo) cfg.deliver.to = routineDeliverTo;
+			cfg.deliver = {};
+			if (routineDeliverChannel) cfg.deliver.channel = routineDeliverChannel;
+			if (routineDeliverTo) cfg.deliver.to = routineDeliverTo;
+			if (routineDeliverChannel === 'speaker') {
+				if (routineDeliverDevice) cfg.deliver.device = routineDeliverDevice;
+				if (routineDeliverVoice) cfg.deliver.voice = routineDeliverVoice;
+				if (routineDeliverVolume !== '' && routineDeliverVolume != null)
+					cfg.deliver.volume = Number(routineDeliverVolume);
 			}
+			if (Object.keys(cfg.deliver).length === 0) delete cfg.deliver;
+		} else if (kind === 'watch_llm') {
+			if (watchLlmSubject) cfg.subject = watchLlmSubject;
+			const entList = watchLlmEntities
+				.split(',')
+				.map((s) => s.trim())
+				.filter(Boolean);
+			const gather = {};
+			if (entList.length > 0) gather.entities = entList;
+			if (watchLlmMemoriesK !== '' && watchLlmMemoriesK != null)
+				gather.memories_k = Number(watchLlmMemoriesK);
+			if (Object.keys(gather).length > 0) cfg.gather = gather;
+			if (watchLlmSeverityFloor) cfg.severity_floor = watchLlmSeverityFloor;
+			if (watchLlmCooldown !== '' && watchLlmCooldown != null)
+				cfg.cooldown_min = Number(watchLlmCooldown);
+			cfg.notify = {};
+			if (watchLlmNotifyChannel) cfg.notify.channel = watchLlmNotifyChannel;
+			if (watchLlmNotifyTo) cfg.notify.to = watchLlmNotifyTo;
+			if (watchLlmNotifyChannel === 'speaker') {
+				if (watchLlmNotifyDevice) cfg.notify.device = watchLlmNotifyDevice;
+				if (watchLlmNotifyVoice) cfg.notify.voice = watchLlmNotifyVoice;
+				if (watchLlmNotifyVolume !== '' && watchLlmNotifyVolume != null)
+					cfg.notify.volume = Number(watchLlmNotifyVolume);
+			}
+			if (Object.keys(cfg.notify).length === 0) delete cfg.notify;
+		} else if (kind === 'act') {
+			if (actPrompt) cfg.prompt = actPrompt;
+			const allow = actAllowList
+				.split(',')
+				.map((s) => s.trim())
+				.filter(Boolean);
+			if (allow.length > 0) cfg.action_allow_list = allow;
+			cfg.require_confirmation = !!actRequireConfirmation;
+			if (actConfirmTimeout !== '' && actConfirmTimeout != null)
+				cfg.confirmation_timeout_sec = Number(actConfirmTimeout);
+			cfg.strict_execute = !!actStrictExecute;
+			cfg.deliver = {};
+			if (actDeliverChannel) cfg.deliver.channel = actDeliverChannel;
+			if (actDeliverTo) cfg.deliver.to = actDeliverTo;
+			if (Object.keys(cfg.deliver).length === 0) delete cfg.deliver;
 		}
 		if (quietStart || quietEnd) {
 			cfg.quiet_hours = { policy: quietPolicy };
@@ -187,6 +255,8 @@
 					<select class="input" bind:value={autonomyLevel}>
 						<option value="observe">observe</option>
 						<option value="notify">notify</option>
+						<option value="speak">speak</option>
+						<option value="act">act</option>
 					</select>
 				</label>
 			</div>
@@ -195,7 +265,7 @@
 			<div class="field">
 				<span>Kind</span>
 				<div class="radio-row">
-					{#each ['reminder', 'watch', 'routine', 'briefing', 'anomaly_sweep', 'memory_review'] as k}
+					{#each ['reminder', 'watch', 'watch_llm', 'routine', 'act', 'briefing', 'anomaly_sweep', 'memory_review'] as k}
 						<label class="radio">
 							<input type="radio" bind:group={kind} value={k} disabled={isEdit} />
 							<span>{k}</span>
@@ -367,11 +437,128 @@
 							<select class="input" bind:value={routineDeliverChannel}>
 								<option value="ha_push">ha_push</option>
 								<option value="signal">signal</option>
+								<option value="speaker">speaker</option>
 							</select>
 						</label>
 						<label class="field">
 							<span>Deliver to</span>
 							<input class="input" type="text" bind:value={routineDeliverTo} placeholder="optional override" />
+						</label>
+					</div>
+					{#if routineDeliverChannel === 'speaker'}
+						<div class="form-grid">
+							<label class="field">
+								<span>MA player</span>
+								<input class="input" type="text" bind:value={routineDeliverDevice} placeholder="Living Room" />
+							</label>
+							<label class="field">
+								<span>Voice</span>
+								<input class="input" type="text" bind:value={routineDeliverVoice} placeholder="af_heart" />
+							</label>
+							<label class="field">
+								<span>Volume (0–1)</span>
+								<input class="input" type="number" step="0.05" min="0" max="1" bind:value={routineDeliverVolume} placeholder="0.5" />
+							</label>
+						</div>
+					{/if}
+				</fieldset>
+			{:else if kind === 'watch_llm'}
+				<fieldset class="fieldset">
+					<legend>watch_llm config</legend>
+					<label class="field">
+						<span>Subject (short label used in LLM prompt + signature)</span>
+						<input class="input" type="text" bind:value={watchLlmSubject} placeholder="front-door-after-midnight" />
+					</label>
+					<label class="field">
+						<span>Gather entities (comma-separated)</span>
+						<input class="input mono" type="text" bind:value={watchLlmEntities} placeholder="binary_sensor.front_door, person.matt" />
+					</label>
+					<div class="form-grid">
+						<label class="field">
+							<span>Memories k</span>
+							<input class="input" type="number" min="0" bind:value={watchLlmMemoriesK} />
+						</label>
+						<label class="field">
+							<span>Severity floor</span>
+							<select class="input" bind:value={watchLlmSeverityFloor}>
+								<option value="low">low</option>
+								<option value="med">med</option>
+								<option value="high">high</option>
+							</select>
+						</label>
+						<label class="field">
+							<span>Cooldown (min)</span>
+							<input class="input" type="number" min="0" bind:value={watchLlmCooldown} />
+						</label>
+					</div>
+					<div class="form-grid">
+						<label class="field">
+							<span>Notify channel</span>
+							<select class="input" bind:value={watchLlmNotifyChannel}>
+								<option value="signal">signal</option>
+								<option value="ha_push">ha_push</option>
+								<option value="speaker">speaker</option>
+							</select>
+						</label>
+						<label class="field">
+							<span>Notify to</span>
+							<input class="input" type="text" bind:value={watchLlmNotifyTo} placeholder="optional override" />
+						</label>
+					</div>
+					{#if watchLlmNotifyChannel === 'speaker'}
+						<div class="form-grid">
+							<label class="field">
+								<span>MA player</span>
+								<input class="input" type="text" bind:value={watchLlmNotifyDevice} placeholder="Living Room" />
+							</label>
+							<label class="field">
+								<span>Voice</span>
+								<input class="input" type="text" bind:value={watchLlmNotifyVoice} placeholder="af_heart" />
+							</label>
+							<label class="field">
+								<span>Volume (0–1)</span>
+								<input class="input" type="number" step="0.05" min="0" max="1" bind:value={watchLlmNotifyVolume} placeholder="0.5" />
+							</label>
+						</div>
+					{/if}
+				</fieldset>
+			{:else if kind === 'act'}
+				<fieldset class="fieldset">
+					<legend>act config — requires <code>AUTONOMY_ACT_ENABLED=true</code></legend>
+					<label class="field">
+						<span>Prompt (goal for the planner)</span>
+						<textarea class="input" rows="3" bind:value={actPrompt} placeholder="Turn on the living room lamp."></textarea>
+					</label>
+					<label class="field">
+						<span>Action allow-list (comma-separated tool names)</span>
+						<input class="input mono" type="text" bind:value={actAllowList} placeholder="ha_control_light, ha_activate_scene" />
+						<small class="muted">Only tools in this list will be executed. Empty = item rejected.</small>
+					</label>
+					<div class="form-grid">
+						<label class="checkbox-field">
+							<input type="checkbox" bind:checked={actRequireConfirmation} />
+							<span>Require confirmation</span>
+						</label>
+						<label class="field">
+							<span>Confirmation timeout (sec)</span>
+							<input class="input" type="number" min="10" bind:value={actConfirmTimeout} />
+						</label>
+						<label class="checkbox-field">
+							<input type="checkbox" bind:checked={actStrictExecute} />
+							<span>Strict execute (any error → status=error)</span>
+						</label>
+					</div>
+					<div class="form-grid">
+						<label class="field">
+							<span>Confirmation channel</span>
+							<select class="input" bind:value={actDeliverChannel}>
+								<option value="signal">signal</option>
+								<option value="ha_push">ha_push</option>
+							</select>
+						</label>
+						<label class="field">
+							<span>Deliver to</span>
+							<input class="input" type="text" bind:value={actDeliverTo} placeholder="optional override" />
 						</label>
 					</div>
 				</fieldset>

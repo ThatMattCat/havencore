@@ -56,6 +56,11 @@ class AutonomousTurn:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.tools_override = list(tools_override) if tools_override is not None else None
+        if autonomy_level not in ("observe", "notify", "speak", "act"):
+            raise ValueError(
+                f"unknown autonomy tier {autonomy_level!r}; "
+                "expected observe|notify|speak|act"
+            )
         # Eager validation: a misconfigured tools_override must fail at
         # construction so handlers can surface the error cleanly.
         self._tools = tool_gating.filter_tools(

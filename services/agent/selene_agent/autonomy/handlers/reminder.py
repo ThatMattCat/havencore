@@ -17,7 +17,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from selene_agent.autonomy import db as autonomy_db
-from selene_agent.autonomy.notifiers import SignalNotifier, HAPushNotifier, NullNotifier
+from selene_agent.autonomy.notifiers import (
+    HAPushNotifier,
+    NullNotifier,
+    SignalNotifier,
+    SpeakerNotifier,
+)
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.mcp_client_manager import MCPClientManager
@@ -25,11 +30,24 @@ from selene_agent.utils.mcp_client_manager import MCPClientManager
 logger = custom_logger.get_logger('loki')
 
 
-def _make_notifier(channel: str, to: str, mcp_manager: MCPClientManager):
+def _make_notifier(
+    channel: str,
+    to: str,
+    mcp_manager: MCPClientManager,
+    cfg: Dict[str, Any] | None = None,
+):
+    cfg = cfg or {}
     if channel in ("signal", "email"):  # "email" retained as legacy alias for existing DB items
         return SignalNotifier(mcp_manager, default_to=to or config.AUTONOMY_BRIEFING_NOTIFY_TO)
     if channel == "ha_push":
         return HAPushNotifier(mcp_manager, target=to or config.AUTONOMY_HA_NOTIFY_TARGET)
+    if channel == "speaker":
+        return SpeakerNotifier(
+            mcp_manager,
+            device=cfg.get("device") or to or "",
+            voice=cfg.get("voice") or "",
+            volume=cfg.get("volume"),
+        )
     return NullNotifier()
 
 
@@ -57,7 +75,7 @@ async def handle(
             "notified_via": None,
         }
 
-    notifier = _make_notifier(channel, to, mcp_manager)
+    notifier = _make_notifier(channel, to, mcp_manager, cfg)
     delivered = await notifier.send(title=title, body=body)
     notified_via = channel if delivered else None
 

@@ -17,13 +17,20 @@ from selene_agent.autonomy import quiet_hours as quiet_hours_mod
 from selene_agent.autonomy import schedule
 from selene_agent.autonomy import trigger_match
 from selene_agent.autonomy.event_rate_limit import limiter as event_rate_limiter
+from selene_agent.autonomy.handlers import act as act_handler
 from selene_agent.autonomy.handlers import anomaly as anomaly_handler
 from selene_agent.autonomy.handlers import briefing as briefing_handler
 from selene_agent.autonomy.handlers import memory_review as memory_review_handler
 from selene_agent.autonomy.handlers import reminder as reminder_handler
 from selene_agent.autonomy.handlers import routine as routine_handler
 from selene_agent.autonomy.handlers import watch as watch_handler
-from selene_agent.autonomy.notifiers import SignalNotifier, HAPushNotifier, NullNotifier
+from selene_agent.autonomy.handlers import watch_llm as watch_llm_handler
+from selene_agent.autonomy.notifiers import (
+    HAPushNotifier,
+    NullNotifier,
+    SignalNotifier,
+    SpeakerNotifier,
+)
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.mcp_client_manager import MCPClientManager
@@ -44,7 +51,9 @@ _HANDLERS = {
     "memory_review": memory_review_handler.handle,
     "reminder": reminder_handler.handle,
     "watch": watch_handler.handle,
+    "watch_llm": watch_llm_handler.handle,
     "routine": routine_handler.handle,
+    "act": act_handler.handle,
 }
 
 
@@ -203,9 +212,12 @@ class AutonomyEngine:
             due_deferred = await autonomy_db.list_scheduled_runs_due(self.last_dispatch_at)
         except Exception as e:
             logger.error(f"[engine] deferred sweep failed: {e}")
-            return
+            due_deferred = []
         for run_row in due_deferred:
             asyncio.create_task(self._dispatch_deferred(run_row))
+
+        # Confirmation-timeout sweep (act-tier parked runs past their deadline).
+        await self._sweep_confirmation_timeouts(self.last_dispatch_at)
 
     async def _dispatch_deferred(self, run_row: Dict[str, Any]) -> None:
         claimed = await autonomy_db.claim_scheduled_run(run_row["id"])
@@ -379,8 +391,33 @@ class AutonomyEngine:
                 base_tools=self.base_tools,
             )
 
-            # Shared cooldown + notification path for anomaly_sweep and watch.
-            if kind in ("anomaly_sweep", "watch") and result.get("_unusual"):
+            # Act-tier parked run: persist + notify user, don't advance schedule.
+            if result.get("status") == "awaiting_confirmation":
+                run_id = await autonomy_db.insert_run({
+                    **agenda_fields,
+                    "status": "awaiting_confirmation",
+                    "summary": result.get("summary"),
+                    "signature_hash": result.get("signature_hash"),
+                    "messages": result.get("messages"),
+                    "metrics": result.get("metrics"),
+                    "action_audit": result.get("action_audit"),
+                    "confirmation_token": result.get("confirmation_token"),
+                })
+                notified_via = await self._notify_confirmation(
+                    item, run_id, result
+                )
+                if notified_via:
+                    await autonomy_db.finalize_run(
+                        run_id, {"notified_via": notified_via}
+                    )
+                return {
+                    "status": "awaiting_confirmation",
+                    "run_id": run_id,
+                    "summary": result.get("summary"),
+                }
+
+            # Shared cooldown + notification path for anomaly_sweep, watch, watch_llm.
+            if kind in ("anomaly_sweep", "watch", "watch_llm") and result.get("_unusual"):
                 sig_hash = result.get("signature_hash")
                 cooldown_min = int(cfg.get(
                     "cooldown_min", config.AUTONOMY_ANOMALY_COOLDOWN_MIN
@@ -408,7 +445,10 @@ class AutonomyEngine:
                 # anomaly falls back to HA push per the v1 convention.
                 notify_channel = result.get("_notify_channel") or "ha_push"
                 notify_to = result.get("_notify_to") or ""
-                notifier = _build_notifier(self.mcp_manager, notify_channel, notify_to, cfg)
+                notify_cfg = {**cfg, **(result.get("_notify_cfg") or {})}
+                notifier = _build_notifier(
+                    self.mcp_manager, notify_channel, notify_to, notify_cfg
+                )
                 delivered = await notifier.send(
                     title=result.get("_notify_title") or "Selene",
                     body=result.get("_notify_body") or result.get("summary") or "",
@@ -428,6 +468,7 @@ class AutonomyEngine:
                 "messages": result.get("messages"),
                 "metrics": result.get("metrics"),
                 "error": result.get("error"),
+                "action_audit": result.get("action_audit"),
             })
             await self._advance(item, triggered_at)
             return {
@@ -451,6 +492,133 @@ class AutonomyEngine:
             return {"status": "error", "error": str(e)}
         finally:
             self._running_items.discard(item_id)
+
+    async def _notify_confirmation(
+        self,
+        item: Dict[str, Any],
+        run_id: str,
+        result: Dict[str, Any],
+    ) -> Optional[str]:
+        """Send the 'approve this action?' notification for a parked act run.
+
+        Channel is picked from ``cfg.deliver.channel`` (defaulting to signal).
+        The token is included in the body via a deep-link so the user can
+        approve without copy-pasting. Returns the channel name on success.
+        """
+        cfg = item.get("config") or {}
+        deliver = cfg.get("deliver") or {}
+        channel = deliver.get("channel") or "signal"
+        to = deliver.get("to") or ""
+        notifier = _build_notifier(self.mcp_manager, channel, to, {**cfg, **deliver})
+
+        token = result.get("confirmation_token") or ""
+        base_url = (
+            getattr(config, "AGENT_BASE_URL", "")
+            or getattr(config, "AGENT_INTERNAL_BASE_URL", "")
+            or ""
+        ).rstrip("/")
+        audit = result.get("action_audit") or []
+        executable = [a for a in audit if a.get("outcome") == "pending"]
+        action_lines = [
+            f"- {a.get('tool')}: {a.get('rationale') or ''}".strip()
+            for a in executable[:5]
+        ]
+
+        body_lines = [
+            f"{config.AGENT_NAME or 'Selene'} proposes an action:",
+            "",
+            *action_lines,
+            "",
+            f"Approve: {base_url}/autonomy?confirm={run_id}&token={token}"
+            if base_url
+            else f"Approve run {run_id} with token {token[:8]}…",
+        ]
+        title = f"{config.AGENT_NAME or 'Selene'}: confirm action"
+        try:
+            delivered = await notifier.send(title=title, body="\n".join(body_lines))
+        except Exception as e:
+            logger.error(f"[engine] confirmation notify failed: {e}")
+            return None
+        return channel if delivered else None
+
+    async def resume_confirmed_run(
+        self, run_id: str, *, approved: bool, token: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Called by POST /api/autonomy/runs/{id}/confirm after the user
+        decides. Validates state, runs or cancels, and updates the row.
+        """
+        run_row = await autonomy_db.get_run(run_id, include_messages=False)
+        if run_row is None:
+            return {"status": "not_found"}
+        if run_row.get("status") != "awaiting_confirmation":
+            return {"status": "invalid_state", "current": run_row.get("status")}
+        if token is not None:
+            import hmac
+            stored = run_row.get("confirmation_token") or ""
+            if not hmac.compare_digest(stored, token):
+                return {"status": "invalid_token"}
+
+        item_id = run_row.get("agenda_item_id")
+        item = await autonomy_db.get_item(item_id) if item_id else None
+
+        if not approved:
+            await autonomy_db.finalize_run(run_id, {
+                "status": "confirmation_denied",
+                "confirmation_response": "denied",
+                "completed_at": datetime.now(timezone.utc),
+                "summary": "user denied action",
+            })
+            if item is not None:
+                await self._advance(item, datetime.now(timezone.utc))
+            return {"status": "confirmation_denied"}
+
+        if item is None:
+            await autonomy_db.finalize_run(run_id, {
+                "status": "error",
+                "completed_at": datetime.now(timezone.utc),
+                "error": "agenda item missing at confirm time",
+            })
+            return {"status": "error", "error": "item_missing"}
+
+        exec_result = await act_handler.execute_approved(
+            run_row, item, self.mcp_manager
+        )
+        patch = {
+            "status": exec_result.get("status", "ok"),
+            "summary": exec_result.get("summary"),
+            "error": exec_result.get("error"),
+            "action_audit": exec_result.get("action_audit"),
+            "confirmation_response": "approved",
+            "completed_at": datetime.now(timezone.utc),
+        }
+        await autonomy_db.finalize_run(run_id, patch)
+        await self._advance(item, datetime.now(timezone.utc))
+        return {
+            "status": exec_result.get("status", "ok"),
+            "summary": exec_result.get("summary"),
+            "action_audit": exec_result.get("action_audit"),
+        }
+
+    async def _sweep_confirmation_timeouts(self, now_utc: datetime) -> None:
+        try:
+            expired = await autonomy_db.list_expired_confirmations(now_utc)
+        except Exception as e:
+            logger.error(f"[engine] confirmation-timeout sweep failed: {e}")
+            return
+        for row in expired:
+            try:
+                claimed = await autonomy_db.claim_confirmation_timeout(
+                    row["run_id"], now_utc
+                )
+            except Exception as e:
+                logger.error(
+                    f"[engine] claim_confirmation_timeout failed for "
+                    f"{row['run_id']}: {e}"
+                )
+                continue
+            if not claimed:
+                continue
+            logger.info(f"[engine] confirmation timed out: run {row['run_id']}")
 
     async def _advance(self, item: Dict[str, Any], fired_at: datetime) -> None:
         cron = item.get("schedule_cron")
@@ -487,4 +655,12 @@ def _build_notifier(mcp_manager, channel: str, to: str, cfg: Dict[str, Any]):
             or config.AUTONOMY_HA_NOTIFY_TARGET
         )
         return HAPushNotifier(mcp_manager, target=target)
+    if channel == "speaker":
+        speaker_cfg = cfg.get("speaker") or {}
+        return SpeakerNotifier(
+            mcp_manager,
+            device=speaker_cfg.get("device") or to or cfg.get("device") or "",
+            voice=speaker_cfg.get("voice") or cfg.get("voice") or "",
+            volume=speaker_cfg.get("volume", cfg.get("volume")),
+        )
     return NullNotifier()

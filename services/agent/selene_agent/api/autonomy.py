@@ -120,7 +120,10 @@ async def trigger(
 
 def _validate_agenda(body: Dict[str, Any]) -> None:
     kind = body.get("kind")
-    if kind not in ("briefing", "anomaly_sweep", "memory_review", "reminder", "watch", "routine"):
+    if kind not in (
+        "briefing", "anomaly_sweep", "memory_review", "reminder",
+        "watch", "watch_llm", "routine", "act",
+    ):
         raise HTTPException(status_code=400, detail=f"unknown kind: {kind}")
     cron = body.get("schedule_cron")
     trigger_spec = body.get("trigger_spec")
@@ -206,6 +209,50 @@ async def delete_item(item_id: str, req: Request):
         raise HTTPException(status_code=404, detail="not found")
     _engine(req).notify_agenda_changed()
     return {"deleted": True}
+
+
+# --- v4 act confirmation --------------------------------------------------
+
+class ConfirmBody(BaseModel):
+    approved: bool
+    token: Optional[str] = None
+
+
+@router.get("/autonomy/runs/awaiting")
+async def runs_awaiting():
+    runs_ = await autonomy_db.list_awaiting_confirmation_runs()
+    # Strip the token so UI listings don't expose it.
+    for r in runs_:
+        r.pop("confirmation_token", None)
+    return {"runs": runs_}
+
+
+@router.get("/autonomy/runs/{run_id}")
+async def get_run(run_id: str, include_messages: int = 0):
+    run = await autonomy_db.get_run(run_id, include_messages=bool(include_messages))
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    # Always hide the token — approvals must use the notification deep-link.
+    run.pop("confirmation_token", None)
+    return {"run": run}
+
+
+@router.post("/autonomy/runs/{run_id}/confirm")
+async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
+    result = await _engine(req).resume_confirmed_run(
+        run_id, approved=body.approved, token=body.token
+    )
+    status_val = result.get("status")
+    if status_val == "not_found":
+        raise HTTPException(status_code=404, detail="run not found")
+    if status_val == "invalid_state":
+        raise HTTPException(
+            status_code=409,
+            detail=f"run not awaiting confirmation (current: {result.get('current')})",
+        )
+    if status_val == "invalid_token":
+        raise HTTPException(status_code=403, detail="invalid token")
+    return result
 
 
 # --- v3 webhook intake ----------------------------------------------------

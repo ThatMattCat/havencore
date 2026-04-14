@@ -115,6 +115,119 @@ class SignalNotifier:
         return ok
 
 
+class SpeakerNotifier:
+    """Render body via TTS, stage the audio under ``/api/tts/audio/{token}.mp3``,
+    then call ``mass_play_announcement`` on a Music Assistant player.
+
+    The notifier is "delivery" — same surface as SignalNotifier/HAPushNotifier —
+    so any handler that selects ``channel="speaker"`` gets spoken playback
+    instead of a push/text message.
+    """
+
+    def __init__(
+        self,
+        mcp_manager: MCPClientManager,
+        *,
+        device: str = "",
+        voice: str = "",
+        volume: Optional[float] = None,
+        tts_client=None,
+        audio_store=None,
+        base_url: str = "",
+    ):
+        self.mcp_manager = mcp_manager
+        self.device = device or getattr(config, "AUTONOMY_SPEAKER_DEFAULT_DEVICE", "") or ""
+        self.voice = voice or getattr(config, "AUTONOMY_SPEAKER_DEFAULT_VOICE", "af_heart")
+        default_vol = getattr(config, "AUTONOMY_SPEAKER_DEFAULT_VOLUME", None)
+        self.volume = volume if volume is not None else default_vol
+        self._tts = tts_client  # lazy-init below if None
+        self._store = audio_store
+        self._base_url = (
+            base_url
+            or getattr(config, "AGENT_INTERNAL_BASE_URL", "")
+            or "http://agent:6002"
+        )
+
+    def _get_tts(self):
+        if self._tts is None:
+            from selene_agent.services.tts_client import TTSClient
+            self._tts = TTSClient()
+        return self._tts
+
+    def _get_store(self):
+        if self._store is None:
+            from selene_agent.services.audio_store import get_audio_store
+            self._store = get_audio_store()
+        return self._store
+
+    def _render_text(self, title: str, body: str) -> str:
+        if title and body:
+            return f"{title}. {body}"
+        return title or body or ""
+
+    async def send(
+        self,
+        *,
+        title: str,
+        body: str,
+        severity: str = "none",
+        attachments: Optional[List[Any]] = None,
+    ) -> bool:
+        if not self.device:
+            logger.warning("[SpeakerNotifier] no device configured; dropping announcement")
+            return False
+        text = self._render_text(title, body)
+        if not text.strip():
+            logger.warning("[SpeakerNotifier] empty text after render; dropping")
+            return False
+        # 1. Synth audio.
+        try:
+            audio_bytes = await self._get_tts().synth(
+                text, voice=self.voice, response_format="mp3"
+            )
+        except Exception as e:
+            logger.error(f"[SpeakerNotifier] TTS failed: {e}")
+            return False
+        # 2. Stage behind a short-lived token.
+        try:
+            token = await self._get_store().put(audio_bytes, content_type="audio/mpeg")
+        except Exception as e:
+            logger.error(f"[SpeakerNotifier] audio_store.put failed: {e}")
+            return False
+        url = f"{self._base_url.rstrip('/')}/api/tts/audio/{token}.mp3"
+        # 3. Dispatch via MA MCP tool.
+        payload = {"player_name": self.device, "url": url}
+        if self.volume is not None:
+            payload["volume"] = self.volume
+        try:
+            result = await self.mcp_manager.execute_tool(
+                "mass_play_announcement", payload
+            )
+        except Exception as e:
+            logger.error(f"[SpeakerNotifier] MA tool failed: {e}")
+            return False
+        ok, detail = _tool_result_ok(result)
+        # The MA tool returns ``{"played": true|false, ...}``; _tool_result_ok
+        # checks for success:false JSON. Add a played:false check on top.
+        if ok and isinstance(result, (dict, str)):
+            payload_check: Any = result
+            if isinstance(result, str):
+                try:
+                    payload_check = json.loads(result)
+                except (ValueError, TypeError):
+                    payload_check = {}
+            if isinstance(payload_check, dict) and payload_check.get("played") is False:
+                logger.error(
+                    f"[SpeakerNotifier] MA reported not played: {payload_check.get('error')}"
+                )
+                return False
+        if ok:
+            logger.info(f"[SpeakerNotifier] announcement queued on {self.device}: {detail}")
+        else:
+            logger.error(f"[SpeakerNotifier] tool reported failure: {detail}")
+        return ok
+
+
 class HAPushNotifier:
     """Wraps the ``ha_send_notification`` MCP tool."""
 

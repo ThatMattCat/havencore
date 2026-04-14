@@ -149,6 +149,36 @@ class MusicAssistantMCPServer:
                     },
                 ),
                 Tool(
+                    name="mass_play_announcement",
+                    description=(
+                        "Play a short audio announcement URL on a speaker. Ducks any "
+                        "currently playing track on Music Assistant's side and resumes it "
+                        "when the announcement finishes. Used by the autonomy engine's "
+                        "`speak` delivery channel to play TTS on ESP32 satellites / "
+                        "Chromecasts / Google Homes. `player_name` is a display_name from "
+                        "mass_list_players. `volume` is 0.0-1.0 (or 0-100 percent)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "player_name": {"type": "string", "description": "Speaker display_name."},
+                            "url": {
+                                "type": "string",
+                                "description": "HTTP(S) URL to the audio clip. Must be reachable from the MA host.",
+                            },
+                            "volume": {
+                                "type": "number",
+                                "description": "Optional volume (0.0-1.0 float or 0-100 int). Defaults to MA's configured announcement level.",
+                            },
+                            "pre_announce": {
+                                "type": "boolean",
+                                "description": "Optional — play MA's chime before the clip. Defaults to MA's player setting.",
+                            },
+                        },
+                        "required": ["player_name", "url"],
+                    },
+                ),
+                Tool(
                     name="mass_playback_control",
                     description=(
                         "Queue-level actions beyond basic pause/resume (which stay on ha_control_media_player). "
@@ -205,6 +235,15 @@ class MusicAssistantMCPServer:
                 )
             if name == "mass_queue_clear":
                 return await self.agent.clear_queue(player_name=str(args["player_name"]))
+            if name == "mass_play_announcement":
+                volume_arg = args.get("volume")
+                pre_arg = args.get("pre_announce")
+                return await self.agent.play_announcement(
+                    player_name=str(args["player_name"]),
+                    url=str(args["url"]),
+                    volume=float(volume_arg) if volume_arg is not None else None,
+                    pre_announce=bool(pre_arg) if pre_arg is not None else None,
+                )
             if name == "mass_playback_control":
                 return await self.agent.playback_control(
                     player_name=str(args["player_name"]),

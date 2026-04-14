@@ -33,6 +33,7 @@ from selene_agent.api.status import router as status_router
 from selene_agent.api.homeassistant import router as ha_router
 from selene_agent.api.metrics import router as metrics_router
 from selene_agent.api.tts import router as tts_router
+from selene_agent.api.tts_audio import router as tts_audio_router
 from selene_agent.api.stt import router as stt_router
 from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
@@ -248,6 +249,7 @@ app.include_router(status_router, prefix="/api")
 app.include_router(ha_router, prefix="/api")
 app.include_router(metrics_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
+app.include_router(tts_audio_router, prefix="/api")
 app.include_router(stt_router, prefix="/api")
 app.include_router(vision_router, prefix="/api")
 app.include_router(comfy_router, prefix="/api")
@@ -385,7 +387,10 @@ async def health_check():
     if engine is not None:
         try:
             listener = getattr(engine, "_mqtt_listener", None)
+            from datetime import datetime, timedelta, timezone
             from selene_agent.autonomy import db as autonomy_db  # local import
+            from selene_agent.utils import config as _cfg
+            since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
             payload["autonomy"] = {
                 "running": engine.is_running(),
                 "paused": engine.is_paused(),
@@ -393,6 +398,10 @@ async def health_check():
                 "mqtt_connected": bool(listener and listener.is_connected()),
                 "subscribed_topics": len(listener.subscribed_topics()) if listener else 0,
                 "deferred_runs_pending": await autonomy_db.count_deferred_runs(),
+                "act_enabled": bool(getattr(_cfg, "AUTONOMY_ACT_ENABLED", False)),
+                "awaiting_confirmation": await autonomy_db.count_awaiting_confirmation(),
+                "confirmation_timeouts_last_24h": await autonomy_db.count_confirmation_timeouts_since(since_24h),
+                "speaker_default_device": getattr(_cfg, "AUTONOMY_SPEAKER_DEFAULT_DEVICE", "") or None,
             }
         except Exception as e:
             payload["autonomy"] = {"error": str(e)}

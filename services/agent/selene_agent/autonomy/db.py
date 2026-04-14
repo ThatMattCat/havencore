@@ -79,6 +79,16 @@ ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMP WITH 
 ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS trigger_source TEXT;
 ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS trigger_event JSONB;
 
+-- v4 columns (confirmation flow + action audit trail).
+ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS confirmation_token TEXT;
+ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS confirmation_prompt_id TEXT;
+ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS confirmation_response TEXT;
+ALTER TABLE autonomy_runs ADD COLUMN IF NOT EXISTS action_audit JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_autonomy_runs_awaiting
+    ON autonomy_runs (triggered_at)
+    WHERE status = 'awaiting_confirmation';
+
 CREATE INDEX IF NOT EXISTS idx_autonomy_runs_scheduled
     ON autonomy_runs (scheduled_for)
     WHERE status = 'scheduled';
@@ -459,15 +469,19 @@ async def insert_run(run: Dict[str, Any]) -> str:
     triggered_at = run.get("triggered_at") or datetime.now(timezone.utc)
     completed_at = run.get("completed_at")
     trigger_event = run.get("trigger_event")
+    action_audit = run.get("action_audit")
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO autonomy_runs
                 (id, agenda_item_id, kind, triggered_at, completed_at, status,
                  summary, severity, signature_hash, notified_via, messages,
-                 metrics, error, scheduled_for, trigger_source, trigger_event)
+                 metrics, error, scheduled_for, trigger_source, trigger_event,
+                 confirmation_token, confirmation_prompt_id, confirmation_response,
+                 action_audit)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb,
-                    $12::jsonb, $13, $14, $15, $16::jsonb)
+                    $12::jsonb, $13, $14, $15, $16::jsonb,
+                    $17, $18, $19, $20::jsonb)
             """,
             uuid.UUID(run_id),
             uuid.UUID(run["agenda_item_id"]) if run.get("agenda_item_id") else None,
@@ -485,6 +499,10 @@ async def insert_run(run: Dict[str, Any]) -> str:
             run.get("scheduled_for"),
             run.get("trigger_source"),
             json.dumps(trigger_event) if trigger_event is not None else None,
+            run.get("confirmation_token"),
+            run.get("confirmation_prompt_id"),
+            run.get("confirmation_response"),
+            json.dumps(action_audit) if action_audit is not None else None,
         )
     return run_id
 
@@ -559,6 +577,8 @@ async def finalize_run(run_id: str, patch: Dict[str, Any]) -> None:
     allowed = {
         "status", "summary", "severity", "signature_hash", "notified_via",
         "messages", "metrics", "error", "completed_at",
+        "confirmation_token", "confirmation_prompt_id", "confirmation_response",
+        "action_audit",
     }
     sets: List[str] = []
     args: List[Any] = []
@@ -567,6 +587,9 @@ async def finalize_run(run_id: str, patch: Dict[str, Any]) -> None:
             continue
         if key in ("messages", "metrics"):
             args.append(json.dumps(val if val is not None else ([] if key == "messages" else {})))
+            sets.append(f"{key} = ${len(args)}::jsonb")
+        elif key == "action_audit":
+            args.append(json.dumps(val) if val is not None else None)
             sets.append(f"{key} = ${len(args)}::jsonb")
         else:
             args.append(val)
@@ -619,7 +642,8 @@ async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dic
             SELECT id, agenda_item_id, kind, triggered_at, completed_at,
                    status, summary, severity, signature_hash, notified_via,
                    messages, metrics, error, scheduled_for, trigger_source,
-                   trigger_event
+                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   confirmation_response, action_audit
             FROM autonomy_runs WHERE id = $1
             """,
             uuid.UUID(run_id),
@@ -695,6 +719,14 @@ def _row_to_run(row, include_messages: bool = False) -> Dict[str, Any]:
         out["trigger_source"] = row["trigger_source"]
     if "trigger_event" in keys:
         out["trigger_event"] = _maybe_json(row["trigger_event"])
+    if "confirmation_token" in keys:
+        out["confirmation_token"] = row["confirmation_token"]
+    if "confirmation_prompt_id" in keys:
+        out["confirmation_prompt_id"] = row["confirmation_prompt_id"]
+    if "confirmation_response" in keys:
+        out["confirmation_response"] = row["confirmation_response"]
+    if "action_audit" in keys:
+        out["action_audit"] = _maybe_json(row["action_audit"])
     if include_messages:
         out["messages"] = _maybe_json(row["messages"]) or []
     return out
@@ -734,7 +766,8 @@ async def list_runs(
             SELECT id, agenda_item_id, kind, triggered_at, completed_at,
                    status, summary, severity, signature_hash, notified_via,
                    messages, metrics, error, scheduled_for, trigger_source,
-                   trigger_event
+                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   confirmation_response, action_audit
             FROM autonomy_runs
             {where}
             ORDER BY triggered_at DESC
@@ -743,6 +776,111 @@ async def list_runs(
             *args,
         )
     return [_row_to_run(r, include_messages=include_messages) for r in rows]
+
+
+async def list_awaiting_confirmation_runs() -> List[Dict[str, Any]]:
+    """All runs currently in ``awaiting_confirmation`` status, newest first."""
+    pool = conversation_db.pool
+    if not pool:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, agenda_item_id, kind, triggered_at, completed_at,
+                   status, summary, severity, signature_hash, notified_via,
+                   messages, metrics, error, scheduled_for, trigger_source,
+                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   confirmation_response, action_audit
+            FROM autonomy_runs
+            WHERE status = 'awaiting_confirmation'
+            ORDER BY triggered_at DESC
+            """
+        )
+    return [_row_to_run(r, include_messages=False) for r in rows]
+
+
+async def claim_confirmation_timeout(
+    run_id: str, timeout_at: datetime
+) -> bool:
+    """Atomically transition a run from ``awaiting_confirmation`` to
+    ``confirmation_timeout``. Returns True on success, False if already moved.
+    """
+    pool = conversation_db.pool
+    if not pool:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE autonomy_runs
+               SET status = 'confirmation_timeout',
+                   confirmation_response = 'timeout',
+                   completed_at = $2
+             WHERE id = $1 AND status = 'awaiting_confirmation'
+            """,
+            uuid.UUID(run_id),
+            timeout_at,
+        )
+    return result.endswith(" 1")
+
+
+async def list_expired_confirmations(now_utc: datetime) -> List[Dict[str, Any]]:
+    """Awaiting-confirmation runs whose deadline (triggered_at + timeout) has
+    passed. The per-item timeout is read from the item's config; we return the
+    rows with their agenda item config so the engine can evaluate each.
+    """
+    pool = conversation_db.pool
+    if not pool:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id AS run_id, r.triggered_at,
+                   COALESCE((ai.config->>'confirmation_timeout_sec')::int, 300) AS tout
+            FROM autonomy_runs r
+            LEFT JOIN agenda_items ai ON ai.id = r.agenda_item_id
+            WHERE r.status = 'awaiting_confirmation'
+            """
+        )
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        triggered = r["triggered_at"]
+        if triggered is None:
+            continue
+        if triggered + timedelta(seconds=int(r["tout"])) <= now_utc:
+            out.append({"run_id": str(r["run_id"])})
+    return out
+
+
+async def record_action_audit(run_id: str, audit: List[Dict[str, Any]]) -> None:
+    """Overwrite the ``action_audit`` column with the provided list."""
+    await finalize_run(run_id, {"action_audit": audit})
+
+
+async def count_confirmation_timeouts_since(since: datetime) -> int:
+    pool = conversation_db.pool
+    if not pool:
+        return 0
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            """
+            SELECT COUNT(*)::int FROM autonomy_runs
+            WHERE status = 'confirmation_timeout'
+              AND triggered_at >= $1
+            """,
+            since,
+        )
+    return int(val or 0)
+
+
+async def count_awaiting_confirmation() -> int:
+    pool = conversation_db.pool
+    if not pool:
+        return 0
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            "SELECT COUNT(*)::int FROM autonomy_runs WHERE status = 'awaiting_confirmation'"
+        )
+    return int(val or 0)
 
 
 async def count_runs_by_trigger_source_last(hours: int = 24) -> Dict[str, int]:
