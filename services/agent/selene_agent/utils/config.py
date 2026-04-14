@@ -33,6 +33,9 @@ PLEX_URL = os.getenv("PLEX_URL", "")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
 PLEX_CLIENT_HA_MAP = os.getenv("PLEX_CLIENT_HA_MAP", "")
 
+MASS_URL = os.getenv("MASS_URL", "")
+MASS_TOKEN = os.getenv("MASS_TOKEN", "")
+
 LOKI_URL = os.getenv("LOKI_URL", "")
 
 parsed_url = urlparse(HAOS_URL)
