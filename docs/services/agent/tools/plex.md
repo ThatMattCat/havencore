@@ -4,9 +4,10 @@ Server-side reference for the Plex MCP module — tool inventory, module
 config, internals, and server-level troubleshooting. For the user-facing
 setup walkthrough (TV requirements, Plex token acquisition, authoring
 `PLEX_CLIENT_HA_MAP`, verification steps), see
-[Media Control](../../../integrations/media-control.md). Media control as a topic (Plex today,
-Music Assistant later, HA transport throughout) lives there; this doc
-documents only the Plex MCP module itself.
+[Media Control](../../../integrations/media-control.md). Media control
+as a topic (Plex for video, Music Assistant for audio, HA transport
+throughout) lives there; this doc documents only the Plex MCP module
+itself.
 
 ## Overview
 
@@ -162,6 +163,8 @@ TV might need longer. Options:
 
 - [Media Control](../../../integrations/media-control.md) — topic doc: TV requirements, Plex
   token acquisition, mapping authoring walkthrough, user-facing
-  troubleshooting, forward-looking Music Assistant plans.
+  troubleshooting, and the Plex/MA/HA division of labor.
+- [MCP Music Assistant](music-assistant.md) — audio-only counterpart
+  (speakers, Chromecasts, Google Homes).
 - [MCP Home Assistant](home-assistant.md) — `ha_control_media_player`
   (transport) lives there.

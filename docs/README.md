@@ -33,7 +33,7 @@ Each service has its own folder under [`services/`](services/README.md):
 ## Integrations
 
 - [Home Assistant](integrations/home-assistant.md) — end-user setup and voice examples
-- [Media Control](integrations/media-control.md) — Plex + Home Assistant for TV/speaker playback
+- [Media Control](integrations/media-control.md) — Plex, Music Assistant, and Home Assistant for TV/speaker playback
 
 ## Project overview
 

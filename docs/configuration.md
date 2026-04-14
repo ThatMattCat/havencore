@@ -94,7 +94,7 @@ HAOS_TOKEN="eyJ0eXAiOiJKV1QiLCJ..."          # Long-lived access token
 2. Click "Create Token"
 3. Copy the token and set as `HAOS_TOKEN`
 
-#### Plex (media control)
+#### Plex (video / TV playback)
 ```bash
 # Plex server (reached via plexapi cloud relay — LAN URL is fine)
 PLEX_URL="http://10.0.50.110:32400"
@@ -109,6 +109,20 @@ PLEX_CLIENT_HA_MAP='{
   }
 }'
 ```
+
+#### Music Assistant (audio / speaker playback)
+```bash
+# Music Assistant WebSocket endpoint — LAN URL of the MA server / HA add-on
+MASS_URL="http://10.0.50.101:8095"
+
+# Long-lived access token from MA web UI > Settings > Users > Create long-lived token.
+# MA schema v28+ requires authenticated WS connections.
+MASS_TOKEN="eyJhbGciOi..."
+```
+
+If `MASS_URL` / `MASS_TOKEN` are unset, the Music Assistant MCP server
+starts in degraded mode and every `mass_*` tool returns a structured
+"not configured" error — the rest of the agent stays healthy.
 
 #### External APIs
 ```bash
@@ -197,8 +211,9 @@ Notes:
 ### MCP (Model Context Protocol) Configuration
 
 The agent's tool surface is delivered by MCP servers bundled in the agent
-image (Home Assistant, Plex, general, Qdrant, MQTT). They are spawned as
-subprocesses and advertise tools over stdio — no separate container.
+image (Home Assistant, Plex, Music Assistant, general, Qdrant, MQTT).
+They are spawned as subprocesses and advertise tools over stdio — no
+separate container.
 
 ```bash
 # Master switch for the MCP client manager
@@ -209,11 +224,12 @@ MCP_PREFER_OVER_LEGACY=true
 
 # JSON array of MCP server definitions to spawn
 MCP_SERVERS='[
-  {"name": "homeassistant", "command": "python", "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"], "enabled": true},
-  {"name": "plex",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_plex_tools"],          "enabled": true},
-  {"name": "general",       "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],       "enabled": true},
-  {"name": "qdrant",        "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],        "enabled": true},
-  {"name": "mqtt",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],          "enabled": true}
+  {"name": "homeassistant",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"],    "enabled": true},
+  {"name": "plex",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_plex_tools"],             "enabled": true},
+  {"name": "music_assistant",  "command": "python", "args": ["-m", "selene_agent.modules.mcp_music_assistant_tools"],  "enabled": true},
+  {"name": "general",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],          "enabled": true},
+  {"name": "qdrant",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],           "enabled": true},
+  {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true}
 ]'
 ```
 

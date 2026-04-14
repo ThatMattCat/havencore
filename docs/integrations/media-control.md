@@ -1,10 +1,13 @@
-# Media Control (Plex + Home Assistant)
+# Media Control (Plex + Music Assistant + Home Assistant)
 
-How HavenCore finds and plays media on your TVs and speakers. Today this
-means Plex + Home Assistant; Music Assistant is on the roadmap for
-audio-only devices (soundbars, Google Home, Wyoming satellites). This
-doc is the topic-level view — server-side references for each MCP
-module live in [MCP Plex](../services/agent/tools/plex.md) and
+How HavenCore finds and plays media on your TVs and speakers. Three
+systems cooperate: Plex handles video libraries and TV playback, Music
+Assistant handles audio libraries and speaker playback, and Home
+Assistant provides transport control (pause, resume, volume) on either
+side. This doc is the topic-level view — server-side references for
+each MCP module live in
+[MCP Plex](../services/agent/tools/plex.md),
+[MCP Music Assistant](../services/agent/tools/music-assistant.md), and
 [MCP Home Assistant](../services/agent/tools/home-assistant.md).
 
 ## How it works
@@ -12,17 +15,18 @@ module live in [MCP Plex](../services/agent/tools/plex.md) and
 Media control is split across multiple systems, each owning a specific
 concern:
 
-| System | Responsibility | Status |
-|--------|----------------|--------|
-| **Plex Media Server** | Video library search, metadata, recently-added / on-deck, and "play this item on that device" on Plex-capable clients. | Shipping. |
-| **Home Assistant** | Turning the TV on, launching the Plex app via ADB when needed, and generic transport control (pause / volume / etc.) on any `media_player` entity. | Shipping. |
-| **Music Assistant** | Audio-first library + playback across soundbars, smart speakers, Wyoming satellites, and multi-room groups. | Planned — not yet integrated. |
+| System | Responsibility |
+|--------|----------------|
+| **Plex Media Server** | Video library search, metadata, recently-added / on-deck, and "play this item on that device" on Plex-capable clients (TVs). |
+| **Music Assistant** | Audio-first library + playback across Chromecasts, Google Home, soundbars, and MA-managed speaker groups. Pulls from Plex (for local files) and any other configured audio providers. |
+| **Home Assistant** | Turning the TV on, launching the Plex app via ADB when needed, and generic transport control (pause / volume / etc.) on any `media_player` entity — including MA-exposed speakers. |
 
-Only Plex clients (TVs running the Plex app with "Advertise as Player"
-enabled) can be targets for library-initiated playback today. Audio-only
-devices can still be controlled for transport / volume via
-`ha_control_media_player` on their HA entity, but they won't show up in
-`plex_list_clients` and can't be a target for `plex_play`.
+Video playback ("play this movie on the TV") goes through Plex. Audio
+playback ("play this album on the bedroom speaker") goes through MA.
+Both land on the same transport surface — `ha_control_media_player`
+handles pause / resume / volume regardless of which stack started
+playback, because any MA-exposed speaker also surfaces as a HA
+`media_player` entity.
 
 ### Tools exposed to the LLM
 
@@ -37,12 +41,25 @@ and server internals:
 | `plex_list_clients` | Player-capable Plex devices (names the LLM can pass to `plex_play`). |
 | `plex_play` | Start playback on a named client. Runs HA wake/launch first if a mapping is configured. |
 
+From `mcp_music_assistant_tools` — see
+[MCP Music Assistant](../services/agent/tools/music-assistant.md) for
+full signatures:
+
+| Tool | Purpose |
+|------|---------|
+| `mass_search` | Cross-provider audio library search (tracks / albums / artists / playlists / radio). |
+| `mass_list_players` | Enumerate MA speakers with availability, power, and current item. |
+| `mass_play_media` | Start playback of a searched URI on a named speaker; `mode` controls replace / next / add. |
+| `mass_get_queue` | "What's playing?" / "What's next?" — current item plus upcoming queue. |
+| `mass_queue_clear` | Empty the queue and stop playback on a speaker. |
+| `mass_playback_control` | Shuffle and repeat toggles (pause/resume live on `ha_control_media_player`). |
+
 From `mcp_homeassistant_tools` — see
 [MCP Home Assistant](../services/agent/tools/home-assistant.md):
 
 | Tool | Purpose |
 |------|---------|
-| `ha_control_media_player` | Pause / resume / stop / seek / volume / mute / select_source / turn_on / turn_off on any HA `media_player` entity. |
+| `ha_control_media_player` | Pause / resume / stop / seek / volume / mute / select_source / turn_on / turn_off on any HA `media_player` entity — including MA-exposed speakers. |
 
 ### The cold-start problem
 
@@ -153,9 +170,37 @@ Restart the agent after editing `.env`:
 docker compose down && docker compose up -d
 ```
 
-### 4. Verify
+### 4. Configure Music Assistant (audio)
+
+Install Music Assistant (the HA add-on is the easiest path) and connect
+whichever providers you want. Typical setup:
+
+- Chromecast provider — picks up Google Home speakers and Chromecast
+  targets automatically.
+- Plex provider — reuses your existing Plex library for local audio
+  files, so you don't need to move music files around.
+- `hass_players` provider — bridges HA `media_player` entities into MA.
+  Useful as a fallback, but MA's native providers generally play
+  cleaner.
+
+Mint a long-lived access token in the MA web UI → Settings → Users →
+*Create long-lived token*. MA schema v28+ requires this — the WS
+endpoint rejects unauthenticated clients.
+
+Add both to `.env`:
+
+```bash
+MASS_URL="http://10.0.50.101:8095"   # MA base URL, no trailing slash
+MASS_TOKEN="eyJhbGciOi..."           # long-lived token from the MA UI
+```
+
+Restart the agent (`docker compose down && up -d`).
+
+### 5. Verify
 
 In the dashboard chat at `http://<host>:6002/chat`:
+
+Plex / TV scenarios:
 
 - "What's new on Plex?" → should call `plex_list_recent`.
 - "List my Plex clients." → should call `plex_list_clients` and name your TV.
@@ -164,9 +209,28 @@ In the dashboard chat at `http://<host>:6002/chat`:
 - "Pause the living room TV." → `ha_control_media_player` with
   `action=pause`.
 
+Music Assistant / speaker scenarios:
+
+- "What speakers do I have?" → `mass_list_players`; should list each MA
+  speaker with power / state / volume.
+- "Play The Better Life by 3 Doors Down on the bedroom speaker." →
+  `mass_search` then `mass_play_media(mode=replace)`; audio should
+  start on the named speaker.
+- "Queue Away From the Sun next on the bedroom speaker." →
+  `mass_play_media(mode=next)` after a fresh search.
+- "What's playing in the bedroom?" → `mass_get_queue` showing current
+  track plus upcoming.
+- "Shuffle the bedroom queue." → `mass_playback_control(shuffle_on)`.
+- "Pause the bedroom music." → `ha_control_media_player(action=pause)`
+  on the MA-exposed `media_player.*` entity. (Transport control
+  deliberately lives on the HA side, not MA.)
+- "Stop and clear the bedroom queue." → `mass_queue_clear`.
+
 If `plex_play` returns `"played": false` with an `available_clients` list, the
 `client_name` didn't match any cloud-discovered device (partial matches are
 accepted, but case and spelling matter if there are several similar names).
+The same pattern applies to `mass_play_media` — on a name miss the
+response includes `available_players`.
 
 ## Known limitations
 
@@ -182,8 +246,11 @@ accepted, but case and spelling matter if there are several similar names).
 - **Hand-authored mapping.** `PLEX_CLIENT_HA_MAP` is edited by hand in `.env`
   today. Auto-discovery (cross-referencing Plex clients against HA entities)
   is a future improvement.
-- **Audio-only devices are out of scope.** Soundbars, Google Home speakers,
-  and Wyoming satellites are deferred to a future Music Assistant module.
+- **TTS / announcement routing is not implemented.** Sending Selene's voice
+  to a specific MA speaker (e.g., "announce this on the kitchen speaker")
+  is a separate effort — it depends on a TTS-audio-URL flow that isn't
+  settled yet. MA itself can play arbitrary URLs, so the plumbing exists;
+  the agent-side glue does not.
 
 ## Troubleshooting
 
@@ -198,13 +265,17 @@ exceptions, connection errors from inside the container), see
 | Wake fires but Plex never launches | `adb_entity` isn't paired / authorized — check the HA `androidtv` integration; you may need to re-accept the ADB fingerprint on the TV. |
 | `plex_play` returns `"no player-capable device matches …"` | `client_name` didn't match any discovered device. Ask the assistant to "list my Plex clients" first and use one of those names verbatim. |
 | Transport control works but playback initiation doesn't | Expected on non-Android / non-"Advertise as Player" TVs. Use the Plex app on the TV directly to start playback, then use Selene for transport control. |
-| Audio-only devices are missing entirely | Expected today — see the Music Assistant row in the "How it works" table. They can still be controlled with `ha_control_media_player` on their HA entity. |
+| Speakers are missing from `mass_list_players` | MA hasn't discovered them yet, or they're hidden in the MA UI (`hide_in_ui=true`). Open the MA web UI → Settings → Providers and confirm the relevant provider (Chromecast, `hass_players`, etc.) is healthy. `include_hidden=true` on `mass_list_players` surfaces players MA has flagged as hidden. |
+| Same speaker appears twice in `mass_list_players` | MA can expose one physical device through multiple providers (typically the native Chromecast provider and the `hass_players` bridge). Both entries are kept; prefer the native-provider entry — the bridge entry is a fallback. |
 
 ## See also
 
 - [MCP Plex](../services/agent/tools/plex.md) — server reference for the Plex MCP module
   (tool signatures, internals, stub mode, plexapi error mapping).
+- [MCP Music Assistant](../services/agent/tools/music-assistant.md) —
+  server reference for the MA MCP module (tool signatures, search
+  fallbacks, player resolution).
 - [MCP Home Assistant](../services/agent/tools/home-assistant.md) — `ha_control_media_player`
   transport tool.
-- `.env.tmpl` — reference config with an example `PLEX_CLIENT_HA_MAP`
-  mapping.
+- `.env.tmpl` — reference config with example `PLEX_CLIENT_HA_MAP`,
+  `MASS_URL`, and `MASS_TOKEN` values.
