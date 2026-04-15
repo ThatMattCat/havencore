@@ -67,6 +67,8 @@ TTS_VOICE="af_heart"     # Voice model
 
 Use the agent dashboard at `http://localhost/playgrounds/tts` for in-browser testing (text input, voice/format selection, inline playback, synthesis latency). The dashboard proxies to the TTS service.
 
+The dashboard Chat page (`/chat`) also consumes this service: when the header speaker toggle is on, each completed assistant turn is synthesized via `/api/tts/speak` (default voice `af_heart`, mp3) and auto-played inline.
+
 ## File management
 
 Generated audio is written to `/app/output/` inside the container, read back into the HTTP response body, and is not served via a separate static endpoint.
