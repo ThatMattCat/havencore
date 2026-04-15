@@ -86,14 +86,15 @@ what the assistant can do for a user.
 
 | Tool | Purpose |
 |------|---------|
-| `ha_get_domain_entity_states(domain)` | Enumerate all entities in a domain and their current state. |
-| `ha_get_domain_services(domain)` | Discover what services an HA integration exposes. Most common: `domain="notify"` to find `notify.mobile_app_*`. |
+| `ha_list_entities(domain?, area?, include_state?)` | Unified entity lookup. Filter by `domain` (all lights, all thermostats…), by `area` (everything in the kitchen), or both. Domain-only queries include state + curated attributes by default; area queries return bare entity_ids unless `include_state=true`. If a domain has no entities (e.g. `notify`, `tts`, `script`) the response includes a `hint` pointing at `ha_list_services` so the LLM doesn't stall on a dead end. |
+| `ha_list_services(domain)` | Discover what services an HA integration exposes. Most common: `domain="notify"` to find `notify.mobile_app_*`. Also the right tool for `tts`, `script`, and other domains that publish actions rather than entities. |
 | `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch — call any HA service on any entity. `service_data` is a JSON object (brightness, temperature, volume_level, etc.). |
 
 **Voice examples**:
 
-- "Show me all the lights" → `ha_get_domain_entity_states` with `domain="light"`
-- "What notification services are set up?" → `ha_get_domain_services` with `domain="notify"`
+- "Show me all the lights" → `ha_list_entities` with `domain="light"`
+- "What's in the kitchen?" → `ha_list_entities` with `area="kitchen"`
+- "What notification services are set up?" → `ha_list_services` with `domain="notify"`
 - "Start the vacuum cleaner" → `ha_execute_service` on a `vacuum.*` entity
 
 **Common domains**: `light`, `switch`, `sensor`, `binary_sensor`, `climate`,
@@ -137,13 +138,13 @@ style questions and to summarize who's home.
 | Tool | Purpose |
 |------|---------|
 | `ha_list_areas()` | Lists all HA areas (rooms / zones) with `area_id`, name, and aliases. |
-| `ha_get_entities_in_area(area, domains?)` | Entities assigned to an area, grouped by domain. Accepts area_id, name, or alias (case-insensitive). Entities inherit their **device's** area when they don't have a direct area of their own — this matters because most entities inherit rather than set area directly. |
+| `ha_list_entities(area=…, domain?=…)` | Area-scoped listing (same tool as the generic entity lookup above, just with `area` set). Accepts area_id, name, or alias (case-insensitive). Entities inherit their **device's** area when they don't have a direct area of their own — this matters because most entities inherit rather than set area directly. Add `domain="light"` to narrow to one domain. |
 | `ha_get_presence()` | Summary of all `person.*` and `device_tracker.*` entities with their current state (`home` / `not_home` / zone name). |
 
 **Voice examples**:
 
-- "What lights are in the kitchen?" → `ha_get_entities_in_area` with
-  `area="kitchen"`, `domains=["light"]`.
+- "What lights are in the kitchen?" → `ha_list_entities` with
+  `area="kitchen"`, `domain="light"`.
 - "Is anyone home?" → `ha_get_presence`.
 
 ### Timer / template / history / calendar tools
@@ -204,10 +205,10 @@ mapping.
 
 The agent is free to chain tool calls across turns. Common patterns:
 
-- **Area-aware control**: `ha_list_areas` → `ha_get_entities_in_area` with
-  a domain filter → `ha_control_light` per entity. Lets the LLM turn off
-  "all the lights in the bedroom" without pre-wired groups.
-- **Notification discovery**: `ha_get_domain_services(domain="notify")` →
+- **Area-aware control**: `ha_list_areas` → `ha_list_entities(area=…, domain="light")`
+  → `ha_control_light` per entity. Lets the LLM turn off "all the lights
+  in the bedroom" without pre-wired groups.
+- **Notification discovery**: `ha_list_services(domain="notify")` →
   `ha_send_notification` against a discovered service name.
 - **Camera → vision LLM**: `get_camera_snapshots` (from the MQTT module)
   returns URLs; the agent passes each URL to `query_multimodal_api`
@@ -215,9 +216,9 @@ The agent is free to chain tool calls across turns. Common patterns:
 
 ### Complex device control
 
-- **Multi-room audio**: use `ha_get_entities_in_area` to enumerate
-  `media_player` entities per room, then fan out `ha_control_media_player`
-  calls.
+- **Multi-room audio**: use `ha_list_entities(area=…, domain="media_player")`
+  to enumerate `media_player` entities per room, then fan out
+  `ha_control_media_player` calls.
 - **Climate zones**: `ha_control_climate` operates on one entity at a
   time; "set all thermostats to 70" becomes one call per thermostat.
 - **Security + locks**: use `ha_execute_service` against `lock.*` /
@@ -227,8 +228,8 @@ The agent is free to chain tool calls across turns. Common patterns:
 ### Sensor and environmental data
 
 - "What's the temperature in the living room?" → resolve the sensor via
-  `ha_get_entities_in_area(area="living_room", domains=["sensor"])`, then
-  read it with `ha_get_domain_entity_states(domain="sensor")` or
+  `ha_list_entities(area="living_room", domain="sensor", include_state=true)`,
+  or read it directly with
   `ha_evaluate_template("{{ states('sensor.living_room_temperature') }}")`.
 - "Has the garage been open today?" → `ha_get_entity_history` on the
   `cover.*` or `binary_sensor.*` entity over a 24-hour window.
@@ -338,7 +339,7 @@ docker compose exec agent env | grep HAOS_TOKEN
 #### Entity Not Found
 ```
 FAILED: Light 'light.sitting_room_lamp' does not exist in Home Assistant.
-No action was taken. Call ha_get_domain_entity_states or ha_get_entities_in_area
+No action was taken. Call ha_list_entities (with a `domain` or `area` filter)
 to look up the correct entity_id, then retry. Do not guess entity names.
 ```
 
@@ -350,7 +351,7 @@ skipped entirely — nothing changes in HA.
 
 When the assistant reports this, it means the entity ID it tried doesn't
 exist. The message also nudges the LLM to list available entities via
-`ha_get_domain_entity_states` or `ha_get_entities_in_area` before retrying.
+`ha_list_entities` before retrying.
 
 **If the entity *should* exist**:
 1. **Check the exact ID** in Home Assistant → **Developer Tools → States**.

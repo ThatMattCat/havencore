@@ -16,7 +16,7 @@ TV playback specifics live in [Media Control](../../../integrations/media-contro
 | Server name | `havencore-homeassistant` |
 | HA REST client | `aiohttp`-based `HomeAssistantClient` (replaces the older blocking `homeassistant_api.Client`); also owns the short-lived WS client used for registry lookups |
 | Media controller | REST-only `ha_media_controller.MediaController` (transport / volume / power on any `media_player` entity) |
-| Tool count | 19 |
+| Tool count | 18 |
 
 The module registers a single MCP stdio server. On startup it constructs a
 `HomeAssistantClient` (REST + on-demand WS) and a REST `MediaController`.
@@ -36,15 +36,15 @@ Tools are grouped here by purpose; names match the MCP registrations.
 
 | Tool | Purpose |
 |------|---------|
-| `ha_get_domain_entity_states(domain)` | `GET /api/states`, filtered by domain prefix. Returns `{entity_id: {state, attributes}}` with **attributes curated per domain** (see "Attribute projection" below). For `media_player` this hands off to the media controller (which also reads `/api/states`) so you also get playback state. |
-| `ha_get_domain_services(domain)` | `GET /api/services`, narrowed to one domain. Use this to discover which `notify.*` services exist on a given HA instance. |
+| `ha_list_entities(domain?, area?, include_state?)` | Unified entity listing. Requires at least one of `domain` or `area`. Domain-only → `GET /api/states` filtered by domain prefix, returns `{entity_id: {state, attributes}}` wrapped in `{domain, entities, count}` with **attributes curated per domain** (see "Attribute projection" below); `include_state` defaults to `true` here. Area-only → WS registry lookup grouped by domain, bare entity_ids by default (`include_state=true` to attach state); `include_state` defaults to `false`. Domain + area → grouped shape filtered to that one domain. For `domain="media_player"` (no area) this hands off to the media controller so you also get playback state. **Service-only-domain fallback**: if the domain has no entities (e.g. `notify`, `tts`, `script`) the response includes a `hint` pointing at `ha_list_services` instead of an opaque empty dict. |
+| `ha_list_services(domain)` | `GET /api/services`, narrowed to one domain. Returns `{domain, services: {name: description}, count}`. Use this to discover which `notify.*` / `tts.*` / `script.*` services exist on a given HA instance — these domains expose services, not entities, and `ha_list_entities` will steer you here when you query them. |
 | `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch: `POST /api/services/<domain>/<service>`. Domain is inferred from the entity ID. `service_data` is forwarded as a JSON object. |
 
 ### Device / automation control (Phase A)
 
 | Tool | What it calls | Notes |
 |------|---------------|-------|
-| `ha_control_light(entity_id, state, brightness_pct?, color_name?, color_temp_kelvin?, rgb_color?, hs_color?, hex_color?)` | `light.turn_on` / `turn_off` / `toggle` | Extras are only applied when `state=on`. At most one color source may be supplied — the tool rejects the call (without hitting HA) if more than one of `rgb_color` / `hs_color` / `hex_color` / `color_temp_kelvin` / `color_name` is set. `hex_color` is converted to `rgb_color` client-side. The `rgb_color` / `hs_color` / `color_temp_kelvin` shapes match the attribute values returned by `ha_get_domain_entity_states` and `ha_get_entity_history`, so prior colors round-trip cleanly. |
+| `ha_control_light(entity_id, state, brightness_pct?, color_name?, color_temp_kelvin?, rgb_color?, hs_color?, hex_color?)` | `light.turn_on` / `turn_off` / `toggle` | Extras are only applied when `state=on`. At most one color source may be supplied — the tool rejects the call (without hitting HA) if more than one of `rgb_color` / `hs_color` / `hex_color` / `color_temp_kelvin` / `color_name` is set. `hex_color` is converted to `rgb_color` client-side. The `rgb_color` / `hs_color` / `color_temp_kelvin` shapes match the attribute values returned by `ha_list_entities` and `ha_get_entity_history`, so prior colors round-trip cleanly. |
 | `ha_control_climate(entity_id, temperature?, hvac_mode?, fan_mode?)` | `climate.set_hvac_mode`, `climate.set_temperature`, `climate.set_fan_mode` | Multi-call: issues one service per non-null argument, in that order. |
 | `ha_activate_scene(scene_entity)` | `scene.turn_on` | |
 | `ha_trigger_script(script_entity, variables?)` | `script.turn_on` | `variables` are passed through as service kwargs. |
@@ -60,10 +60,14 @@ are WS-only, so a short-lived WS connection is opened per call (auth
 handshake → one command → close). Errors from the WS call surface as an
 `error` key in the tool payload.
 
+Area-based entity lookup is folded into `ha_list_entities(area=…)` in the
+"Generic REST tools" table above — it's the same WS registry path described
+here.
+
 | Tool | WS / REST call | Notes |
 |------|----------------|-------|
 | `ha_list_areas()` | WS `config/area_registry/list` | Returns `[{area_id, name, aliases}]`. |
-| `ha_get_entities_in_area(area, domains?, include_state?)` | WS `config/area_registry/list` + `entity_registry/list` + `device_registry/list` (plus `GET /api/states` when `include_state=true`) | Resolves `area` by `area_id`, name, or alias (case-insensitive). Entities inherit their device's area when their own `area_id` is null. Disabled / hidden entities are filtered. Grouped by domain. Default returns bare entity_id strings; with `include_state=true` each list element becomes `{entity_id, state, attributes}` using the same curated-per-domain attributes as `ha_get_domain_entity_states`. |
+| `ha_list_entities(area=…)` (area path) | WS `config/area_registry/list` + `entity_registry/list` + `device_registry/list` (plus `GET /api/states` when `include_state=true`) | Resolves `area` by `area_id`, name, or alias (case-insensitive). Entities inherit their device's area when their own `area_id` is null. Disabled / hidden entities are filtered. Grouped by domain. Default returns bare entity_id strings; with `include_state=true` each list element becomes `{entity_id, state, attributes}` using the same curated-per-domain attributes as the domain path. Combine with `domain=…` to filter to a single domain within the area. |
 | `ha_get_presence()` | REST `GET /api/states` | Buckets `person.*` and `device_tracker.*` into two lists with their state + `friendly_name`. |
 
 ### Timer / template / history / calendar (Phase C)
@@ -73,7 +77,7 @@ handshake → one command → close). Errors from the WS call surface as an
 | `ha_set_timer(entity_id, duration?)` | `timer.start` | `duration` uses HA's `HH:MM:SS` format (e.g. `0:05:00`). Omit to use the timer helper's configured default. |
 | `ha_cancel_timer(entity_id)` | `timer.cancel` | |
 | `ha_evaluate_template(template)` | `POST /api/template` (text response) | Server-side Jinja2 render. Uses `_post_text` on the client since HA returns raw text here, not JSON. |
-| `ha_get_entity_history(entity_id, hours?)` | `GET /api/history/period/<start>?filter_entity_id=<id>` | `hours` clamped to `[1, 168]` (one week). Dense series are downsampled to ~200 points. Returns `{entity_id, hours, total_points, points[], sampled?}`. Each point is `{state, last_changed, attributes?}` — attributes use the same curated-per-domain projection as `ha_get_domain_entity_states`. Note: which attributes actually appear depends on HA's own recorder configuration — HA's default recorder commonly stores only `friendly_name`, so to get e.g. `brightness` / `rgb_color` preserved in history you need to expand the recorder `attributes` include list in `configuration.yaml` (see [HA recorder docs](https://www.home-assistant.io/integrations/recorder/)). `attributes` is omitted when HA didn't record anything projectable for a point. |
+| `ha_get_entity_history(entity_id, hours?)` | `GET /api/history/period/<start>?filter_entity_id=<id>` | `hours` clamped to `[1, 168]` (one week). Dense series are downsampled to ~200 points. Returns `{entity_id, hours, total_points, points[], sampled?}`. Each point is `{state, last_changed, attributes?}` — attributes use the same curated-per-domain projection as `ha_list_entities`. Note: which attributes actually appear depends on HA's own recorder configuration — HA's default recorder commonly stores only `friendly_name`, so to get e.g. `brightness` / `rgb_color` preserved in history you need to expand the recorder `attributes` include list in `configuration.yaml` (see [HA recorder docs](https://www.home-assistant.io/integrations/recorder/)). `attributes` is omitted when HA didn't record anything projectable for a point. |
 | `ha_get_calendar_events(calendar_entity, days?)` | `GET /api/calendars/<entity>?start=…&end=…` | `days` clamped to `[1, 31]`. Normalizes `start`/`end` from `{dateTime, date}` dicts to flat values. |
 
 ### Media player transport
@@ -151,13 +155,22 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   from the entity ID.
 - **Registry WS calls are short-lived.** Each `_ws_call` opens a new
   connection, does the HA auth handshake, sends one command, and closes.
-  `ha_get_entities_in_area` therefore costs three connections (area +
+  `ha_list_entities` in area mode therefore costs three connections (area +
   entity + device registry). Fine in practice — these tools run
   interactively, not in a hot loop.
-- **Area lookup is tolerant.** `ha_get_entities_in_area` accepts the raw
+- **Area lookup is tolerant.** `ha_list_entities(area=…)` accepts the raw
   `area_id`, the display name, or any alias — all case-insensitive. If no
   area matches, it returns `{"error": ..., "known_areas": [...]}` to help
   the LLM recover.
+- **Service-only domains get a hint instead of an empty dict.**
+  `ha_list_entities(domain=…)` calls `get_domain_services` as a fallback
+  whenever the entity query comes back empty. If the domain has services
+  (e.g. `notify`, `tts`, `script`, `persistent_notification`), the response
+  includes a `hint` field telling the LLM to call `ha_list_services`
+  instead — this is the main fix for the common "list notify targets"
+  confusion, where the LLM would otherwise burn a turn on a dead-end empty
+  result. Domains with neither entities nor services get a "double-check
+  the domain name" hint instead.
 - **History is truncated, not unbounded.** Above 200 points the response is
   stride-sampled. This matters if you're asking about a very bursty
   sensor — use a shorter `hours` window to see more detail.
@@ -169,9 +182,8 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   covers get `current_position / current_tilt_position`, etc.
   `friendly_name` is always included; values that HA reports as `null` are
   dropped to keep payloads compact. The same projection is used by
-  `ha_get_domain_entity_states`, `ha_get_entity_history`, and (when
-  `include_state=true`) `ha_get_entities_in_area`, so values round-trip
-  cleanly between read and control tools.
+  `ha_list_entities` (both domain and area paths) and `ha_get_entity_history`,
+  so values round-trip cleanly between read and control tools.
 
 ## Troubleshooting
 
@@ -193,8 +205,8 @@ This typically means the LLM guessed an entity ID that doesn't exist. The
 error payload includes up to 30 real same-domain candidates (ranked by
 fuzzy id similarity, boosted when the guess contains an area name/alias)
 with their `friendly_name` and `area`, so the LLM can retry against a
-concrete existing id rather than calling `ha_get_domain_entity_states` /
-`ha_get_entities_in_area` again. If the entity *should* exist, verify the
+concrete existing id rather than calling `ha_list_entities` again.
+If the entity *should* exist, verify the
 exact ID in HA's **Developer Tools → States** — naming is case-sensitive
 and exact (`light.kitchen_light_1`, not `light.kitchen`).
 
@@ -205,12 +217,12 @@ corresponding REST / WS request. Common causes:
 
 - Entity ID typos (`light.livingroom` vs `light.living_room`).
 - Service doesn't exist on that HA instance (e.g. `notify.mobile_app_pixel`
-  when the integration is named differently). Use `ha_get_domain_services`
+  when the integration is named differently). Use `ha_list_services`
   with `domain="notify"` to enumerate.
 - Calendar entity doesn't exist or isn't exposed via the `/api/calendars/…`
   endpoint.
 
-### `ha_list_areas` / `ha_get_entities_in_area` return `{"error": "WS registry … call failed"}`
+### `ha_list_areas` / `ha_list_entities` (area path) return `{"error": "WS registry … call failed"}`
 
 The WebSocket call to HA failed. Typical causes: HA is down, `HAOS_URL`
 isn't reachable from the agent container, or `HAOS_TOKEN` is wrong (the
@@ -232,7 +244,7 @@ short-circuits and echoes the input. Set the env vars and restart.
 dynamic domain). Discover existing timers via:
 
 ```text
-ha_get_domain_entity_states(domain="timer")
+ha_list_entities(domain="timer")
 ```
 
 If the list is empty, add a `timer:` block to HA's `configuration.yaml`.
