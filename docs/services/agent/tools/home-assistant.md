@@ -133,11 +133,18 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   `ha_activate_scene`, `ha_trigger_script`, `ha_trigger_automation`,
   `ha_toggle_automation`, `ha_set_timer`, `ha_cancel_timer`) turns that into
   a `FAILED: <kind> '<entity_id>' does not exist in Home Assistant. ...`
-  message that tells the LLM to call `ha_get_domain_entity_states` /
-  `ha_get_entities_in_area` before retrying. This costs one extra round-trip
-  per service call but closes a silent-failure path where guessed entity
-  IDs looked like success. `ha_send_notification` skips the check (it
-  calls with `entity_id=None`).
+  message containing up to **30 real same-domain candidates** so the LLM
+  can self-correct on retry instead of burning another lookup turn.
+  Candidates are ranked by fuzzy id similarity (difflib ratio) with a
+  token-match boost when the caller's area name or alias appears in the
+  bad guess (e.g. guessing `light.livingroom_lamp` boosts entities whose
+  resolved area is "Living Room"). Each candidate row carries
+  `entity_id`, `friendly_name`, and `area`. Registry lookups backing this
+  suggestion — entity + device + area registries — are cached for 60s
+  per process so repeated misses don't re-hit HA. This costs one extra
+  round-trip per service call but closes a silent-failure path where
+  guessed entity IDs looked like success. `ha_send_notification` skips
+  the check (it calls with `entity_id=None`).
 - **`execute_service` takes an optional `domain`.** Notify / mobile /
   script-less services pass `entity_id=None` and an explicit `domain`
   (e.g. `domain="notify"`). Other tools let the client derive the domain
@@ -182,11 +189,14 @@ Initialization failed. Check `docker compose logs agent` for the
 
 The pre-flight `GET /api/states/<entity_id>` in `HomeAssistantClient.execute_service`
 returned 404. The service POST was **not** issued, so nothing changed in HA.
-This typically means the LLM guessed an entity ID that doesn't exist; the
-message instructs it to call `ha_get_domain_entity_states` or
-`ha_get_entities_in_area` first and retry. If the entity *should* exist,
-verify the exact ID in HA's **Developer Tools → States** — naming is
-case-sensitive and exact (`light.kitchen_light_1`, not `light.kitchen`).
+This typically means the LLM guessed an entity ID that doesn't exist. The
+error payload includes up to 30 real same-domain candidates (ranked by
+fuzzy id similarity, boosted when the guess contains an area name/alias)
+with their `friendly_name` and `area`, so the LLM can retry against a
+concrete existing id rather than calling `ha_get_domain_entity_states` /
+`ha_get_entities_in_area` again. If the entity *should* exist, verify the
+exact ID in HA's **Developer Tools → States** — naming is case-sensitive
+and exact (`light.kitchen_light_1`, not `light.kitchen`).
 
 ### Tools return `{"error": "..."}` with a stack-trace-like string
 
