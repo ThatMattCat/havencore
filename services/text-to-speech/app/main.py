@@ -22,6 +22,39 @@ os.makedirs(config.AUDIO_DIR, exist_ok=True)
 
 pipeline = KPipeline(lang_code=config.LANGUAGE, device=config.MODEL_DEVICE if torch.cuda.is_available() else 'cpu')
 
+# Kokoro v1 voices, keyed by the language code the pipeline must run under.
+# G2P is language-specific, so only voices whose prefix matches the configured
+# LANGUAGE are exposed. Keep this in sync with hexgrad/Kokoro-82M on HF Hub.
+KOKORO_VOICES_BY_LANG = {
+    'a': [  # American English
+        'af_heart', 'af_alloy', 'af_aoede', 'af_bella', 'af_jessica',
+        'af_kore', 'af_nicole', 'af_nova', 'af_river', 'af_sarah', 'af_sky',
+        'am_adam', 'am_echo', 'am_eric', 'am_fenrir', 'am_liam',
+        'am_michael', 'am_onyx', 'am_puck', 'am_santa',
+    ],
+    'b': [  # British English
+        'bf_alice', 'bf_emma', 'bf_isabella', 'bf_lily',
+        'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis',
+    ],
+    'j': ['jf_alpha', 'jf_gongitsune', 'jf_nezumi', 'jf_tebukuro', 'jm_kumo'],
+    'z': [
+        'zf_xiaobei', 'zf_xiaoni', 'zf_xiaoxiao', 'zf_xiaoyi',
+        'zm_yunjian', 'zm_yunxi', 'zm_yunxia', 'zm_yunyang',
+    ],
+    'e': ['ef_dora', 'em_alex', 'em_santa'],
+    'f': ['ff_siwis'],
+    'h': ['hf_alpha', 'hf_beta', 'hm_omega', 'hm_psi'],
+    'i': ['if_sara', 'im_nicola'],
+    'p': ['pf_dora', 'pm_alex', 'pm_santa'],
+}
+
+AVAILABLE_VOICES = set(KOKORO_VOICES_BY_LANG.get(config.LANGUAGE, ['af_heart']))
+
+# OpenAI-compat aliases resolve to the configured default voice so devices
+# hard-wired to OpenAI's voice names still produce speech.
+OPENAI_VOICE_ALIASES = {'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'}
+DEFAULT_VOICE = config.VOICE if config.VOICE in AVAILABLE_VOICES else 'af_heart'
+
 
 class OpenAICompatibleHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -36,8 +69,24 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "healthy"}).encode())
+        elif self.path == "/v1/voices":
+            self.handle_voices_request()
         else:
             self.send_error_response(404, "Not found")
+
+    def handle_voices_request(self):
+        body = {
+            "language": config.LANGUAGE,
+            "default": DEFAULT_VOICE,
+            "native": sorted(AVAILABLE_VOICES),
+            "aliases": sorted(OPENAI_VOICE_ALIASES),
+        }
+        payload = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def handle_speech_request(self):
         try:
@@ -59,15 +108,16 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
                 self.send_error_response(400, "Missing required parameter 'input'")
                 return
 
-            voice_mapping = {
-                'alloy': 'af_heart',
-                'echo': 'af_heart',
-                'fable': 'af_heart',
-                'onyx': 'af_heart',
-                'nova': 'af_heart',
-                'shimmer': 'af_heart',
-            }
-            speaker = voice_mapping.get(voice, 'af_heart')
+            if voice in AVAILABLE_VOICES:
+                speaker = voice
+            elif voice in OPENAI_VOICE_ALIASES:
+                speaker = DEFAULT_VOICE
+            else:
+                logger.warning(
+                    f"Unknown voice '{voice}' for lang '{config.LANGUAGE}'; "
+                    f"falling back to '{DEFAULT_VOICE}'"
+                )
+                speaker = DEFAULT_VOICE
 
             logger.info(f"OpenAI API: Generating speech for text: {input_text[:100]}...")
             filepath, _ = generate_speech(text=input_text, speaker=speaker, speed=speed)
