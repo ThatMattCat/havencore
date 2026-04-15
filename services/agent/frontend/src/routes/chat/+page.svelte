@@ -2,6 +2,7 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { messages, isConnected, isProcessing, connect, sendMessage, disconnect, clearMessages } from '$lib/stores/chat';
 	import ToolCallCard from '$lib/components/ToolCallCard.svelte';
+	import { sttTranscribe, ttsSpeak } from '$lib/api';
 	import { marked } from 'marked';
 
 	let inputText = $state('');
@@ -12,14 +13,20 @@
 
 	onMount(() => {
 		connect();
+		try {
+			autoSpeak = localStorage.getItem('chat.autoSpeak') === '1';
+		} catch {}
 	});
 
 	onDestroy(() => {
 		disconnect();
+		stopPlayback();
+		if (recording) stopRecording();
 	});
 
 	function handleSend() {
 		if (!inputText.trim() || $isProcessing) return;
+		stopPlayback();
 		sendMessage(inputText);
 		inputText = '';
 		scrollToBottom();
@@ -56,6 +63,201 @@
 		if (n < 1000) return `${Math.round(n)}ms`;
 		return `${(n / 1000).toFixed(2)}s`;
 	}
+
+	// --- Push-to-talk (mic → STT → auto-send) ---
+	let recording = $state(false);
+	let transcribing = $state(false);
+	let micError = $state('');
+	let mediaRecorder = null;
+	let audioStream = null;
+	let recordedChunks = [];
+	let recordedMime = 'audio/webm';
+
+	function pickMimeType() {
+		const candidates = [
+			'audio/webm;codecs=opus',
+			'audio/webm',
+			'audio/ogg;codecs=opus',
+			'audio/mp4',
+		];
+		for (const t of candidates) {
+			if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)) {
+				return t;
+			}
+		}
+		return '';
+	}
+
+	async function startRecording() {
+		if (!$isConnected || $isProcessing || transcribing) return;
+		micError = '';
+		recordedChunks = [];
+		stopPlayback();
+		try {
+			audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+		} catch (e) {
+			micError = `Microphone access denied: ${e.message || e}`;
+			return;
+		}
+		const mimeType = pickMimeType();
+		try {
+			mediaRecorder = mimeType
+				? new MediaRecorder(audioStream, { mimeType })
+				: new MediaRecorder(audioStream);
+		} catch (e) {
+			micError = `Recorder init failed: ${e.message || e}`;
+			audioStream.getTracks().forEach((t) => t.stop());
+			audioStream = null;
+			return;
+		}
+		recordedMime = mediaRecorder.mimeType || mimeType || 'audio/webm';
+		mediaRecorder.ondataavailable = (ev) => {
+			if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
+		};
+		mediaRecorder.onstop = onRecordingStopped;
+		mediaRecorder.start();
+		recording = true;
+	}
+
+	function stopRecording() {
+		if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+		try {
+			mediaRecorder.stop();
+		} catch (e) {
+			micError = `Stop failed: ${e.message || e}`;
+		}
+		recording = false;
+	}
+
+	async function onRecordingStopped() {
+		try {
+			audioStream?.getTracks().forEach((t) => t.stop());
+		} catch {}
+		audioStream = null;
+		mediaRecorder = null;
+
+		if (recordedChunks.length === 0) {
+			micError = 'No audio captured.';
+			return;
+		}
+
+		const blob = new Blob(recordedChunks, { type: recordedMime });
+		const ext = recordedMime.includes('mp4')
+			? 'm4a'
+			: recordedMime.includes('ogg')
+				? 'ogg'
+				: 'webm';
+		const audioFile = new File([blob], `chat-mic.${ext}`, { type: recordedMime });
+
+		transcribing = true;
+		try {
+			const result = await sttTranscribe(audioFile);
+			const text = (result.text || '').trim();
+			if (text) {
+				stopPlayback();
+				sendMessage(text);
+				scrollToBottom();
+			} else {
+				micError = 'No speech detected.';
+			}
+		} catch (e) {
+			micError = e.message || String(e);
+		} finally {
+			transcribing = false;
+		}
+	}
+
+	function toggleMic() {
+		if (recording) stopRecording();
+		else startRecording();
+	}
+
+	// --- Auto-speak (TTS on assistant done) ---
+	let autoSpeak = $state(false);
+	let currentAudio = $state(null);
+	let speaking = $state(false);
+	let lastSpokenIndex = -1;
+	let speakInitialized = false;
+
+	function persistAutoSpeak() {
+		try {
+			localStorage.setItem('chat.autoSpeak', autoSpeak ? '1' : '0');
+		} catch {}
+	}
+
+	function toggleAutoSpeak() {
+		autoSpeak = !autoSpeak;
+		persistAutoSpeak();
+		if (!autoSpeak) stopPlayback();
+	}
+
+	function stopPlayback() {
+		if (currentAudio) {
+			try {
+				currentAudio.pause();
+			} catch {}
+			try {
+				URL.revokeObjectURL(currentAudio.src);
+			} catch {}
+			currentAudio = null;
+		}
+		speaking = false;
+	}
+
+	async function speak(text) {
+		if (!text || !text.trim()) return;
+		stopPlayback();
+		speaking = true;
+		try {
+			const blob = await ttsSpeak({ text, voice: 'af_heart', format: 'mp3', speed: 1.0 });
+			const url = URL.createObjectURL(blob);
+			const audio = new Audio(url);
+			currentAudio = audio;
+			audio.onended = () => {
+				speaking = false;
+				try { URL.revokeObjectURL(url); } catch {}
+				if (currentAudio === audio) currentAudio = null;
+			};
+			audio.onerror = () => {
+				speaking = false;
+				try { URL.revokeObjectURL(url); } catch {}
+				if (currentAudio === audio) currentAudio = null;
+			};
+			await audio.play();
+		} catch (e) {
+			speaking = false;
+			micError = `TTS failed: ${e.message || e}`;
+		}
+	}
+
+	// Watch for newly completed assistant messages and speak them.
+	// On first run (fresh mount, possibly with existing messages from a prior
+	// visit to this page) we snapshot the current length so we never replay
+	// turns that finished before the user navigated to /chat this time.
+	$effect(() => {
+		const msgs = $messages;
+		if (!speakInitialized) {
+			lastSpokenIndex = msgs.length - 1;
+			speakInitialized = true;
+			return;
+		}
+		if (lastSpokenIndex >= msgs.length) {
+			lastSpokenIndex = msgs.length - 1;
+		}
+		if (!autoSpeak) {
+			lastSpokenIndex = msgs.length - 1;
+			return;
+		}
+		for (let i = lastSpokenIndex + 1; i < msgs.length; i++) {
+			const m = msgs[i];
+			if (m.role === 'assistant' && m.content && m.metric) {
+				lastSpokenIndex = i;
+				speak(m.content);
+			} else if (m.role === 'user') {
+				lastSpokenIndex = i;
+			}
+		}
+	});
 </script>
 
 <div class="chat-page">
@@ -66,6 +268,20 @@
 				<span class="dot"></span>
 				{$isConnected ? 'Connected' : 'Disconnected'}
 			</span>
+			<button
+				class="icon-btn"
+				class:active={autoSpeak}
+				onclick={toggleAutoSpeak}
+				title={autoSpeak ? 'Auto-speak on (click to disable)' : 'Auto-speak off (click to enable)'}
+				aria-label="Toggle auto-speak"
+			>
+				{#if autoSpeak}
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+				{:else}
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+				{/if}
+				{#if speaking}<span class="speaking-dot"></span>{/if}
+			</button>
 			<button class="clear-btn" onclick={clearMessages}>Clear</button>
 		</div>
 	</div>
@@ -130,15 +346,41 @@
 		{/each}
 	</div>
 
+	{#if micError}
+		<div class="mic-error">{micError}</div>
+	{/if}
+
 	<div class="input-bar">
 		<textarea
 			class="chat-input"
 			bind:value={inputText}
 			onkeydown={handleKeyDown}
-			placeholder={$isConnected ? 'Type a message...' : 'Connecting...'}
-			disabled={!$isConnected}
+			placeholder={$isConnected
+				? recording
+					? 'Recording… click mic to stop'
+					: transcribing
+						? 'Transcribing…'
+						: 'Type a message...'
+				: 'Connecting...'}
+			disabled={!$isConnected || recording || transcribing}
 			rows="1"
 		></textarea>
+		<button
+			class="mic-btn"
+			class:recording
+			onclick={toggleMic}
+			disabled={!$isConnected || $isProcessing || transcribing}
+			title={recording ? 'Stop recording' : 'Record voice message'}
+			aria-label={recording ? 'Stop recording' : 'Record voice message'}
+		>
+			{#if recording}
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+			{:else if transcribing}
+				<svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+			{:else}
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+			{/if}
+		</button>
 		<button
 			class="send-btn"
 			onclick={handleSend}
@@ -406,5 +648,98 @@
 	.send-btn:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+
+	.icon-btn {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 28px;
+		padding: 0;
+		background: #252a3e;
+		border: 1px solid #2d3148;
+		border-radius: 6px;
+		color: #9ca3af;
+		cursor: pointer;
+		transition: background 0.15s, color 0.15s, border-color 0.15s;
+	}
+
+	.icon-btn:hover {
+		background: #2d3148;
+		color: #e1e4e8;
+	}
+
+	.icon-btn.active {
+		background: rgba(99, 102, 241, 0.15);
+		border-color: #6366f1;
+		color: #a5b4fc;
+	}
+
+	.speaking-dot {
+		position: absolute;
+		top: -2px;
+		right: -2px;
+		width: 8px;
+		height: 8px;
+		background: #4ade80;
+		border-radius: 50%;
+		box-shadow: 0 0 0 2px #161822;
+		animation: pulse 1.4s ease-in-out infinite;
+	}
+
+	.mic-btn {
+		width: 44px;
+		height: 44px;
+		background: #252a3e;
+		border: 1px solid #2d3148;
+		border-radius: 10px;
+		color: #c9cdd5;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: background 0.15s, color 0.15s, border-color 0.15s;
+	}
+
+	.mic-btn:hover:not(:disabled) {
+		background: #2d3148;
+		color: #e1e4e8;
+	}
+
+	.mic-btn.recording {
+		background: #dc2626;
+		border-color: #dc2626;
+		color: white;
+		animation: rec-pulse 1.2s ease-in-out infinite;
+	}
+
+	.mic-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.mic-btn .spin {
+		animation: spin 1s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	@keyframes rec-pulse {
+		0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.5); }
+		50% { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
+	}
+
+	.mic-error {
+		background: rgba(239, 68, 68, 0.1);
+		color: #f87171;
+		padding: 8px 12px;
+		border-radius: 8px;
+		font-size: 12px;
+		margin-bottom: 8px;
 	}
 </style>
