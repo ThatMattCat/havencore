@@ -6,8 +6,10 @@ Provides unified Home Assistant tools via MCP including device control, media ma
 
 import json
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
 
 import aiohttp
@@ -49,14 +51,6 @@ class EntityNotFoundError(Exception):
     def __init__(self, entity_id: str):
         self.entity_id = entity_id
         super().__init__(f"Entity '{entity_id}' does not exist in Home Assistant")
-
-
-def _format_entity_not_found(err: "EntityNotFoundError", device_label: str = "entity") -> str:
-    return (
-        f"FAILED: {device_label} '{err.entity_id}' does not exist in Home Assistant. "
-        "No action was taken. Call ha_get_domain_entity_states or ha_get_entities_in_area "
-        "to look up the correct entity_id, then retry. Do not guess entity names."
-    )
 
 
 # Per-domain attribute projection. friendly_name is always included; anything
@@ -243,6 +237,8 @@ class HomeAssistantMCPServer:
         self.ha_client: Optional[HomeAssistantClient] = None
         self.media_controller: Optional[ha_media_controller.MediaController] = None
         self.init_error: Optional[str] = None
+        self._registry_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+        self._registry_cache_ttl = 60.0
         self.setup_handlers()
 
     async def initialize_clients(self):
@@ -934,7 +930,7 @@ class HomeAssistantMCPServer:
             result = await self.ha_client.execute_service(entity_id, service, **service_data)
             return f"Service '{service}' executed on '{entity_id}': {result}"
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "entity")
+            return await self._format_entity_not_found(e, "entity")
         except Exception as e:
             return f"Error executing service '{service}' on '{entity_id}': {str(e)}"
 
@@ -993,7 +989,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, service, **extras)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Light")
+            return await self._format_entity_not_found(e, "Light")
         except Exception as e:
             return f"Error controlling light '{entity_id}': {e}"
 
@@ -1022,7 +1018,7 @@ class HomeAssistantMCPServer:
                 )
             return "; ".join(results)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Climate")
+            return await self._format_entity_not_found(e, "Climate")
         except Exception as e:
             return f"Error controlling climate '{entity_id}': {e}"
 
@@ -1030,7 +1026,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(scene_entity, "turn_on")
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Scene")
+            return await self._format_entity_not_found(e, "Scene")
         except Exception as e:
             return f"Error activating scene '{scene_entity}': {e}"
 
@@ -1038,7 +1034,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(script_entity, "turn_on", **variables)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Script")
+            return await self._format_entity_not_found(e, "Script")
         except Exception as e:
             return f"Error triggering script '{script_entity}': {e}"
 
@@ -1046,7 +1042,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(automation_entity, "trigger")
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Automation")
+            return await self._format_entity_not_found(e, "Automation")
         except Exception as e:
             return f"Error triggering automation '{automation_entity}': {e}"
 
@@ -1055,7 +1051,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, service)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Automation")
+            return await self._format_entity_not_found(e, "Automation")
         except Exception as e:
             verb = "enable" if enabled else "disable"
             return f"Error trying to {verb} automation '{entity_id}': {e}"
@@ -1088,6 +1084,101 @@ class HomeAssistantMCPServer:
         if not resp.get("success", True):
             raise RuntimeError(f"WS registry {registry} call failed: {resp.get('error')}")
         return resp.get("result") or []
+
+    async def _cached_registry(self, registry: str) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        cached = self._registry_cache.get(registry)
+        if cached and now - cached[0] < self._registry_cache_ttl:
+            return cached[1]
+        data = await self._ws_registry(registry)
+        self._registry_cache[registry] = (now, data)
+        return data
+
+    async def _suggest_entities(self, bad_id: str, max_suggestions: int = 30) -> List[Dict[str, Any]]:
+        """Suggest real entities to retry after a bad entity_id guess.
+
+        Ranks same-domain entities by fuzzy-id similarity and boosts any entity
+        in an area whose name or alias appears as a token in the bad id. This
+        catches both "typo in the name" and "right room, wrong guess" cases.
+        """
+        try:
+            areas = await self._cached_registry("area")
+            entities = await self._cached_registry("entity")
+            devices = await self._cached_registry("device")
+        except Exception as e:
+            logger.warning(f"_suggest_entities: registry fetch failed: {e}")
+            return []
+
+        if "." in bad_id:
+            domain, bad_local = bad_id.split(".", 1)
+        else:
+            domain, bad_local = None, bad_id
+        bad_tokens = {t for t in bad_local.lower().split("_") if t}
+
+        area_by_id = {a.get("area_id"): a for a in areas if a.get("area_id")}
+
+        def _area_name(aid: Optional[str]) -> Optional[str]:
+            return (area_by_id.get(aid) or {}).get("name") if aid else None
+
+        matched_area_ids = set()
+        for a in areas:
+            aid = a.get("area_id")
+            if not aid:
+                continue
+            name_tokens = set((a.get("name") or "").lower().replace("-", " ").split())
+            alias_tokens = set()
+            for alias in a.get("aliases") or []:
+                alias_tokens.update((alias or "").lower().replace("-", " ").split())
+            if bad_tokens & (name_tokens | alias_tokens):
+                matched_area_ids.add(aid)
+
+        device_area = {d["id"]: d.get("area_id") for d in devices if d.get("id")}
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for ent in entities:
+            if ent.get("disabled_by") or ent.get("hidden_by"):
+                continue
+            eid = ent.get("entity_id")
+            if not eid:
+                continue
+            if domain and not eid.startswith(f"{domain}."):
+                continue
+            ent_area_id = ent.get("area_id") or device_area.get(ent.get("device_id"))
+            sim = SequenceMatcher(None, bad_id, eid).ratio()
+            # +0.5 boost puts any area-matched entity ahead of all non-matches.
+            score = sim + (0.5 if ent_area_id in matched_area_ids else 0.0)
+            scored.append((score, {
+                "entity_id": eid,
+                "friendly_name": ent.get("name") or ent.get("original_name"),
+                "area": _area_name(ent_area_id),
+            }))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [s[1] for s in scored[:max_suggestions]]
+
+    async def _format_entity_not_found(self, err: EntityNotFoundError, device_label: str = "entity") -> str:
+        base = (
+            f"FAILED: {device_label} '{err.entity_id}' does not exist in Home Assistant. "
+            "No action was taken."
+        )
+        suggestions = await self._suggest_entities(err.entity_id)
+        if not suggestions:
+            return (
+                f"{base} Call ha_get_domain_entity_states or ha_get_entities_in_area "
+                "to look up the correct entity_id, then retry. Do not guess entity names."
+            )
+        lines = [base, "Similar entities (retry with one of these, do not guess others):"]
+        for s in suggestions:
+            parts = []
+            name = s.get("friendly_name")
+            area = s.get("area")
+            if name:
+                parts.append(f'"{name}"')
+            if area:
+                parts.append(f"in {area}")
+            suffix = f" ({', '.join(parts)})" if parts else ""
+            lines.append(f"  {s['entity_id']}{suffix}")
+        return "\n".join(lines)
 
     async def _list_areas(self) -> List[Dict[str, Any]]:
         try:
@@ -1202,7 +1293,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, "start", **extras)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Timer")
+            return await self._format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error starting timer '{entity_id}': {e}"
 
@@ -1212,7 +1303,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, "cancel")
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Timer")
+            return await self._format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error cancelling timer '{entity_id}': {e}"
 
