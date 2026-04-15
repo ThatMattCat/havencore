@@ -1,7 +1,95 @@
 <script>
-	let { item = null, onclose, onsaved } = $props();
+	import cronstrue from 'cronstrue';
+
+	let { item = null, timezone = 'UTC', onclose, onsaved } = $props();
 
 	const isEdit = !!item;
+
+	// --- Reference data (surfaced as help content) ---
+	const AUTONOMY_LEVELS = [
+		{
+			value: 'observe',
+			label: 'observe',
+			desc: 'Read-only. Memory search, web, weather, Wikipedia, Wolfram, HA state queries. No notifications, no device control. Safe for pure analysis.',
+		},
+		{
+			value: 'notify',
+			label: 'notify',
+			desc: 'Everything in observe + push / Signal notifications. Default tier — fits reminders, briefings, watches, and anomaly reports.',
+		},
+		{
+			value: 'speak',
+			label: 'speak',
+			desc: 'Same tools as notify, but delivery is TTS (Kokoro) routed to a Music Assistant speaker instead of a push message.',
+		},
+		{
+			value: 'act',
+			label: 'act',
+			desc: 'Everything in notify + bounded HA device control (lights, switches, scenes, scripts, climate). Required for kind=act. Gated per-item by action_allow_list and AUTONOMY_ACT_ENABLED=true.',
+		},
+	];
+
+	const KINDS = [
+		{
+			value: 'reminder',
+			label: 'reminder',
+			triggerHint: 'cron',
+			desc: 'Fires a plain notification at a scheduled time. No LLM. Use for fixed reminders ("take meds at 8am").',
+		},
+		{
+			value: 'watch',
+			label: 'watch',
+			triggerHint: 'mqtt or webhook',
+			desc: 'Listens for an event (MQTT / webhook) and sends a template-rendered notification. No LLM. Placeholders: {_topic} {_name} {_source} {_ts} plus any payload key.',
+		},
+		{
+			value: 'watch_llm',
+			label: 'watch_llm',
+			triggerHint: 'mqtt or webhook',
+			desc: 'Reactive trigger → gathers HA entity state + memories → LLM decides if this is worth surfacing and at what severity. Has signature-based cooldown to prevent spam.',
+		},
+		{
+			value: 'routine',
+			label: 'routine',
+			triggerHint: 'cron or event',
+			desc: 'LLM writes the output. Good for briefings, daily summaries, contextual announcements. Optional tools_override must be a subset of the autonomy tier.',
+		},
+		{
+			value: 'act',
+			label: 'act',
+			triggerHint: 'cron or event',
+			desc: 'Two-phase device control: LLM plans JSON actions → engine validates against allow-list → optional user confirmation → execute. Requires autonomy_level=act and AUTONOMY_ACT_ENABLED=true.',
+		},
+		{
+			value: 'briefing',
+			label: 'briefing',
+			triggerHint: 'cron',
+			desc: 'Built-in morning summary (calendar, weather, history). Usually system-seeded via AUTONOMY_BRIEFING_CRON — rarely created manually.',
+		},
+		{
+			value: 'anomaly_sweep',
+			label: 'anomaly_sweep',
+			triggerHint: 'cron',
+			desc: 'Built-in: snapshots HA state and asks the LLM if anything looks abnormal. Per-signature cooldowns. Usually system-seeded.',
+		},
+		{
+			value: 'memory_review',
+			label: 'memory_review',
+			triggerHint: 'cron',
+			desc: 'Built-in nightly L1–L4 memory consolidation job. Importance decay, tier promotion. System-seeded.',
+		},
+	];
+
+	const CRON_PRESETS = [
+		{ label: 'Every 15 minutes', cron: '*/15 * * * *' },
+		{ label: 'Every hour', cron: '0 * * * *' },
+		{ label: 'Daily at 8:00 AM', cron: '0 8 * * *' },
+		{ label: 'Daily at 8:00 PM', cron: '0 20 * * *' },
+		{ label: 'Weekdays at 9:00 AM', cron: '0 9 * * 1-5' },
+		{ label: 'Weekends at 10:00 AM', cron: '0 10 * * 0,6' },
+		{ label: 'First of month at midnight', cron: '0 0 1 * *' },
+		{ label: 'Nightly at 3:00 AM', cron: '0 3 * * *' },
+	];
 
 	// --- Common fields ---
 	let kind = $state(item?.kind ?? 'reminder');
@@ -9,8 +97,11 @@
 	let autonomyLevel = $state(item?.autonomy_level ?? 'notify');
 	let enabled = $state(item?.enabled ?? true);
 
+	// --- Help panel toggles ---
+	let showAutonomyHelp = $state(false);
+	let showKindHelp = $state(false);
+
 	// --- Trigger ---
-	// triggerMode = 'cron' | 'mqtt' | 'webhook'
 	let triggerMode = $state(
 		item?.trigger_spec?.source === 'mqtt'
 			? 'mqtt'
@@ -19,6 +110,7 @@
 				: 'cron',
 	);
 	let cron = $state(item?.schedule_cron ?? '');
+	let cronPreset = $state('');
 	let mqttTopic = $state(item?.trigger_spec?.match?.topic ?? '');
 	let mqttPayloadJson = $state(
 		JSON.stringify(item?.trigger_spec?.match?.payload ?? {}, null, 2),
@@ -81,6 +173,32 @@
 
 	let saving = $state(false);
 	let error = $state('');
+
+	// --- Derived helpers ---
+	let selectedKind = $derived(KINDS.find((k) => k.value === kind) ?? KINDS[0]);
+	let selectedLevel = $derived(
+		AUTONOMY_LEVELS.find((l) => l.value === autonomyLevel) ?? AUTONOMY_LEVELS[1],
+	);
+
+	let cronHuman = $derived.by(() => {
+		if (!cron || !cron.trim()) return '';
+		try {
+			return cronstrue.toString(cron.trim(), { throwExceptionOnParseError: true });
+		} catch (e) {
+			return `⚠ ${e?.message ?? 'invalid cron expression'}`;
+		}
+	});
+	let cronValid = $derived(!!cron && !cronHuman.startsWith('⚠'));
+
+	// Warn when kind=act but level!=act (backend will reject).
+	let levelKindMismatch = $derived(kind === 'act' && autonomyLevel !== 'act');
+
+	function applyPreset() {
+		if (cronPreset) {
+			cron = cronPreset;
+			cronPreset = '';
+		}
+	}
 
 	function parseJSONSafe(s) {
 		if (!s || !s.trim()) return {};
@@ -207,7 +325,6 @@
 		saving = true;
 		try {
 			const body = { ...payload };
-			// strip nulls so the backend defaults kick in cleanly
 			if (body.schedule_cron === null) delete body.schedule_cron;
 			if (body.trigger_spec === null) delete body.trigger_spec;
 			if (body.name === null) delete body.name;
@@ -250,29 +367,98 @@
 					<input class="input" type="text" bind:value={name} placeholder="optional label" />
 				</label>
 
-				<label class="field">
-					<span>Autonomy level</span>
+				<div class="field">
+					<span class="label-row">
+						Autonomy level
+						<button
+							type="button"
+							class="info-btn"
+							aria-label="Explain autonomy levels"
+							onclick={() => (showAutonomyHelp = !showAutonomyHelp)}
+						>
+							{showAutonomyHelp ? '×' : '?'}
+						</button>
+					</span>
 					<select class="input" bind:value={autonomyLevel}>
-						<option value="observe">observe</option>
-						<option value="notify">notify</option>
-						<option value="speak">speak</option>
-						<option value="act">act</option>
+						{#each AUTONOMY_LEVELS as lvl}
+							<option value={lvl.value}>{lvl.label}</option>
+						{/each}
 					</select>
-				</label>
+					<small class="muted hint">{selectedLevel.desc}</small>
+				</div>
 			</div>
+
+			{#if showAutonomyHelp}
+				<div class="help-panel">
+					<div class="help-title">Autonomy levels — what each one unlocks</div>
+					<p class="help-lede">
+						Autonomy level sets the <strong>tool ceiling</strong> available to the LLM when this
+						item fires. The form UI stays the same across levels — the difference is enforced
+						server-side at tool-call time (see <code>autonomy/tool_gating.py</code>). Lower levels
+						just refuse calls to tools outside their tier.
+					</p>
+					<ul class="help-list">
+						{#each AUTONOMY_LEVELS as lvl}
+							<li>
+								<code>{lvl.value}</code> — {lvl.desc}
+							</li>
+						{/each}
+					</ul>
+					<p class="help-foot">
+						Note: <code>kind=act</code> requires <code>autonomy_level=act</code>. Other kinds accept
+						any level, but a lower level restricts what the LLM can actually do.
+					</p>
+				</div>
+			{/if}
+
+			{#if levelKindMismatch}
+				<div class="warning">
+					<code>kind=act</code> requires <code>autonomy_level=act</code> — the backend will reject
+					this.
+				</div>
+			{/if}
 
 			<!-- Kind selector (disabled when editing, since backend doesn't allow changing kind) -->
 			<div class="field">
-				<span>Kind</span>
+				<span class="label-row">
+					Kind
+					<button
+						type="button"
+						class="info-btn"
+						aria-label="Explain all kinds"
+						onclick={() => (showKindHelp = !showKindHelp)}
+					>
+						{showKindHelp ? '×' : '?'}
+					</button>
+				</span>
 				<div class="radio-row">
-					{#each ['reminder', 'watch', 'watch_llm', 'routine', 'act', 'briefing', 'anomaly_sweep', 'memory_review'] as k}
+					{#each KINDS as k}
 						<label class="radio">
-							<input type="radio" bind:group={kind} value={k} disabled={isEdit} />
-							<span>{k}</span>
+							<input type="radio" bind:group={kind} value={k.value} disabled={isEdit} />
+							<span>{k.label}</span>
 						</label>
 					{/each}
 				</div>
+				<small class="muted hint">
+					<strong>{selectedKind.label}</strong> — {selectedKind.desc}
+					<span class="tag">trigger: {selectedKind.triggerHint}</span>
+				</small>
 			</div>
+
+			{#if showKindHelp}
+				<div class="help-panel">
+					<div class="help-title">Kinds — what each one does</div>
+					<ul class="help-list">
+						{#each KINDS as k}
+							<li>
+								<code>{k.value}</code>
+								<span class="tag">{k.triggerHint}</span>
+								— {k.desc}
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 
 			<!-- Trigger selector -->
 			<div class="field">
@@ -294,16 +480,38 @@
 			</div>
 
 			{#if triggerMode === 'cron'}
-				<label class="field">
+				<div class="field">
 					<span>Cron expression</span>
-					<input
-						class="input mono"
-						type="text"
-						bind:value={cron}
-						placeholder="0 8 * * *"
-					/>
-					<small class="muted">5-field cron. Interpreted in {`"America/Chicago"`} (config.CURRENT_TIMEZONE).</small>
-				</label>
+					<div class="cron-row">
+						<input
+							class="input mono cron-input"
+							type="text"
+							bind:value={cron}
+							placeholder="0 8 * * *"
+						/>
+						<select
+							class="input preset-select"
+							bind:value={cronPreset}
+							onchange={applyPreset}
+							aria-label="Insert cron preset"
+						>
+							<option value="">Presets…</option>
+							{#each CRON_PRESETS as p}
+								<option value={p.cron}>{p.label}</option>
+							{/each}
+						</select>
+					</div>
+					{#if cron}
+						<small class="muted" class:valid={cronValid} class:invalid={!cronValid}>
+							{cronValid ? '✓' : ''}
+							{cronHuman}
+						</small>
+					{/if}
+					<small class="muted">
+						5-field cron. Interpreted in <code>{timezone}</code> (from
+						<code>CURRENT_TIMEZONE</code> env).
+					</small>
+				</div>
 			{:else if triggerMode === 'mqtt'}
 				<label class="field">
 					<span>Topic (supports + wildcard)</span>
@@ -597,7 +805,7 @@
 			</label>
 
 			<!-- Live JSON preview -->
-			<details class="json-preview" open>
+			<details class="json-preview">
 				<summary>JSON preview</summary>
 				<pre class="mono">{payloadPreview}</pre>
 			</details>
@@ -692,6 +900,34 @@
 		font-weight: 500;
 	}
 
+	.label-row {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.info-btn {
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: #252a3e;
+		border: 1px solid #2d3148;
+		color: #a78bfa;
+		font-size: 11px;
+		font-weight: 700;
+		line-height: 1;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+	}
+
+	.info-btn:hover {
+		background: #2d3148;
+		border-color: #6366f1;
+	}
+
 	.checkbox-field {
 		display: flex;
 		align-items: center;
@@ -727,6 +963,30 @@
 		font-size: 11px;
 	}
 
+	.hint {
+		color: #9ca3af;
+		line-height: 1.4;
+	}
+
+	.valid {
+		color: #34d399;
+	}
+
+	.invalid {
+		color: #f87171;
+	}
+
+	.tag {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 1px 6px;
+		background: #252a3e;
+		border-radius: 4px;
+		color: #a78bfa;
+		font-size: 10px;
+		font-weight: 500;
+	}
+
 	.fieldset {
 		border: 1px solid #2d3148;
 		border-radius: 8px;
@@ -756,6 +1016,72 @@
 		font-size: 13px;
 		color: #c9cdd5;
 		cursor: pointer;
+	}
+
+	.help-panel {
+		background: #0b0d14;
+		border: 1px solid #3a2f5a;
+		border-radius: 8px;
+		padding: 12px 14px;
+		font-size: 12px;
+		color: #c9cdd5;
+	}
+
+	.help-title {
+		color: #a78bfa;
+		font-weight: 600;
+		margin-bottom: 6px;
+	}
+
+	.help-lede {
+		margin: 0 0 8px 0;
+		line-height: 1.5;
+		color: #9ca3af;
+	}
+
+	.help-list {
+		margin: 0;
+		padding-left: 18px;
+		display: flex;
+		flex-direction: column;
+		gap: 5px;
+		line-height: 1.45;
+	}
+
+	.help-list code {
+		color: #fbbf24;
+	}
+
+	.help-foot {
+		margin: 10px 0 0 0;
+		padding-top: 8px;
+		border-top: 1px solid #2d3148;
+		color: #9ca3af;
+		line-height: 1.45;
+	}
+
+	.warning {
+		background: rgba(251, 191, 36, 0.08);
+		border: 1px solid #78350f;
+		color: #fbbf24;
+		padding: 8px 12px;
+		border-radius: 6px;
+		font-size: 12px;
+	}
+
+	.cron-row {
+		display: flex;
+		gap: 8px;
+	}
+
+	.cron-input {
+		flex: 1;
+	}
+
+	.preset-select {
+		flex: 0 0 auto;
+		width: auto;
+		min-width: 140px;
 	}
 
 	.json-preview {

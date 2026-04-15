@@ -512,6 +512,7 @@
 {#if formOpen}
 	<AgendaForm
 		item={formItem}
+		timezone={status?.timezone ?? 'UTC'}
 		onclose={() => {
 			formOpen = false;
 			formItem = null;

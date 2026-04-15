@@ -50,21 +50,154 @@ ACT_PLAN_SYSTEM_PROMPT = (
     "defined a goal; you decide WHICH tools to call and WITH WHAT ARGUMENTS "
     "to achieve it. You are NOT running tools yourself — you are producing "
     "a plan that the engine will execute after validation.\n\n"
-    "You may call read-only tools (observe tier) to gather entity_ids and "
-    "state. You MUST NOT call actuator tools; they are not in your surface. "
-    "After gathering, respond with ONE JSON object and NOTHING else — no "
-    "prose, no code fences. Schema:\n"
+    "HOW EXECUTION WORKS — read carefully:\n"
+    "1. THIS turn is your ONLY chance to gather information. Call read-only "
+    "   tools NOW (in this turn, via tool_calls) to discover entity_ids, "
+    "   current states, area memberships, etc. The engine will NOT give you "
+    "   another LLM turn after this.\n"
+    "2. After you have all the information you need, emit ONE final JSON "
+    "   object (schema below). That JSON is your plan.\n"
+    "3. The engine then executes the plan's steps LITERALLY and IN ORDER, "
+    "   with NO further LLM involvement. Each step's ``args`` is passed to "
+    "   the tool exactly as written. Steps CANNOT reference each other's "
+    "   output. There are NO placeholders, NO variables, NO templates — "
+    "   every value must be a concrete literal you resolved during THIS "
+    "   turn.\n\n"
+    "Therefore:\n"
+    "- If you need an entity_id, CALL an observe tool NOW to look it up. "
+    "  Do NOT put a reconnaissance call into your plan's steps — read-only "
+    "  tools belong in this turn, not in the plan.\n"
+    "- Do NOT write placeholder strings like ``<entity_id>``, "
+    "  ``{{previous.result}}``, ``<from_step_1>``, ``PLACEHOLDER``, etc. "
+    "  The engine will reject any step whose args contain such patterns.\n"
+    "- If you cannot resolve a concrete value (e.g., the entity genuinely "
+    "  does not exist), return ``steps: []`` and explain in ``reasoning``.\n\n"
+    "Plan JSON schema — respond with ONE JSON object, no prose, no code "
+    "fences:\n"
     "{{"
     "\"steps\": ["
     "  {{\"tool\": string, \"args\": object, \"rationale\": string}}"
     "], "
     "\"reasoning\": string (<=200 chars)"
     "}}.\n\n"
-    "Allowed actuator tools (the engine will reject any others): {allow_list}.\n"
-    "Keep the plan minimal — the fewest steps that achieve the goal. "
-    "If the goal is impossible or ambiguous, return steps=[] and explain in "
-    "reasoning."
+    "Allowed actuator tools (the engine will reject any others): {allow_list}.\n\n"
+    "CRITICAL — actuator tool schemas. Each step's ``args`` object MUST use "
+    "EXACTLY the parameter names shown below. Do NOT invent parameter names "
+    "from your general knowledge of Home Assistant or other APIs; use these "
+    "schemas verbatim:\n"
+    "{tool_schemas}\n\n"
+    "Keep the plan minimal — the fewest steps that achieve the goal."
 )
+
+
+_PLACEHOLDER_PATTERNS = (
+    re.compile(r"<[^>]*>"),           # <entity_id>, <from_step_1>, etc.
+    re.compile(r"\{\{[^}]*\}\}"),     # {{previous.result}}, {{var}}
+)
+_PLACEHOLDER_TOKENS = (
+    "previous_step",
+    "previous step",
+    "from_previous",
+    "from previous",
+    "placeholder",
+    "todo",
+)
+
+
+def _placeholder_reason(args: Dict[str, Any]) -> Optional[str]:
+    """Return a human-readable reason if ``args`` contains a value that
+    looks like an unresolved template placeholder. The planner must emit
+    concrete literals — any ``<...>`` / ``{{...}}`` / "previous_step" text
+    means the LLM intended a follow-up resolution pass that does not exist.
+    """
+    def _scan(value: Any, path: str) -> Optional[str]:
+        if isinstance(value, str):
+            for pat in _PLACEHOLDER_PATTERNS:
+                m = pat.search(value)
+                if m:
+                    return f"{path}={value!r} contains placeholder {m.group(0)!r}"
+            lowered = value.lower()
+            for tok in _PLACEHOLDER_TOKENS:
+                if tok in lowered:
+                    return f"{path}={value!r} contains placeholder token {tok!r}"
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                r = _scan(v, f"{path}.{k}" if path else str(k))
+                if r:
+                    return r
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                r = _scan(v, f"{path}[{i}]")
+                if r:
+                    return r
+        return None
+
+    return _scan(args, "args")
+
+
+def _format_actuator_schemas(
+    base_tools: List[Dict[str, Any]], allow_list: List[str]
+) -> str:
+    """Return a compact schema block for each allow-listed actuator tool, so
+    the planner LLM can plan with the correct parameter names instead of
+    guessing from training data.
+    """
+    by_name: Dict[str, Dict[str, Any]] = {}
+    for tool in base_tools or []:
+        fn = tool.get("function") or {}
+        name = fn.get("name") or tool.get("name")
+        if name:
+            by_name[name] = fn or tool
+    blocks: List[str] = []
+    for name in allow_list:
+        fn = by_name.get(name)
+        if fn is None:
+            blocks.append(f"- {name}: (schema not found — tool may be unavailable)")
+            continue
+        desc = (fn.get("description") or "").strip()
+        if len(desc) > 400:
+            desc = desc[:400].rstrip() + "…"
+        params = fn.get("parameters") or {}
+        blocks.append(
+            f"- {name}\n"
+            f"  description: {desc}\n"
+            f"  parameters: {json.dumps(params, separators=(',', ':'))}"
+        )
+    return "\n".join(blocks) if blocks else "(no actuator schemas available)"
+
+
+def _tool_result_error(result: Any) -> Optional[str]:
+    """Detect failure encoded inside a tool's *successful* return value.
+
+    MCP tools often swallow HA errors and return a dict/JSON with
+    ``success: false`` or an ``error`` key instead of raising. Those cases
+    would otherwise be stamped as ``executed`` in the audit, hiding real
+    failures. Returns an error message when the result indicates failure,
+    or ``None`` when it looks successful.
+    """
+    if result is None:
+        return None
+    payload: Any = result
+    if isinstance(result, str):
+        text = result.strip()
+        if not text:
+            return None
+        # The MCP client manager emits this exact prefix for isError results.
+        if text.startswith("MCP tool error:") or text.startswith("Error:"):
+            return text[:300]
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            return None  # Non-JSON plain text is treated as success.
+    if isinstance(payload, dict):
+        if payload.get("success") is False:
+            err = payload.get("error") or "tool returned success=false"
+            return str(err)[:300]
+        if "error" in payload and payload.get("success") is not True:
+            err = payload.get("error")
+            if err:
+                return str(err)[:300]
+    return None
 
 
 def _signature(item_id: str) -> str:
@@ -101,7 +234,12 @@ def _validate_steps(
         elif tool not in allow_set:
             entry["outcome"] = "skipped_not_allowed"
         else:
-            entry["outcome"] = "pending"
+            ph = _placeholder_reason(args)
+            if ph:
+                entry["outcome"] = "malformed"
+                entry["error"] = f"unresolved placeholder: {ph}"
+            else:
+                entry["outcome"] = "pending"
         audit.append(entry)
     return audit
 
@@ -167,6 +305,7 @@ async def handle(
             system_prompt=ACT_PLAN_SYSTEM_PROMPT.format(
                 agent_name=config.AGENT_NAME or "Selene",
                 allow_list=", ".join(allow_list),
+                tool_schemas=_format_actuator_schemas(base_tools, allow_list),
             ),
             timeout_sec=int(cfg.get("timeout_sec") or config.AUTONOMY_TURN_TIMEOUT_SEC),
             temperature=float(cfg.get("temperature", 0.1)),
@@ -291,8 +430,6 @@ async def execute_audit(
         args = entry.get("args") or {}
         try:
             result = await mcp_manager.execute_tool(tool, args)
-            entry["outcome"] = "executed"
-            entry["result"] = _summarize_tool_result(result)
         except Exception as e:
             entry["outcome"] = "error"
             entry["error"] = f"{type(e).__name__}: {e}"
@@ -301,6 +438,15 @@ async def execute_audit(
                 # overall status based on error count. Strict only changes
                 # the final status, not the execution order.
                 continue
+            continue
+        err = _tool_result_error(result)
+        if err is not None:
+            entry["outcome"] = "error"
+            entry["error"] = err
+            entry["result"] = _summarize_tool_result(result)
+        else:
+            entry["outcome"] = "executed"
+            entry["result"] = _summarize_tool_result(result)
     return audit
 
 
