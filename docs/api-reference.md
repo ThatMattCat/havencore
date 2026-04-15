@@ -142,7 +142,7 @@ doc with the full tool list, arguments, config, and troubleshooting.
   `plex_list_clients`, `plex_play`). See
   [MCP Plex](services/agent/tools/plex.md) and [Media Control](integrations/media-control.md).
 - **General Tools** — `get_weather_forecast`, `brave_search`,
-  `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_email`,
+  `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_signal_message`,
   `query_multimodal_api`. See [MCP General](services/agent/tools/general.md).
 - **Qdrant** — semantic memory (`create_memory`, `search_memories`). See
   [MCP Qdrant](services/agent/tools/qdrant.md).

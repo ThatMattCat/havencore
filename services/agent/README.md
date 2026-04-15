@@ -177,7 +177,7 @@ Tools are provided by MCP (Model Context Protocol) servers, each running as a su
 | Tool | Description |
 |------|-------------|
 | `generate_image` | Generate images via ComfyUI |
-| `send_email` | Send email via SMTP |
+| `send_signal_message` | Send Signal message (text + images/video) via signal-cli-rest-api |
 | `query_multimodal_api` | Send images/audio to the vision LLM for analysis |
 | `wolfram_alpha` | Query Wolfram Alpha for math, science, facts |
 | `get_weather_forecast` | Weather data from WeatherAPI |
@@ -314,7 +314,7 @@ docker compose build agent
 docker compose up -d agent
 ```
 
-The Dockerfile uses a multi-stage build: stage 1 builds the SvelteKit frontend with Node 18, stage 2 installs the Python package and copies the built static files into `/app/static`. In development, the Docker volume mount (`./services/agent/:/app`) overrides the built static files, so the SPA is served from `frontend/build/` instead.
+The Dockerfile uses a multi-stage build: stage 1 builds the SvelteKit frontend with Node 18, stage 2 installs the Python package and copies the built static files into `/srv/agent-static` (outside `/app` so the Docker volume mount doesn't shadow them). At runtime, FastAPI serves from `/srv/agent-static` if present, otherwise falls back to `frontend/build/` for local dev (run `npm run build` in `frontend/` to refresh).
 
 ## Port Summary
 

@@ -10,6 +10,8 @@
 	let haSummary = $state(null);
 	let memory = $state(null);
 	let memoryLastRun = $state(null);
+	let autonomy = $state(null);
+	let autonomyEvents = $state(null);
 	let error = $state('');
 
 	const L4_TOKEN_BUDGET = 1500;
@@ -41,6 +43,17 @@
 			]);
 			memory = m;
 			memoryLastRun = runs?.runs?.[0] ?? null;
+		} catch {}
+
+		// Autonomy summary is optional — don't fail the dashboard if engine is down
+		try {
+			const [a, ev, it] = await Promise.all([
+				fetch('/api/autonomy/status').then((r) => (r.ok ? r.json() : null)),
+				fetch('/api/autonomy/events/summary').then((r) => (r.ok ? r.json() : null)),
+				fetch('/api/autonomy/items').then((r) => (r.ok ? r.json() : null)),
+			]);
+			autonomy = a ? { ...a, items_total: it?.items?.length ?? 0 } : a;
+			autonomyEvents = ev;
 		} catch {}
 	});
 
@@ -191,6 +204,54 @@
 				</div>
 			{:else}
 				<p class="muted">Memory unavailable</p>
+			{/if}
+		</Card>
+
+		<!-- Autonomy -->
+		<Card title="Autonomy">
+			{#if autonomy}
+				<div class="memory-summary">
+					<div class="tier-row">
+						<span class="tier-label">Engine</span>
+						<StatusBadge
+							status={autonomy.running && !autonomy.paused ? 'healthy' : 'unhealthy'}
+							label={autonomy.paused ? 'Paused' : autonomy.running ? 'Running' : 'Stopped'}
+						/>
+					</div>
+					<div class="tier-row">
+						<span class="tier-label">Agenda items</span>
+						<span class="tier-count">{autonomy.items_total ?? 0}</span>
+					</div>
+					<div class="tier-row">
+						<span class="tier-label">Runs / hr</span>
+						<span class="tier-count">{autonomy.runs_last_hour ?? 0}</span>
+					</div>
+					{#if autonomyEvents?.mqtt}
+						<div class="tier-row">
+							<span class="tier-label">MQTT</span>
+							<StatusBadge
+								status={autonomyEvents.mqtt.connected ? 'healthy' : 'unhealthy'}
+								label={autonomyEvents.mqtt.connected
+									? `${autonomyEvents.mqtt.subscribed_topics?.length ?? 0} topics`
+									: 'Offline'}
+							/>
+						</div>
+					{/if}
+					{#if autonomyEvents?.deferred_runs_pending > 0}
+						<div class="tier-row">
+							<span class="tier-label">Deferred (quiet hours)</span>
+							<span class="tier-count">{autonomyEvents.deferred_runs_pending}</span>
+						</div>
+					{/if}
+				</div>
+				<div class="memory-footer">
+					<span class="muted">
+						Last dispatch: {autonomy.last_dispatch_at ? formatTime(autonomy.last_dispatch_at) : 'never'}
+					</span>
+					<a href="/autonomy" class="see-all">Open autonomy</a>
+				</div>
+			{:else}
+				<p class="muted">Autonomy unavailable</p>
 			{/if}
 		</Card>
 

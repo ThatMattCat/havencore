@@ -1,6 +1,6 @@
 """Morning briefing handler.
 
-Deterministic gather → single LLM summarize call → email notifier.
+Deterministic gather → single LLM summarize call → Signal notifier.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from selene_agent.autonomy.notifiers import EmailNotifier
+from selene_agent.autonomy.notifiers import SignalNotifier
 from selene_agent.autonomy.turn import AutonomousTurn
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
@@ -118,7 +118,7 @@ async def handle(
             "signature_hash": None,
         }
 
-    notifier = EmailNotifier(mcp_manager)
+    notifier = SignalNotifier(mcp_manager)
     title = f"{config.AGENT_NAME or 'Selene'}: morning briefing"
     delivered = await notifier.send(title=title, body=result.content)
 
@@ -127,8 +127,8 @@ async def handle(
         "summary": result.content.splitlines()[0][:200] if result.content else "briefing",
         "severity": "none",
         "signature_hash": "briefing:" + datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "notified_via": "email" if delivered else None,
+        "notified_via": "signal" if delivered else None,
         "messages": result.messages,
         "metrics": result.metrics,
-        "error": None if delivered else "email send failed",
+        "error": None if delivered else "signal send failed",
     }

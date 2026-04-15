@@ -6,7 +6,7 @@ The core AI agent — Python + FastAPI + a built-in SvelteKit dashboard, all ser
 
 - [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, general, Qdrant, MQTT, plus a tool-development guide.
 - [Conversation history](conversation-history.md) — how timed-out conversations get persisted to Postgres.
-- [Autonomy engine (v1)](autonomy/README.md) — proactive background behaviors (morning briefing, ambient anomaly sweep) that wake on a schedule, run a tier-filtered autonomous turn, and notify via email or HA push.
+- [Autonomy engine (v1)](autonomy/README.md) — proactive background behaviors (morning briefing, ambient anomaly sweep) that wake on a schedule, run a tier-filtered autonomous turn, and notify via Signal message or HA push.
 - [Revamp 2026](revamp-2026.md) — architectural notes on the April 2026 rewrite (Gradio removal, async FastAPI, dashboard, streaming).
 
 ## Responsibilities
@@ -83,7 +83,7 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 |------------|-------|-----|
 | Home Assistant | 19 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
-| General Tools | Up to 7 (credential-gated) — `generate_image`, `send_email`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
+| General Tools | Up to 7 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
 | Qdrant | 2 — `create_memory`, `search_memories` | [tools/qdrant.md](tools/qdrant.md) |
 | MQTT / Cameras | 1 (when MQTT is connected) — `get_camera_snapshots` | [tools/mqtt.md](tools/mqtt.md) |
 

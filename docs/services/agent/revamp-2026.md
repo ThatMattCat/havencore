@@ -251,13 +251,15 @@ Stage 1: node:18-alpine
   - npm ci && npm run build (SvelteKit static output)
 
 Stage 2: pytorch/pytorch (runtime)
-  - COPY --from=frontend-build /frontend/build /app/static
+  - COPY --from=frontend-build /frontend/build /srv/agent-static
   - pip install agent package
 ```
 
+The build output lands in `/srv/agent-static` — outside `/app` — so the development bind mount (`./services/agent/:/app`) doesn't shadow it.
+
 **FastAPI static mount** (in `selene_agent.py`, after all route definitions):
 ```python
-app.mount("/", StaticFiles(directory="/app/static", html=True), name="frontend")
+app.mount("/", StaticFiles(directory="/srv/agent-static", html=True), name="frontend")
 ```
 
 **Nginx** (`nginx.conf`):
@@ -309,7 +311,7 @@ docker compose up -d agent
 # Or directly at http://localhost:6002/
 ```
 
-Note: The Docker volume mount (`./services/agent/:/app`) overrides `/app/static` in development. Use `npm run dev` with the Vite proxy for frontend development, and the Docker build for production deployment.
+Note: The built SPA lives at `/srv/agent-static` inside the image, outside the `./services/agent/:/app` bind mount, so frontend changes require rebuilding the agent image (`docker compose build agent`). For a faster dev loop, use `npm run dev` with the Vite proxy; the runtime also falls back to `frontend/build/` on the host if `/srv/agent-static` is missing.
 
 ---
 

@@ -33,6 +33,9 @@ PLEX_URL = os.getenv("PLEX_URL", "")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
 PLEX_CLIENT_HA_MAP = os.getenv("PLEX_CLIENT_HA_MAP", "")
 
+MASS_URL = os.getenv("MASS_URL", "")
+MASS_TOKEN = os.getenv("MASS_TOKEN", "")
+
 LOKI_URL = os.getenv("LOKI_URL", "")
 
 parsed_url = urlparse(HAOS_URL)
@@ -73,7 +76,7 @@ AUTONOMY_ANOMALY_CRON = os.getenv("AUTONOMY_ANOMALY_CRON", "*/15 * * * *")
 AUTONOMY_ANOMALY_COOLDOWN_MIN = int(os.getenv("AUTONOMY_ANOMALY_COOLDOWN_MIN", "30"))
 AUTONOMY_MAX_RUNS_PER_HOUR = int(os.getenv("AUTONOMY_MAX_RUNS_PER_HOUR", "20"))
 AUTONOMY_TURN_TIMEOUT_SEC = int(os.getenv("AUTONOMY_TURN_TIMEOUT_SEC", "60"))
-AUTONOMY_BRIEFING_EMAIL_TO = os.getenv("AUTONOMY_BRIEFING_EMAIL_TO", "")
+AUTONOMY_BRIEFING_NOTIFY_TO = os.getenv("AUTONOMY_BRIEFING_NOTIFY_TO", "") or os.getenv("AUTONOMY_BRIEFING_EMAIL_TO", "")
 AUTONOMY_HA_NOTIFY_TARGET = os.getenv("AUTONOMY_HA_NOTIFY_TARGET", "")
 AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
     e.strip() for e in os.getenv("AUTONOMY_BRIEFING_CAMERA_ENTITIES", "").split(",") if e.strip()
@@ -81,6 +84,30 @@ AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
 AUTONOMY_ANOMALY_WATCH_DOMAINS = [
     d.strip() for d in os.getenv("AUTONOMY_ANOMALY_WATCH_DOMAINS", "binary_sensor,lock,cover").split(",") if d.strip()
 ]
+
+# --- v3 reactive autonomy ---
+AUTONOMY_WEBHOOK_ENABLED = os.getenv("AUTONOMY_WEBHOOK_ENABLED", "false").lower() == "true"
+AUTONOMY_MQTT_ENABLED = os.getenv("AUTONOMY_MQTT_ENABLED", "false").lower() == "true"
+AUTONOMY_MQTT_CLIENT_ID = os.getenv("AUTONOMY_MQTT_CLIENT_ID", "selene-autonomy")
+AUTONOMY_MQTT_RECONNECT_MAX_SEC = int(os.getenv("AUTONOMY_MQTT_RECONNECT_MAX_SEC", "60"))
+AUTONOMY_DEFAULT_QUIET_START = os.getenv("AUTONOMY_DEFAULT_QUIET_START", "")
+AUTONOMY_DEFAULT_QUIET_END = os.getenv("AUTONOMY_DEFAULT_QUIET_END", "")
+AUTONOMY_DEFAULT_QUIET_POLICY = os.getenv("AUTONOMY_DEFAULT_QUIET_POLICY", "defer")
+AUTONOMY_DEFAULT_EVENT_RATE_LIMIT = os.getenv("AUTONOMY_DEFAULT_EVENT_RATE_LIMIT", "10/min")
+
+# --- v4 voice + actuation ---
+AUTONOMY_SPEAKER_DEFAULT_DEVICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_DEVICE", "")
+AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOICE", "af_heart")
+AUTONOMY_SPEAKER_DEFAULT_VOLUME = float(os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOLUME", "0.5"))
+AUTONOMY_TTS_AUDIO_TTL_SEC = int(os.getenv("AUTONOMY_TTS_AUDIO_TTL_SEC", "600"))
+AUTONOMY_ACT_ENABLED = os.getenv("AUTONOMY_ACT_ENABLED", "false").lower() == "true"
+AUTONOMY_ACT_DEFAULT_CONFIRMATION_TIMEOUT_SEC = int(
+    os.getenv("AUTONOMY_ACT_DEFAULT_CONFIRMATION_TIMEOUT_SEC", "300")
+)
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "")
+# Agent's own HTTP base as seen from inside the Docker network (for audio URLs
+# handed to Music Assistant). Defaults to the service hostname on port 6002.
+AGENT_INTERNAL_BASE_URL = os.getenv("AGENT_INTERNAL_BASE_URL", "http://agent:6002")
 
 # --- v2 memory consolidation ---
 AUTONOMY_MEMORY_REVIEW_CRON = os.getenv("AUTONOMY_MEMORY_REVIEW_CRON", "0 3 * * *")

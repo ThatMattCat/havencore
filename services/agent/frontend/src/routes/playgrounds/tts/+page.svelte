@@ -1,6 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/Card.svelte';
+	import SpeakToDevice from '$lib/components/SpeakToDevice.svelte';
 	import { getTtsVoices, ttsSpeak } from '$lib/api';
 
 	let text = $state('Hello, I am Selene. It is good to hear my own voice.');
@@ -97,6 +98,10 @@
 				<p class="muted">Submit text to hear synthesized speech.</p>
 			{/if}
 		</Card>
+	</div>
+
+	<div class="section">
+		<SpeakToDevice />
 	</div>
 </div>
 

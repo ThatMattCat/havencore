@@ -300,6 +300,22 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
+  signal-api:
+    # signal-cli-rest-api — outbound-only bridge to Signal's servers.
+    # Bound to 127.0.0.1 so the QR-link endpoint is reachable from the host
+    # during one-time device linking, but never from the internet.
+    # MODE=native: signal-cli-native (GraalVM) persistent daemon — required
+    # for reliable device linking. MODE=normal spawns signal-cli per-request
+    # and the QR-link handshake races the process lifecycle.
+    image: bbernhard/signal-cli-rest-api:latest
+    environment:
+      - MODE=native
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./volumes/signal-cli-config:/home/.local/share/signal-cli
+    restart: unless-stopped
+
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:1.8
     ports:

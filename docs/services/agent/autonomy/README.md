@@ -1,20 +1,32 @@
-# Autonomy Engine (v1)
+# Autonomy Engine
 
 The autonomy engine makes Selene proactive. Instead of only reacting to voice
-or chat input, the agent wakes on its own schedule to perform checks, produce
-summaries, and surface anomalies — then exits until the next event. It runs
-as an asyncio background task inside the existing `agent` FastAPI process; no
-extra container.
+or chat input, the agent wakes on its own schedule — or in response to live
+events — to perform checks, produce summaries, surface anomalies, or run
+user-programmed reminders / watches / routines, then exits until the next
+event. It runs as an asyncio background task inside the existing `agent`
+FastAPI process; no extra container.
 
-v1 is deliberately narrow: two scheduled behaviors, a `notify`-tier tool
-allow-list, and enough guardrails to keep it quiet when nothing is happening.
-See [v2/v3 roadmap](#v2v3-roadmap) for what's next.
+- **v1** (merged): scheduled `briefing` + `anomaly_sweep` on a `notify`-tier
+  tool allow-list with global rate limiting, per-signature cooldown, and
+  audit logging.
+- **v2** (merged): L1–L4 memory tiers + a nightly `memory_review`
+  consolidation agenda item. See [memory/README.md](memory/README.md).
+- **v3** (implemented, flagged off): user-programmable `reminder`, `watch`,
+  `routine` kinds; reactive HA webhook + live MQTT triggers; quiet-hours
+  defer/drop; per-item event rate limits; live run WebSocket feed;
+  `/autonomy` dashboard page. Full detail in [v3.md](v3.md).
+- **v4** (implemented; `act` tier flagged off): `speak` tier with a
+  `SpeakerNotifier` that renders Kokoro TTS and plays through Music
+  Assistant, LLM-judged `watch_llm` kind, and a supervised `act` tier with
+  per-item `action_allow_list` + optional confirmation gate. Full detail in
+  [v4.md](v4.md).
 
 ## What v1 does
 
 - **Morning briefing** (`kind='briefing'`, default cron `0 8 * * *`) — gathers
   calendar, weather, and optional overnight history into a single LLM pass,
-  then emails the result via the `send_email` MCP tool.
+  then sends the result via the `send_signal_message` MCP tool.
 - **Ambient anomaly sweep** (`kind='anomaly_sweep'`, default cron
   `*/15 * * * *`) — snapshots presence + watched-domain entity states, queries
   memory for household-routine context, asks the LLM for a strict JSON
@@ -40,7 +52,7 @@ See [v2/v3 roadmap](#v2v3-roadmap) for what's next.
 │                │    metrics, hard timeout)                       │
 │                │                                                 │
 │                └─ Notifier (protocol)                            │
-│                     ├─ EmailNotifier   → send_email              │
+│                     ├─ SignalNotifier  → send_signal_message     │
 │                     ├─ HAPushNotifier  → ha_send_notification    │
 │                     └─ NullNotifier                              │
 │                                                                  │
@@ -63,9 +75,9 @@ Code lives in `services/agent/selene_agent/autonomy/`:
 | `turn.py` | `AutonomousTurn` — single-use orchestrator with custom prompt + filtered tools + timeout |
 | `schedule.py` | `croniter`-based `next_fire_at()` computation in `CURRENT_TIMEZONE`, stores UTC |
 | `tool_gating.py` | Per-tier allow-lists (`observe`, `notify`) and explicit `V1_DENY` set |
-| `notifiers.py` | `Notifier` protocol + `EmailNotifier`, `HAPushNotifier`, `NullNotifier` |
+| `notifiers.py` | `Notifier` protocol + `SignalNotifier`, `HAPushNotifier`, `NullNotifier` |
 | `db.py` | `agenda_items` + `autonomy_runs` access layer (reuses the `conversation_db` pool) |
-| `handlers/briefing.py` | Deterministic gather → LLM summarize → email |
+| `handlers/briefing.py` | Deterministic gather → LLM summarize → Signal message |
 | `handlers/anomaly.py` | State snapshot + memory context → LLM JSON judgment → push + cooldown |
 
 REST router: `services/agent/selene_agent/api/autonomy.py`. Wired into the
@@ -131,7 +143,7 @@ AUTONOMY_ANOMALY_CRON="*/15 * * * *"
 AUTONOMY_ANOMALY_COOLDOWN_MIN=30
 AUTONOMY_MAX_RUNS_PER_HOUR=20
 AUTONOMY_TURN_TIMEOUT_SEC=60
-AUTONOMY_BRIEFING_EMAIL_TO=""        # recipient for the morning briefing
+AUTONOMY_BRIEFING_NOTIFY_TO=""       # Signal recipient for the morning briefing
 AUTONOMY_HA_NOTIFY_TARGET=""         # e.g. notify.mobile_app_pixel_8
 AUTONOMY_BRIEFING_CAMERA_ENTITIES="" # comma-separated camera entity_ids
 AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
@@ -142,11 +154,10 @@ Notes:
 - Cron strings are interpreted in `CURRENT_TIMEZONE` before being converted
   to UTC for storage, matching the convention used by the user-facing
   orchestrator.
-- `send_email` currently reads its recipient from `DEFAULT_RECIPIENT` env
-  inside the general-tools MCP server. v1 sets
-  `AUTONOMY_BRIEFING_EMAIL_TO` as the intended operator-facing knob but does
-  not yet override the MCP tool's recipient — set `DEFAULT_RECIPIENT` as well
-  if it differs.
+- `send_signal_message` sends via the `signal-api` container. Recipient
+  precedence: per-notification `to` → `AUTONOMY_BRIEFING_NOTIFY_TO` →
+  `SIGNAL_DEFAULT_RECIPIENT` → `SIGNAL_PHONE_NUMBER` (Note to Self). See
+  `docs/services/agent/tools/general.md` for the one-time QR-link setup.
 - `AUTONOMY_HA_NOTIFY_TARGET` may be written as `notify.mobile_app_<device>`
   or `mobile_app_<device>`; the leading `notify.` is stripped.
 
@@ -177,7 +188,7 @@ orchestrator. The allow-list is maintained in
   general knowledge tools (`brave_search`, `wolfram_alpha`,
   `get_weather_forecast`, `search_wikipedia`, `query_multimodal_api`, `fetch`).
 - **`notify` tier** — everything in `observe` plus the two notifier tools
-  (`send_email`, `ha_send_notification`).
+  (`send_signal_message`, `ha_send_notification`).
 
 An explicit `V1_DENY` set (HA actuators, scenes, scripts, automations,
 `create_memory`, `delete_memory`, media playback) is enforced on top of the
@@ -257,30 +268,35 @@ back-fill `tier='L2'` for entries written before this change, so existing
 data keeps working. v2 will populate `L3` / `L4` rows on top of this schema;
 no behavior change in v1.
 
-## v2/v3 roadmap
+## Implemented across v1–v3
 
-v1 sets up the shape — everything below is deliberately deferred.
+- **v1** — `briefing`, `anomaly_sweep`; global rate limiting; per-signature
+  cooldown; `notify` tier; hard tool allow-list; session isolation; per-turn
+  timeout; full audit log.
+- **v2** — L1–L4 memory tiers; `memory_review` nightly consolidation with
+  importance decay, L3 rank boost, and L4 promotion gate.
+- **v3** — `reminder`, `watch`, `routine` kinds; HA webhook intake
+  (`POST /api/autonomy/webhook/{name}`); live MQTT subscriber against the
+  existing mosquitto broker; quiet-hours `defer` / `drop` policy with
+  deferred-run sweep; per-item event rate limits; CRUD for agenda items
+  (`POST` / `PATCH` / `DELETE /api/autonomy/items`); live run WebSocket feed
+  (`/ws/autonomy/runs`) backed by Postgres `LISTEN`/`NOTIFY`; `/autonomy`
+  dashboard page with agenda editor, filterable run history, and reactive
+  source health.
 
-**v2**
-
-- New agenda kinds: `reminder`, `watch` (state-based with trigger condition),
-  `routine` (multi-step deterministic sequence), `memory_review` (L2→L3
-  consolidation, importance decay/boost, L4 promotion gate).
-- Reactive event sources: HA webhook receiver, MQTT subscriber feeding the
-  dispatcher.
-- Dashboard `/autonomy` page: agenda CRUD, live activity feed, run inspector.
-- L4 persistent-context injection into the autonomous system prompts.
-- Per-item quiet-hours enforcement (schema leaves room via
-  `config.quiet_hours`).
-
-**v3**
+## Deferred to v4
 
 - `speak` autonomy tier with a `SpeakerNotifier` (TTS URL →
   `media_player.play_media` on a target).
 - `act` tier with a per-action permission model — first novel action per
   signature requires explicit confirmation; confirmed actions join an
   allow-list.
-- Smaller/cheaper gate model for quick triage sweeps that only escalate to
+- Smaller / cheaper gate model for quick triage sweeps that only escalate to
   the full 72B LLM when interesting.
+- LLM-judged watches (beyond the current deterministic template + optional
+  HA state condition).
+- Declarative routine DSL (routines today construct an `AutonomousTurn` with
+  a freeform goal + tool override).
+- Cross-item trigger chaining.
 - Pattern learning that observes user-triggered routines and suggests
   matching agenda items.
