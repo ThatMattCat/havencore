@@ -99,11 +99,11 @@ async def _gather(mcp: MCPClientManager, item_config: Dict[str, Any]) -> Dict[st
     }
     for domain in watch_domains:
         calls[f"state_{domain}"] = _safe_tool(
-            mcp, "ha_get_domain_entity_states", {"domain": domain}
+            mcp, "ha_list_entities", {"domain": domain}
         )
     # Check lights on at off-hours opportunistically; LLM sees local hour below.
     calls["state_light"] = _safe_tool(
-        mcp, "ha_get_domain_entity_states", {"domain": "light"}
+        mcp, "ha_list_entities", {"domain": "light"}
     )
 
     results = await asyncio.gather(*calls.values(), return_exceptions=False)
