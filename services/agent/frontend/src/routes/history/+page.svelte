@@ -10,6 +10,7 @@
 	let loadingDetail = $state(false);
 	let error = $state('');
 	let offset = $state(0);
+	let atEnd = $state(false);
 	const limit = 20;
 
 	onMount(async () => {
@@ -21,6 +22,7 @@
 		try {
 			const data = await listConversations(limit, offset);
 			conversations = data.conversations;
+			atEnd = conversations.length < limit;
 		} catch (e) {
 			error = e.message;
 		}
@@ -45,9 +47,18 @@
 		return new Date(iso).toLocaleString();
 	}
 
-	function nextPage() {
+	async function nextPage() {
+		if (atEnd) return;
+		const prevOffset = offset;
 		offset += limit;
-		loadConversations();
+		await loadConversations();
+		if (conversations.length === 0) {
+			// Rolled past the end — restore prior page and mark as end.
+			offset = prevOffset;
+			atEnd = true;
+			await loadConversations();
+			atEnd = true;
+		}
 	}
 
 	function prevPage() {
@@ -96,8 +107,11 @@
 
 				<div class="pagination">
 					<button onclick={prevPage} disabled={offset === 0}>Previous</button>
-					<span class="page-info">Page {Math.floor(offset / limit) + 1}</span>
-					<button onclick={nextPage} disabled={conversations.length < limit}>Next</button>
+					<span class="page-info">
+						Page {Math.floor(offset / limit) + 1}
+						{#if atEnd}<span class="end-hint">· end</span>{/if}
+					</span>
+					<button onclick={nextPage} disabled={atEnd}>Next</button>
 				</div>
 			{/if}
 		</div>
@@ -234,6 +248,11 @@
 	.page-info {
 		font-size: 12px;
 		color: #6b7280;
+	}
+
+	.end-hint {
+		color: #4b5563;
+		margin-left: 4px;
 	}
 
 	.conversation-detail-panel {

@@ -12,33 +12,53 @@ export interface ChatMessage {
 	metric?: TurnMetric;
 }
 
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+
 export const messages = writable<ChatMessage[]>([]);
 export const isConnected = writable(false);
 export const isProcessing = writable(false);
+export const connectionState = writable<ConnectionState>('connecting');
 
 let ws: WebSocket | null = null;
 let currentEvents: ChatEvent[] = [];
 let currentContent = '';
 let currentMetric: TurnMetric | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const RECONNECT_DELAY_MS = 3000;
 
 function getWsUrl(): string {
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 	return `${protocol}//${window.location.host}/ws/chat`;
 }
 
+function scheduleReconnect() {
+	if (reconnectTimer) return;
+	reconnectTimer = setTimeout(() => {
+		reconnectTimer = null;
+		connect();
+	}, RECONNECT_DELAY_MS);
+}
+
 export function connect() {
-	if (ws && ws.readyState === WebSocket.OPEN) return;
+	if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+	if (reconnectTimer) {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
+	connectionState.update((s) => (s === 'disconnected' || s === 'reconnecting' ? 'reconnecting' : 'connecting'));
 
 	ws = new WebSocket(getWsUrl());
 
 	ws.onopen = () => {
 		isConnected.set(true);
+		connectionState.set('connected');
 	};
 
 	ws.onclose = () => {
 		isConnected.set(false);
-		// Auto-reconnect after 3s
-		setTimeout(connect, 3000);
+		connectionState.set('reconnecting');
+		isProcessing.set(false);
+		scheduleReconnect();
 	};
 
 	ws.onerror = () => {
@@ -130,8 +150,22 @@ export function clearMessages() {
 }
 
 export function disconnect() {
+	if (reconnectTimer) {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
 	if (ws) {
+		ws.onclose = null;
 		ws.close();
 		ws = null;
 	}
+	connectionState.set('disconnected');
+}
+
+export function retryNow() {
+	if (reconnectTimer) {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
+	connect();
 }

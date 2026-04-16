@@ -1,6 +1,6 @@
 <script>
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { messages, isConnected, isProcessing, connect, sendMessage, disconnect, clearMessages } from '$lib/stores/chat';
+	import { messages, isConnected, isProcessing, connectionState, connect, sendMessage, disconnect, clearMessages, retryNow } from '$lib/stores/chat';
 	import ToolCallCard from '$lib/components/ToolCallCard.svelte';
 	import { sttTranscribe, ttsSpeak } from '$lib/api';
 	import { marked } from 'marked';
@@ -63,6 +63,17 @@
 		if (n < 1000) return `${Math.round(n)}ms`;
 		return `${(n / 1000).toFixed(2)}s`;
 	}
+
+	function getErrorEvent(events) {
+		if (!events) return null;
+		return events.find((e) => e.type === 'error') || null;
+	}
+
+	const bannerLabels = {
+		connecting: 'Connecting to agent…',
+		reconnecting: 'Connection lost. Reconnecting…',
+		disconnected: 'Disconnected from agent.',
+	};
 
 	// --- Push-to-talk (mic → STT → auto-send) ---
 	let recording = $state(false);
@@ -286,6 +297,14 @@
 		</div>
 	</div>
 
+	{#if $connectionState !== 'connected'}
+		<div class="conn-banner" class:disconnected={$connectionState === 'disconnected'}>
+			<span class="conn-banner-dot"></span>
+			<span class="conn-banner-text">{bannerLabels[$connectionState] ?? 'Connecting…'}</span>
+			<button class="conn-banner-btn" onclick={retryNow}>Retry now</button>
+		</div>
+	{/if}
+
 	<div class="messages" bind:this={messagesContainer}>
 		{#if $messages.length === 0}
 			<div class="empty-state">
@@ -323,7 +342,15 @@
 						{/if}
 					{/if}
 
-					{#if msg.content}
+					{#if msg.role === 'assistant' && getErrorEvent(msg.events)}
+						<div class="error-card">
+							<div class="error-card-header">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+								<span>Turn failed</span>
+							</div>
+							<div class="error-card-body">{getErrorEvent(msg.events).error || msg.content || 'An error occurred.'}</div>
+						</div>
+					{:else if msg.content}
 						<div class="message-content">
 							{#if msg.role === 'assistant'}
 								{@html renderMarkdown(msg.content)}
@@ -741,5 +768,77 @@
 		border-radius: 8px;
 		font-size: 12px;
 		margin-bottom: 8px;
+	}
+
+	.conn-banner {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		background: rgba(234, 179, 8, 0.08);
+		border: 1px solid rgba(234, 179, 8, 0.3);
+		color: #fbbf24;
+		padding: 8px 12px;
+		border-radius: 8px;
+		font-size: 12px;
+		margin-top: 12px;
+		flex-shrink: 0;
+	}
+
+	.conn-banner.disconnected {
+		background: rgba(239, 68, 68, 0.1);
+		border-color: rgba(239, 68, 68, 0.3);
+		color: #f87171;
+	}
+
+	.conn-banner-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: currentColor;
+		animation: pulse 1.4s ease-in-out infinite;
+	}
+
+	.conn-banner-text {
+		flex: 1;
+	}
+
+	.conn-banner-btn {
+		background: transparent;
+		border: 1px solid currentColor;
+		color: inherit;
+		padding: 3px 10px;
+		border-radius: 6px;
+		font-size: 11px;
+		cursor: pointer;
+	}
+
+	.conn-banner-btn:hover {
+		background: rgba(255, 255, 255, 0.05);
+	}
+
+	.error-card {
+		background: rgba(239, 68, 68, 0.08);
+		border: 1px solid rgba(239, 68, 68, 0.3);
+		border-radius: 8px;
+		padding: 10px 12px;
+		margin-top: 4px;
+	}
+
+	.error-card-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: #f87171;
+		font-size: 12px;
+		font-weight: 600;
+		margin-bottom: 4px;
+	}
+
+	.error-card-body {
+		color: #fca5a5;
+		font-size: 13px;
+		line-height: 1.5;
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 </style>
