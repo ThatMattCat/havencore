@@ -83,6 +83,7 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 |------------|-------|-----|
 | Home Assistant | 19 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
+| Music Assistant | Audio-only playback router for speakers, Chromecasts, and Google Homes (queue / play / pause / transport). | [tools/music-assistant.md](tools/music-assistant.md) |
 | General Tools | Up to 7 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
 | Qdrant | 2 — `create_memory`, `search_memories` | [tools/qdrant.md](tools/qdrant.md) |
 | MQTT / Cameras | 1 (when MQTT is connected) — `get_camera_snapshots` | [tools/mqtt.md](tools/mqtt.md) |
