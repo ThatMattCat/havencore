@@ -27,6 +27,8 @@ Everything is one `docker compose up -d` away. Twelve containers, one GPU fleet,
 
 > The assistant's name is **Selene**. She lives on four RTX 3090s in my basement.
 
+> **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default Qwen2.5-72B-AWQ stack wants **≥ 48 GB VRAM split across two cards**; a single 24 GB card works if you swap in a smaller model. Plan on ~60 GB of disk for images + model weights on first build.
+
 ---
 
 ## Demo
@@ -263,7 +265,8 @@ Everything below assumes a Linux box with NVIDIA GPUs, the container toolkit, an
 git clone https://github.com/ThatMattCat/havencore.git
 cd havencore
 cp .env.tmpl .env        # fill in HOST_IP_ADDRESS, HAOS_TOKEN, API keys
-docker compose up -d     # first build takes 60–90 min; model downloads on first run
+docker compose up -d     # first build: 60–90 min
+                         # first model load: 10–15 min (Qwen2.5-72B-AWQ, ~35 GB pull)
 open http://localhost    # SvelteKit dashboard
 ```
 
