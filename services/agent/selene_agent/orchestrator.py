@@ -105,13 +105,18 @@ class AgentOrchestrator:
         """Check if conversation should be reset due to timeout."""
         timeout = config.CONVERSATION_TIMEOUT
         if self.last_query_time and time.time() - self.last_query_time > timeout:
-            logger.debug(f"{timeout}s without a message, resetting conversation")
+            idle = int(time.time() - self.last_query_time)
+            msg_count = len(self.messages) if self.messages else 0
+            logger.info(
+                f"Session reset: idle={idle}s timeout={timeout}s "
+                f"messages={msg_count} session_id={self.session_id}"
+            )
 
-            if self.messages and len(self.messages) > 1:
+            if self.messages and msg_count > 1:
                 try:
                     metadata = {
                         'reset_reason': f'timeout_{timeout}_seconds',
-                        'message_count': len(self.messages),
+                        'message_count': msg_count,
                         'last_query_time': self.last_query_time,
                         'agent_name': self.agent_name,
                     }
@@ -119,7 +124,7 @@ class AgentOrchestrator:
                         messages=self.messages,
                         metadata=metadata,
                     )
-                    logger.info(f"Stored conversation history with {len(self.messages)} messages before reset")
+                    logger.info(f"Stored conversation history with {msg_count} messages before reset")
                 except Exception as e:
                     logger.error(f"Failed to store conversation history before reset: {e}")
 
@@ -278,9 +283,18 @@ class AgentOrchestrator:
                 break
 
             if iteration >= MAX_TOOL_ITERATIONS:
-                error_msg = "ERROR: Maximum tool calling iterations reached. The model may be stuck in a loop."
-                logger.error(f"Hit maximum iterations ({MAX_TOOL_ITERATIONS}) in tool calling loop")
-                yield AgentEvent(type=EventType.ERROR, data={"error": error_msg})
+                error_msg = (
+                    f"ERROR: Maximum tool calling iterations ({MAX_TOOL_ITERATIONS}) "
+                    "reached. The model may be stuck in a loop."
+                )
+                logger.error(
+                    f"Hit maximum iterations ({MAX_TOOL_ITERATIONS}) in tool "
+                    f"calling loop (session_id={self.session_id})"
+                )
+                yield AgentEvent(
+                    type=EventType.ERROR,
+                    data={"error": error_msg, "iterations": iteration},
+                )
                 return
 
             yield AgentEvent(type=EventType.ERROR, data={"error": "ERROR: No valid response generated"})

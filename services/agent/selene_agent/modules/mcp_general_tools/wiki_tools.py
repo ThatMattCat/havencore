@@ -1,6 +1,9 @@
+import logging
 import requests
 import json
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 async def query_wikipedia(search_term: str, sentences: int = 7, lang: str = 'en') -> str:
     """
@@ -159,7 +162,8 @@ async def get_wikipedia_with_context(search_term: str, include_categories: bool 
             # This would require additional API calls for categories
             # Simplified for this example
             result = f"{summary}\n\n[Additional context can be retrieved if needed]"
-        except:
+        except Exception as e:
+            logger.warning(f"Wikipedia context formatting failed: {e}")
             result = summary
     else:
         result = summary
