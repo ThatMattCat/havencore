@@ -21,13 +21,18 @@ Preprocessing  Neural TTS   WAV output
 
 | Port | Purpose | Features |
 |------|---------|----------|
-| 6005 | OpenAI-compatible API | `/v1/audio/speech`, `/health` |
+| 6005 | OpenAI-compatible API | `/v1/audio/speech`, `/v1/voices`, `/health` |
 
 For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` — it proxies through the agent service. The legacy Gradio UI (6004) and static audio-file server (6003) were removed.
 
 ## Voice options
 
-OpenAI voice aliases (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) are accepted and all currently map to the `af_heart` Kokoro voice. The agent dashboard's TTS playground pulls the same alias list via `/api/tts/voices`.
+Two kinds of voice identifiers are accepted:
+
+- **Native Kokoro voice ids** (e.g. `af_heart`, `af_bella`, `am_michael`) — passed straight through to the pipeline. The catalog is filtered to the voices whose prefix matches the configured `TTS_LANGUAGE` (Kokoro's G2P is language-specific), so only compatible voices are exposed.
+- **OpenAI-compat aliases** (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) — resolve to the configured default voice (`TTS_VOICE`, fallback `af_heart`), so OpenAI-wired devices keep working.
+
+Unknown names fall back to the default voice with a warning in the service log. `GET /v1/voices` returns the full catalog (`{language, default, native[], aliases[]}`); the agent's `/api/tts/voices` proxies this and is what the dashboard playground renders.
 
 ## API usage
 
@@ -61,6 +66,8 @@ TTS_VOICE="af_heart"     # Voice model
 ## Dashboard playground
 
 Use the agent dashboard at `http://localhost/playgrounds/tts` for in-browser testing (text input, voice/format selection, inline playback, synthesis latency). The dashboard proxies to the TTS service.
+
+The dashboard Chat page (`/chat`) also consumes this service: when the header speaker toggle is on, each completed assistant turn is synthesized via `/api/tts/speak` (default voice `af_heart`, mp3) and auto-played inline.
 
 ## File management
 

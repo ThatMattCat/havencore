@@ -23,10 +23,9 @@ from typing import Any, Dict, Iterable, List, Set
 # Read-only / safe-to-read HA tools + memory + general-knowledge tools.
 OBSERVE_TOOLS: Set[str] = {
     # Home Assistant — read
-    "ha_get_domain_entity_states",
-    "ha_get_entities_in_area",
+    "ha_list_entities",
     "ha_get_entity_history",
-    "ha_get_domain_services",
+    "ha_list_services",
     "ha_get_presence",
     "ha_get_calendar_events",
     "ha_list_areas",

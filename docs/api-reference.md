@@ -188,11 +188,11 @@ Convert text to spoken audio using Kokoro TTS.
 |-----------|------|----------|---------|-------------|
 | `input` | string | Yes | - | Text to convert to speech |
 | `model` | string | No | "tts-1" | TTS model (any value accepted) |
-| `voice` | string | No | "alloy" | Voice selection (alloy, echo, fable, onyx, nova, shimmer) |
+| `voice` | string | No | "alloy" | Native Kokoro voice id (e.g. `af_heart`, `af_bella`, `am_michael`) or an OpenAI alias (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) |
 | `response_format` | string | No | "mp3" | Audio format (mp3, wav, opus, aac, flac, pcm) |
 | `speed` | number | No | 1.0 | Playback speed (0.25-4.0) |
 
-**Note**: OpenAI voice aliases (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) all currently map to the Kokoro `af_heart` voice. Output is always WAV format regardless of `response_format`.
+**Note**: Native Kokoro voice ids pass through to the pipeline (filtered to the configured `TTS_LANGUAGE`). OpenAI aliases resolve to the configured default voice (`TTS_VOICE`, fallback `af_heart`). Unknown names fall back to the default. `GET /v1/voices` returns the accepted catalog. Output is always WAV format regardless of `response_format`.
 
 #### Response
 Returns raw audio binary data with appropriate Content-Type header.

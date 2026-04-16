@@ -23,7 +23,7 @@ Format Detection  Normalization  GPU Inference  Post-processing
 |------|---------|----------|
 | 6001 | OpenAI-compatible API (`/v1/audio/transcriptions`, `/health`) | REST |
 
-The service is HTTP-only — the legacy streaming WebSocket on port 6000 was retired. The dashboard STT playground uses the record-then-upload HTTP endpoint.
+The service is HTTP-only — the legacy streaming WebSocket on port 6000 was retired. The dashboard STT playground and the Chat page's push-to-talk mic both use the record-then-upload HTTP endpoint via `/api/stt/transcribe`.
 
 ## Supported audio formats
 

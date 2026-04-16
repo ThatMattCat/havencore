@@ -1287,7 +1287,7 @@ input so stdin stays open until the tool finishes:
 (cat <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual-test","version":"0.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ha_get_domain_services","arguments":{"domain":"light"}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ha_list_services","arguments":{"domain":"light"}}}
 EOF
 sleep 3) | docker compose exec -T agent python -m selene_agent.modules.mcp_homeassistant_tools 2>&1 | grep -E '^\{'
 ```

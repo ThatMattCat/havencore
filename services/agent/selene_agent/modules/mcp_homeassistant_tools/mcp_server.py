@@ -6,8 +6,10 @@ Provides unified Home Assistant tools via MCP including device control, media ma
 
 import json
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
 
 import aiohttp
@@ -49,14 +51,6 @@ class EntityNotFoundError(Exception):
     def __init__(self, entity_id: str):
         self.entity_id = entity_id
         super().__init__(f"Entity '{entity_id}' does not exist in Home Assistant")
-
-
-def _format_entity_not_found(err: "EntityNotFoundError", device_label: str = "entity") -> str:
-    return (
-        f"FAILED: {device_label} '{err.entity_id}' does not exist in Home Assistant. "
-        "No action was taken. Call ha_get_domain_entity_states or ha_get_entities_in_area "
-        "to look up the correct entity_id, then retry. Do not guess entity names."
-    )
 
 
 # Per-domain attribute projection. friendly_name is always included; anything
@@ -161,16 +155,17 @@ class HomeAssistantClient:
                     if frame.get("id") == msg_id:
                         return frame
 
-    async def get_domain_entity_states(self, domain: str) -> str:
+    async def get_domain_entity_states(self, domain: str) -> Dict[str, Dict[str, Any]]:
+        """Return {entity_id: {state, attributes}} for the domain (empty dict if none)."""
         if TEST_MODE:
-            return json.dumps({
+            return {
                 f"{domain}.entity1": {"state": "on", "attributes": {"friendly_name": "Entity 1"}},
                 f"{domain}.entity2": {"state": "off", "attributes": {"friendly_name": "Entity 2"}},
                 f"{domain}.entity3": {"state": "unavailable", "attributes": {"friendly_name": "Entity 3"}},
-            })
+            }
         states = await self._get("/api/states")
         prefix = f"{domain}."
-        filtered = {
+        return {
             s["entity_id"]: {
                 "state": s.get("state"),
                 "attributes": _project_attrs(domain, s.get("attributes") or {}),
@@ -178,23 +173,23 @@ class HomeAssistantClient:
             for s in states
             if s.get("entity_id", "").startswith(prefix)
         }
-        return json.dumps(filtered)
 
-    async def get_domain_services(self, domain: str) -> str:
+    async def get_domain_services(self, domain: str) -> Dict[str, str]:
+        """Return {service_name: description} for the domain (empty dict if none)."""
         if TEST_MODE:
-            return json.dumps({
+            return {
                 "turn_on": "Turn on entity",
                 "turn_off": "Turn off entity",
                 "toggle": "Toggle entity state",
-            })
+            }
         services = await self._get("/api/services")
         for entry in services:
             if entry.get("domain") == domain:
-                return json.dumps({
+                return {
                     name: meta.get("description", "")
                     for name, meta in entry.get("services", {}).items()
-                })
-        return json.dumps({})
+                }
+        return {}
 
     async def get_entity_state(self, entity_id: str) -> str:
         if TEST_MODE:
@@ -243,6 +238,8 @@ class HomeAssistantMCPServer:
         self.ha_client: Optional[HomeAssistantClient] = None
         self.media_controller: Optional[ha_media_controller.MediaController] = None
         self.init_error: Optional[str] = None
+        self._registry_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+        self._registry_cache_ttl = 60.0
         self.setup_handlers()
 
     async def initialize_clients(self):
@@ -268,39 +265,71 @@ class HomeAssistantMCPServer:
             # Basic Home Assistant API Tools
             tools.extend([
                 Tool(
-                    name="ha_get_domain_entity_states",
+                    name="ha_list_entities",
                     description=(
-                        "Get the current states of all entities in a Home Assistant domain "
-                        "(e.g. light, switch, climate, cover, media_player, sensor). Returns a "
-                        "JSON object keyed by entity_id with shape "
-                        "{'state': <str>, 'attributes': {...}}. Attributes are curated per "
-                        "domain: lights include brightness / rgb_color / hs_color / "
-                        "color_temp_kelvin / color_mode; climate includes current_temperature "
-                        "/ temperature / hvac_action; covers include current_position; etc. "
-                        "The attribute values in the response round-trip back into the matching "
-                        "ha_control_* tool (e.g. pass an rgb_color from here straight into "
-                        "ha_control_light)."
+                        "List Home Assistant entities, optionally filtered by domain and/or area. "
+                        "At least one of `domain` or `area` must be provided. "
+                        "\n\n"
+                        "- `domain` alone → all entities in that domain with state + curated "
+                        "attributes (e.g. domain='light' → every light and its "
+                        "brightness / rgb_color / color_temp_kelvin / color_mode). Returned as "
+                        "{entity_id: {state, attributes}}. If the domain has no entities "
+                        "(e.g. 'notify', 'tts', 'script' — these expose services, not entities), "
+                        "the response includes a `hint` field pointing you at ha_list_services.\n"
+                        "- `area` alone → entities assigned to the area, grouped by domain, as "
+                        "bare entity_id strings (cheap directory lookup). Set "
+                        "include_state=true to attach state + curated attributes.\n"
+                        "- `domain` + `area` → entities of that domain within the area (grouped "
+                        "shape, still cheap; include_state=true to attach state).\n"
+                        "\n"
+                        "Area accepts an area_id or case-insensitive area name / alias "
+                        "(e.g. 'kitchen' or 'Kitchen'). Attributes are curated per domain "
+                        "(lights: brightness / rgb_color / hs_color / color_temp_kelvin / "
+                        "color_mode; climate: current_temperature / temperature / hvac_action; "
+                        "covers: current_position; media_player: source / volume_level / "
+                        "media_title; etc.) and round-trip back into the matching ha_control_* tool."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "domain": {
                                 "type": "string",
-                                "description": "The Home Assistant domain (e.g., 'media_player', 'light', 'switch', 'sensor', 'climate')"
+                                "description": "Domain filter, e.g. 'light', 'switch', 'climate', 'media_player', 'sensor', 'cover'."
+                            },
+                            "area": {
+                                "type": "string",
+                                "description": "Area filter — area_id or case-insensitive area name / alias (e.g. 'kitchen')."
+                            },
+                            "include_state": {
+                                "type": "boolean",
+                                "description": "Attach state + curated attributes to each entity. Default: true for domain-only queries, false when an area filter is used (area listings can be large)."
                             }
-                        },
-                        "required": ["domain"]
+                        }
                     }
                 ),
                 Tool(
-                    name="ha_get_domain_services",
-                    description="Get the available services for a Home Assistant domain",
+                    name="ha_list_services",
+                    description=(
+                        "List callable services (actions) for a Home Assistant domain. Returns "
+                        "a JSON object mapping service_name → description. Use this for domains "
+                        "that expose actions rather than entity state:\n"
+                        "- 'notify' → every notification target is a separate service (e.g. "
+                        "notify.mobile_app_matt, notify.family_group). ha_list_entities returns "
+                        "nothing for 'notify'; this tool is how you discover who you can notify.\n"
+                        "- 'tts' → tts.speak, tts.cloud_say, etc.\n"
+                        "- 'script' → each script is its own service.\n"
+                        "- 'light' / 'switch' / 'climate' / etc. → turn_on, turn_off, set_*, "
+                        "toggle, and any custom services.\n"
+                        "\n"
+                        "Pair the service name with ha_execute_service to invoke it (e.g. "
+                        "service='turn_on', entity_id='light.kitchen')."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "domain": {
                                 "type": "string",
-                                "description": "The Home Assistant domain to get services for"
+                                "description": "Domain name (e.g. 'notify', 'tts', 'script', 'light', 'climate')."
                             }
                         },
                         "required": ["domain"]
@@ -313,8 +342,7 @@ class HomeAssistantMCPServer:
                         "Use service_data to pass service parameters such as brightness, color, "
                         "temperature, volume, etc. Example: service='turn_on' with "
                         "service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity. "
-                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
-                        "ha_get_domain_entity_states — do not guess."
+                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -351,11 +379,10 @@ class HomeAssistantMCPServer:
                         "Color can be specified as rgb_color, hs_color, hex_color, "
                         "color_temp_kelvin, or color_name — specify at most ONE of these. "
                         "The rgb_color / hs_color / color_temp_kelvin values returned by "
-                        "ha_get_domain_entity_states and ha_get_entity_history can be passed "
+                        "ha_list_entities and ha_get_entity_history can be passed "
                         "back here unchanged to reproduce a prior color. turn_off and toggle "
                         "ignore brightness/color. "
-                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
-                        "ha_get_domain_entity_states — do not guess."
+                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -388,14 +415,14 @@ class HomeAssistantMCPServer:
                                 "items": {"type": "integer", "minimum": 0, "maximum": 255},
                                 "minItems": 3,
                                 "maxItems": 3,
-                                "description": "Color as [R,G,B] integers 0-255 (on only). Matches the rgb_color shape returned by ha_get_domain_entity_states."
+                                "description": "Color as [R,G,B] integers 0-255 (on only). Matches the rgb_color shape returned by ha_list_entities."
                             },
                             "hs_color": {
                                 "type": "array",
                                 "items": {"type": "number"},
                                 "minItems": 2,
                                 "maxItems": 2,
-                                "description": "Color as [hue 0-360, saturation 0-100] (on only). Matches the hs_color shape returned by ha_get_domain_entity_states."
+                                "description": "Color as [hue 0-360, saturation 0-100] (on only). Matches the hs_color shape returned by ha_list_entities."
                             },
                             "hex_color": {
                                 "type": "string",
@@ -411,8 +438,7 @@ class HomeAssistantMCPServer:
                         "Control a climate entity (thermostat). Supply any combination of "
                         "temperature, hvac_mode, and fan_mode — each issued as a separate "
                         "HA service call. "
-                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
-                        "ha_get_domain_entity_states — do not guess."
+                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -517,7 +543,7 @@ class HomeAssistantMCPServer:
                     name="ha_send_notification",
                     description=(
                         "Send a notification through a Home Assistant notify.* service. "
-                        "Call ha_get_domain_services with domain='notify' to discover the "
+                        "Call ha_list_services with domain='notify' to discover the "
                         "available service names on this HA instance."
                     ),
                     inputSchema={
@@ -547,42 +573,10 @@ class HomeAssistantMCPServer:
                 Tool(
                     name="ha_list_areas",
                     description=(
-                        "List Home Assistant areas (rooms / zones). Useful before "
-                        "ha_get_entities_in_area when the user names a room."
+                        "List Home Assistant areas (rooms / zones). Useful before calling "
+                        "ha_list_entities with an `area` filter when the user names a room."
                     ),
                     inputSchema={"type": "object", "properties": {}}
-                ),
-                Tool(
-                    name="ha_get_entities_in_area",
-                    description=(
-                        "List entities assigned to an area. Accepts area_id or case-insensitive "
-                        "area name. Entities inherit from their device's area when they have no "
-                        "direct area assignment. Results are grouped by domain. By default "
-                        "returns bare entity_id strings (cheap directory lookup); set "
-                        "include_state=true to also attach each entity's current state and "
-                        "curated attributes (one extra /api/states fetch — prefer the default "
-                        "for large areas)."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "area": {
-                                "type": "string",
-                                "description": "Area ID or name (e.g. 'kitchen' or 'Kitchen')"
-                            },
-                            "domains": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional domain filter, e.g. ['light','switch']"
-                            },
-                            "include_state": {
-                                "type": "boolean",
-                                "default": False,
-                                "description": "When true, replace each entity_id string with {entity_id, state, attributes}. Attributes follow the same curated-per-domain shape as ha_get_domain_entity_states."
-                            }
-                        },
-                        "required": ["area"]
-                    }
                 ),
                 Tool(
                     name="ha_get_presence",
@@ -597,7 +591,7 @@ class HomeAssistantMCPServer:
                     description=(
                         "Start a Home Assistant timer helper (timer.start). Requires a timer.* "
                         "entity configured in Home Assistant — discover available timers via "
-                        "ha_get_domain_entity_states with domain='timer'. Duration uses HH:MM:SS "
+                        "ha_list_entities with domain='timer'. Duration uses HH:MM:SS "
                         "format (e.g. '0:05:00' = 5 minutes); omit to use the timer's configured "
                         "default duration."
                     ),
@@ -654,7 +648,7 @@ class HomeAssistantMCPServer:
                     description=(
                         "Get recent state history for an entity over the last N hours. Returns a "
                         "list of {state, last_changed, attributes?} points, sampled if very dense. "
-                        "Attributes are curated per domain (same shape as ha_get_domain_entity_states) "
+                        "Attributes are curated per domain (same shape as ha_list_entities) "
                         "so you can see e.g. how a light's brightness or rgb_color changed over "
                         "time — useful for questions like \"what color was the lamp before?\" or "
                         "\"when did the thermostat setpoint last change?\"."
@@ -681,7 +675,7 @@ class HomeAssistantMCPServer:
                     name="ha_get_calendar_events",
                     description=(
                         "Get upcoming events from a Home Assistant calendar entity over the next "
-                        "N days. Discover calendar entities via ha_get_domain_entity_states with "
+                        "N days. Discover calendar entities via ha_list_entities with "
                         "domain='calendar'."
                     ),
                     inputSchema={
@@ -723,8 +717,7 @@ class HomeAssistantMCPServer:
                         "current playback state is unknown or ambiguous.\n"
                         "When in doubt between play/pause, use 'toggle'.\n"
                         "\n"
-                        "Before calling: confirm the exact entity_id via ha_get_entities_in_area or "
-                        "ha_get_domain_entity_states — do not guess."
+                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
                     ),
                     inputSchema={
                         "type": "object",
@@ -775,16 +768,16 @@ class HomeAssistantMCPServer:
 
             try:
                 # Basic Home Assistant API Operations
-                if name == "ha_get_domain_entity_states":
-                    dmn = arguments.get("domain")
-                    if 'media_player' in dmn:
-                        result = await self._get_media_player_statuses()
-                        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
-                    result = await self._get_domain_entity_states(arguments.get("domain"))
+                if name == "ha_list_entities":
+                    result = await self._list_entities(
+                        arguments.get("domain"),
+                        arguments.get("area"),
+                        arguments.get("include_state"),
+                    )
                     return [types.TextContent(type="text", text=result)]
-                
-                elif name == "ha_get_domain_services":
-                    result = await self._get_domain_services(arguments.get("domain"))
+
+                elif name == "ha_list_services":
+                    result = await self._list_services(arguments.get("domain"))
                     return [types.TextContent(type="text", text=result)]
                 
                 elif name == "ha_execute_service":
@@ -853,14 +846,6 @@ class HomeAssistantMCPServer:
                     result = await self._list_areas()
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
-                elif name == "ha_get_entities_in_area":
-                    result = await self._get_entities_in_area(
-                        arguments.get("area"),
-                        arguments.get("domains"),
-                        bool(arguments.get("include_state", False)),
-                    )
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
-
                 elif name == "ha_get_presence":
                     result = await self._get_presence()
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
@@ -911,21 +896,106 @@ class HomeAssistantMCPServer:
                 return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
     # Basic Home Assistant API Methods
-    async def _get_domain_entity_states(self, domain: str) -> str:
-        """Get entity states for a domain"""
-        try:
-            result = await self.ha_client.get_domain_entity_states(domain)
-            return f"Entity states for domain '{domain}':\n{result}"
-        except Exception as e:
-            return f"Error getting entity states for domain '{domain}': {str(e)}"
+    async def _list_entities(
+        self,
+        domain: Optional[str],
+        area: Optional[str],
+        include_state: Optional[bool],
+    ) -> str:
+        """Unified entity listing: filter by domain and/or area.
 
-    async def _get_domain_services(self, domain: str) -> str:
-        """Get services for a domain"""
+        Dispatches to the right underlying call based on which filters are
+        provided. When filtering by domain only and the result is empty, checks
+        whether the domain exposes services and returns a hint pointing the LLM
+        at ha_list_services — this catches the common 'notify'/'tts'/'script'
+        confusion where the domain has actions, not entities.
+        """
+        domain = domain.strip() if isinstance(domain, str) else None
+        area = area.strip() if isinstance(area, str) else None
+
+        if not domain and not area:
+            return json.dumps({
+                "error": "ha_list_entities requires at least one of `domain` or `area`.",
+                "hint": "Pass domain='light' to list lights, or area='kitchen' to list entities in a room.",
+            })
+
+        # Area path (with optional domain filter). Preserves grouped shape.
+        if area:
+            # Default include_state is False for area queries.
+            inc = bool(include_state) if include_state is not None else False
+            domains = [domain] if domain else None
+            try:
+                result = await self._get_entities_in_area(area, domains, inc)
+            except Exception as e:
+                return json.dumps({"error": f"ha_list_entities failed: {e}"})
+            return json.dumps(result, indent=2)
+
+        # Domain-only path. Preserve the media_player controller special case.
+        if domain and "media_player" in domain:
+            try:
+                result = await self._get_media_player_statuses()
+            except Exception as e:
+                return json.dumps({"error": f"ha_list_entities failed: {e}"})
+            return json.dumps(result, indent=2)
+
+        # Default include_state is True for domain-only (the "get states" intent).
+        inc = bool(include_state) if include_state is not None else True
         try:
-            result = await self.ha_client.get_domain_services(domain)
-            return f"Services for domain '{domain}':\n{result}"
+            entities = await self.ha_client.get_domain_entity_states(domain)
         except Exception as e:
-            return f"Error getting services for domain '{domain}': {str(e)}"
+            return json.dumps({"error": f"ha_list_entities failed for domain '{domain}': {e}"})
+
+        payload: Dict[str, Any] = {"domain": domain}
+        if inc:
+            payload["entities"] = entities
+        else:
+            payload["entities"] = sorted(entities.keys())
+        payload["count"] = len(entities)
+
+        # Fallback: if no entities exist for this domain, check for services.
+        # Many HA domains expose only services (notify, tts, script, persistent_notification,
+        # homeassistant, logger, system_log, conversation, ...). The LLM often reaches for
+        # the entity-lister first; this hint redirects it without another round trip.
+        if not entities:
+            try:
+                services = await self.ha_client.get_domain_services(domain)
+            except Exception:
+                services = {}
+            if services:
+                payload["hint"] = (
+                    f"Domain '{domain}' has no entities but exposes "
+                    f"{len(services)} service(s). This domain is action-only — call "
+                    f"ha_list_services(domain='{domain}') to see available services, "
+                    "then invoke them via ha_execute_service (or, for notifications, "
+                    "ha_send_notification with the discovered service name)."
+                )
+                payload["available_service_count"] = len(services)
+            else:
+                payload["hint"] = (
+                    f"No entities found for domain '{domain}', and HA reports no services "
+                    "for it either. Double-check the domain name."
+                )
+
+        return json.dumps(payload, indent=2)
+
+    async def _list_services(self, domain: str) -> str:
+        """List callable services for a domain."""
+        try:
+            services = await self.ha_client.get_domain_services(domain)
+        except Exception as e:
+            return json.dumps({"error": f"ha_list_services failed for domain '{domain}': {e}"})
+        payload: Dict[str, Any] = {
+            "domain": domain,
+            "services": services,
+            "count": len(services),
+        }
+        if not services:
+            payload["hint"] = (
+                f"No services registered for domain '{domain}'. Verify the domain name "
+                "(e.g. 'notify', 'tts', 'script', 'light'). If you were looking for "
+                "entity state instead, use ha_list_entities."
+            )
+        return json.dumps(payload, indent=2)
 
     async def _execute_service(self, entity_id: str, service: str, service_data: Optional[Dict[str, Any]] = None) -> str:
         """Execute a service on an entity, optionally with service_data parameters."""
@@ -934,7 +1004,7 @@ class HomeAssistantMCPServer:
             result = await self.ha_client.execute_service(entity_id, service, **service_data)
             return f"Service '{service}' executed on '{entity_id}': {result}"
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "entity")
+            return await self._format_entity_not_found(e, "entity")
         except Exception as e:
             return f"Error executing service '{service}' on '{entity_id}': {str(e)}"
 
@@ -993,7 +1063,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, service, **extras)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Light")
+            return await self._format_entity_not_found(e, "Light")
         except Exception as e:
             return f"Error controlling light '{entity_id}': {e}"
 
@@ -1022,7 +1092,7 @@ class HomeAssistantMCPServer:
                 )
             return "; ".join(results)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Climate")
+            return await self._format_entity_not_found(e, "Climate")
         except Exception as e:
             return f"Error controlling climate '{entity_id}': {e}"
 
@@ -1030,7 +1100,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(scene_entity, "turn_on")
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Scene")
+            return await self._format_entity_not_found(e, "Scene")
         except Exception as e:
             return f"Error activating scene '{scene_entity}': {e}"
 
@@ -1038,7 +1108,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(script_entity, "turn_on", **variables)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Script")
+            return await self._format_entity_not_found(e, "Script")
         except Exception as e:
             return f"Error triggering script '{script_entity}': {e}"
 
@@ -1046,7 +1116,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(automation_entity, "trigger")
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Automation")
+            return await self._format_entity_not_found(e, "Automation")
         except Exception as e:
             return f"Error triggering automation '{automation_entity}': {e}"
 
@@ -1055,7 +1125,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, service)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Automation")
+            return await self._format_entity_not_found(e, "Automation")
         except Exception as e:
             verb = "enable" if enabled else "disable"
             return f"Error trying to {verb} automation '{entity_id}': {e}"
@@ -1088,6 +1158,101 @@ class HomeAssistantMCPServer:
         if not resp.get("success", True):
             raise RuntimeError(f"WS registry {registry} call failed: {resp.get('error')}")
         return resp.get("result") or []
+
+    async def _cached_registry(self, registry: str) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        cached = self._registry_cache.get(registry)
+        if cached and now - cached[0] < self._registry_cache_ttl:
+            return cached[1]
+        data = await self._ws_registry(registry)
+        self._registry_cache[registry] = (now, data)
+        return data
+
+    async def _suggest_entities(self, bad_id: str, max_suggestions: int = 30) -> List[Dict[str, Any]]:
+        """Suggest real entities to retry after a bad entity_id guess.
+
+        Ranks same-domain entities by fuzzy-id similarity and boosts any entity
+        in an area whose name or alias appears as a token in the bad id. This
+        catches both "typo in the name" and "right room, wrong guess" cases.
+        """
+        try:
+            areas = await self._cached_registry("area")
+            entities = await self._cached_registry("entity")
+            devices = await self._cached_registry("device")
+        except Exception as e:
+            logger.warning(f"_suggest_entities: registry fetch failed: {e}")
+            return []
+
+        if "." in bad_id:
+            domain, bad_local = bad_id.split(".", 1)
+        else:
+            domain, bad_local = None, bad_id
+        bad_tokens = {t for t in bad_local.lower().split("_") if t}
+
+        area_by_id = {a.get("area_id"): a for a in areas if a.get("area_id")}
+
+        def _area_name(aid: Optional[str]) -> Optional[str]:
+            return (area_by_id.get(aid) or {}).get("name") if aid else None
+
+        matched_area_ids = set()
+        for a in areas:
+            aid = a.get("area_id")
+            if not aid:
+                continue
+            name_tokens = set((a.get("name") or "").lower().replace("-", " ").split())
+            alias_tokens = set()
+            for alias in a.get("aliases") or []:
+                alias_tokens.update((alias or "").lower().replace("-", " ").split())
+            if bad_tokens & (name_tokens | alias_tokens):
+                matched_area_ids.add(aid)
+
+        device_area = {d["id"]: d.get("area_id") for d in devices if d.get("id")}
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for ent in entities:
+            if ent.get("disabled_by") or ent.get("hidden_by"):
+                continue
+            eid = ent.get("entity_id")
+            if not eid:
+                continue
+            if domain and not eid.startswith(f"{domain}."):
+                continue
+            ent_area_id = ent.get("area_id") or device_area.get(ent.get("device_id"))
+            sim = SequenceMatcher(None, bad_id, eid).ratio()
+            # +0.5 boost puts any area-matched entity ahead of all non-matches.
+            score = sim + (0.5 if ent_area_id in matched_area_ids else 0.0)
+            scored.append((score, {
+                "entity_id": eid,
+                "friendly_name": ent.get("name") or ent.get("original_name"),
+                "area": _area_name(ent_area_id),
+            }))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [s[1] for s in scored[:max_suggestions]]
+
+    async def _format_entity_not_found(self, err: EntityNotFoundError, device_label: str = "entity") -> str:
+        base = (
+            f"FAILED: {device_label} '{err.entity_id}' does not exist in Home Assistant. "
+            "No action was taken."
+        )
+        suggestions = await self._suggest_entities(err.entity_id)
+        if not suggestions:
+            return (
+                f"{base} Call ha_list_entities (with a `domain` or `area` filter) "
+                "to look up the correct entity_id, then retry. Do not guess entity names."
+            )
+        lines = [base, "Similar entities (retry with one of these, do not guess others):"]
+        for s in suggestions:
+            parts = []
+            name = s.get("friendly_name")
+            area = s.get("area")
+            if name:
+                parts.append(f'"{name}"')
+            if area:
+                parts.append(f"in {area}")
+            suffix = f" ({', '.join(parts)})" if parts else ""
+            lines.append(f"  {s['entity_id']}{suffix}")
+        return "\n".join(lines)
 
     async def _list_areas(self) -> List[Dict[str, Any]]:
         try:
@@ -1202,7 +1367,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, "start", **extras)
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Timer")
+            return await self._format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error starting timer '{entity_id}': {e}"
 
@@ -1212,7 +1377,7 @@ class HomeAssistantMCPServer:
         try:
             return await self.ha_client.execute_service(entity_id, "cancel")
         except EntityNotFoundError as e:
-            return _format_entity_not_found(e, "Timer")
+            return await self._format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error cancelling timer '{entity_id}': {e}"
 

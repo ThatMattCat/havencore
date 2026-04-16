@@ -12,7 +12,7 @@ Notes on OpenAI Parameters:
 
 - `input` (required): The text to convert to speech
 - `model`: OpenAI model name (can be anything, doesn't affect output in this implementation)
-- `voice`: OpenAI voice names (alloy, echo, fable, onyx, nova, shimmer) — all map to `af_heart` in this implementation
+- `voice`: Either a native Kokoro voice id (e.g. `af_heart`, `af_bella`, `am_michael`) or an OpenAI alias (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`). Native voices pass through to Kokoro; aliases resolve to the configured default voice (`TTS_VOICE`, fallback `af_heart`) for OpenAI-compat devices. Unknown names fall back to the default. Available native voices are filtered to the configured `TTS_LANGUAGE` — see `GET /v1/voices`.
 - `response_format`: Audio format (mp3, opus, aac, flac, wav, pcm) — though **the code always generates WAV**
 - `speed`: Playback speed from 0.25 to 4.0 (parameter is accepted but not actually used)
 
@@ -46,6 +46,19 @@ Example Error:
     "message": "Missing required parameter 'input'",
     "type": "invalid_request_error"
   }
+}
+```
+
+### GET /v1/voices
+
+Returns the voice catalog the service will accept, filtered to the configured `TTS_LANGUAGE`.
+
+```
+{
+  "language": "a",
+  "default": "af_heart",
+  "native": ["af_alloy", "af_aoede", "af_bella", "af_heart", ...],
+  "aliases": ["alloy", "echo", "fable", "nova", "onyx", "shimmer"]
 }
 ```
 

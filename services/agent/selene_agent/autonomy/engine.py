@@ -181,6 +181,7 @@ class AutonomyEngine:
             "runs_last_hour": runs_last_hour,
             "deferred_runs_pending": deferred,
             "rate_limit_per_hour": config.AUTONOMY_MAX_RUNS_PER_HOUR,
+            "timezone": config.CURRENT_TIMEZONE or "UTC",
             "mqtt_connected": bool(self._mqtt_listener and self._mqtt_listener.is_connected()),
             "subscribed_topics": (
                 self._mqtt_listener.subscribed_topics() if self._mqtt_listener else []

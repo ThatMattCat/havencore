@@ -215,6 +215,8 @@ Full chat interface with:
 - Markdown rendering via `marked` (GFM, line breaks enabled)
 - Animated thinking indicator (three pulsing dots) during processing
 - User/assistant avatars with distinct styling
+- **Push-to-talk mic** in the input bar — records from the browser's `MediaRecorder`, uploads the clip to `/api/stt/transcribe` on stop, and auto-sends the transcript as the user message. Disabled while connecting, processing a turn, or transcribing.
+- **Auto-speak toggle** in the header — when enabled, each completed assistant turn is synthesized via `/api/tts/speak` (default voice `af_heart`, mp3) and played inline. A small green dot on the icon indicates active playback; a new send or toggling off interrupts playback. Preference persists in `localStorage` under `chat.autoSpeak`. On mount the page snapshots the current message count so navigating back to `/chat` never replays prior turns.
 - Clear button to reset conversation
 
 **Component:** `src/lib/components/ToolCallCard.svelte` — Expandable card with tool icon (wrench for calls, checkmark for results), tool name, and collapsible JSON body.

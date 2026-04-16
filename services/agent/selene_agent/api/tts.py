@@ -68,15 +68,35 @@ async def speak(payload: SpeakRequest):
 
 @router.get("/tts/voices")
 async def voices():
-    # The Kokoro deployment exposes one native voice; the other names are
-    # OpenAI-compat aliases mapped server-side to the same voice.
-    native = [{"id": "af_heart", "label": "af_heart (Kokoro)"}]
-    aliases = [
-        {"id": name, "label": f"{name} (alias)"}
-        for name in ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-    ]
     formats = ["mp3", "wav", "opus", "aac", "flac", "pcm"]
-    return {"voices": native + aliases, "formats": formats}
+    native_ids: list[str] = []
+    alias_ids: list[str] = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+    default_voice = "af_heart"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{TTS_BASE}/v1/voices",
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status < 400:
+                    data = await resp.json()
+                    native_ids = list(data.get("native") or [])
+                    alias_ids = list(data.get("aliases") or alias_ids)
+                    default_voice = data.get("default") or default_voice
+    except Exception as e:
+        logger.warning(f"TTS /v1/voices unreachable, using fallback list: {e}")
+
+    if not native_ids:
+        native_ids = ["af_heart"]
+
+    # Put the default first so the dashboard dropdown selects it by default.
+    if default_voice in native_ids:
+        native_ids = [default_voice] + [v for v in native_ids if v != default_voice]
+
+    native = [{"id": v, "label": f"{v} (Kokoro)"} for v in native_ids]
+    aliases = [{"id": v, "label": f"{v} (OpenAI alias → {default_voice})"} for v in alias_ids]
+    return {"voices": native + aliases, "formats": formats, "default": default_voice}
 
 
 class AnnounceRequest(BaseModel):

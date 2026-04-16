@@ -187,8 +187,8 @@ Tools are provided by MCP (Model Context Protocol) servers, each running as a su
 ### `homeassistant`
 | Tool | Description |
 |------|-------------|
-| `ha_get_domain_entity_states` | List entities and their states for a given HA domain |
-| `ha_get_domain_services` | List available services for an HA domain |
+| `ha_list_entities` | List HA entities filtered by domain and/or area. Service-only domains (notify, tts, script) return a hint pointing at `ha_list_services`. |
+| `ha_list_services` | List callable services for an HA domain (use for notify/tts/script). |
 | `ha_execute_service` | Execute any HA service (turn on lights, lock doors, etc.) |
 | `ha_control_media_player` | Play, pause, skip, volume, etc. on media players |
 | `ha_stream_media` | Stream media URLs to HA media players |
