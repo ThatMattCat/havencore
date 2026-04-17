@@ -71,6 +71,7 @@ class AgentOrchestrator:
         mcp_manager: MCPClientManager,
         model_name: str,
         tools: List[Dict[str, Any]],
+        session_id: Optional[str] = None,
     ):
         self.client = client
         self.mcp_manager = mcp_manager
@@ -80,7 +81,8 @@ class AgentOrchestrator:
         self.messages: List[Dict[str, Any]] = []
         self.last_query_time: float = time.time()
         self.agent_name = config.AGENT_NAME
-        self.session_id: str = str(uuid.uuid4())
+        self.session_id: str = session_id or str(uuid.uuid4())
+        self._session_id_pinned: bool = session_id is not None
 
         self.temperature = 0.7
         self.top_p = 0.8
@@ -99,7 +101,8 @@ class AgentOrchestrator:
             logger.warning(f"L4 block build failed during initialize: {e}")
         self.messages = [{"role": "system", "content": system_prompt}]
         self._l4_pending = False
-        self.session_id = str(uuid.uuid4())
+        if not getattr(self, "_session_id_pinned", False):
+            self.session_id = str(uuid.uuid4())
 
     async def _check_session_timeout(self):
         """Check if conversation should be reset due to timeout."""

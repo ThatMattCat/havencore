@@ -27,9 +27,20 @@ Response ← JSON ← Agent Logic ← Tool Results ← API Responses
 ## Key components
 
 - `selene_agent/selene_agent.py` — FastAPI app with lifespan, serves the SvelteKit SPA + `/api/*` + `/ws/*` + OpenAI-compat endpoints; mounts routers from `selene_agent/api/`.
-- `selene_agent/orchestrator.py` — event-based agent loop (THINKING / TOOL_CALL / TOOL_RESULT / METRIC / DONE / ERROR) with per-turn LLM and tool-call timing instrumentation.
+- `selene_agent/orchestrator.py` — event-based agent loop (THINKING / TOOL_CALL / TOOL_RESULT / METRIC / DONE / ERROR) with per-turn LLM and tool-call timing instrumentation. Each conversation session owns its own `AgentOrchestrator` instance (messages, `session_id`, `last_query_time`); singletons (OpenAI client, MCP manager, model, tools) are shared across all sessions.
+- `selene_agent/utils/session_pool.py` — `SessionOrchestratorPool` keyed by `session_id`, with per-session `asyncio.Lock`, LRU cap (64), 30s background idle sweep, cold-resume from `conversation_db`, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` builds an ephemeral orchestrator per request and never touches the pool. The autonomy engine also bypasses the pool (it already builds its own ephemeral orchestrators per task in `autonomy/turn.py`).
 - `selene_agent/utils/mcp_client_manager.py` — MCP client that discovers and executes tools from MCP servers, with a `UnifiedTool` abstraction.
 - `selene_agent/utils/conversation_db.py` — PostgreSQL conversation persistence. See [Conversation history](conversation-history.md).
+
+### Session identity on the wire
+
+| Surface | Client → server | Server → client |
+|---|---|---|
+| `POST /api/chat` | `X-Session-Id` request header (optional) | `X-Session-Id` response header |
+| `WS /ws/chat` | First frame `{"type":"session","session_id":"..."}` (optional) | First frame `{"type":"session","session_id":"..."}` |
+| `POST /v1/chat/completions` | — (ignored; stateless) | — |
+
+Missing/unknown `session_id` → the pool mints a new UUID and returns it. Known `session_id` that isn't in memory → the pool cold-resumes from `conversation_db` and rehydrates the orchestrator (calls `prepare()` to prepend the L4 block without clobbering restored messages).
 
 ## API endpoints
 
@@ -42,6 +53,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/status` | GET | Health: agent, MCP servers, DB, vLLM |
 | `/api/tools` | GET | Registered tools grouped by MCP server |
 | `/api/conversations` | GET | Paginated conversation history |
+| `/api/conversations/{session_id}/resume` | POST | Hydrate a stored session into the live pool so `/chat` can continue it |
 | `/api/ha/*` | GET | Home Assistant entities, automations, scenes |
 | `/api/metrics/*` | GET | Per-turn timings, daily aggregates, top tools |
 | `/api/tts/*` | POST/GET | Proxies to text-to-speech |
@@ -57,7 +69,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/memory/*` | GET/POST/PATCH/DELETE | Tiered memory (L2/L3/L4): stats, L4 CRUD, proposal approve/reject, L3 browse + source drill-down, semantic search, run history + manual trigger. See [autonomy/memory/README.md](autonomy/memory/README.md). |
 | `/ws/chat` | WS | Streaming chat with tool visibility + metric events |
 | `/ws/logs` | WS | Live server log tail |
-| `/v1/chat/completions` | POST | OpenAI-compatible chat (used by the voice pipeline) |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat — **stateless**: each request builds an ephemeral orchestrator; no pool, no history persistence, no metrics. The caller owns its own history. |
 | `/v1/models` | GET | Lists the agent as an available model |
 | `/health` | GET | Service health check |
 | `/mcp/status` | GET | MCP connection status |

@@ -17,13 +17,14 @@ router = APIRouter()
 @router.get("/status")
 async def get_system_status(req: Request):
     """Comprehensive system status for the dashboard"""
-    orchestrator = req.app.state.orchestrator
+    session_pool = getattr(req.app.state, "session_pool", None)
     mcp_mgr = req.app.state.mcp_manager
 
     status = {
         "agent": {
             "name": config.AGENT_NAME,
-            "healthy": orchestrator is not None,
+            "healthy": session_pool is not None,
+            "sessions": session_pool.health() if session_pool else {"active_sessions": 0, "max_size": 0},
         },
         "mcp": mcp_mgr.get_server_status() if mcp_mgr else {"error": "not initialized"},
         "database": {

@@ -17,19 +17,20 @@ The core AI agent service for HavenCore. Selene receives natural language input,
                    │  OpenAI-compat  │  ← /v1/chat/completions
                    └────────┬────────┘
                             │
-              ┌─────────────┼─────────────┐
-              │             │             │
-        ┌─────┴─────┐ ┌────┴────┐ ┌──────┴──────┐
-        │ Orchestrator│ │  MCP   │ │ Conversation│
-        │ (agent loop)│ │Manager │ │     DB      │
-        └─────┬─────┘ └────┬────┘ │ (PostgreSQL)│
-              │             │      └─────────────┘
-              │    ┌────────┼────────┬──────────┐
-              │    │        │        │          │
-              ▼    ▼        ▼        ▼          ▼
-           vLLM  general  home     qdrant     mqtt
-          (8000) _tools  assistant _tools    _tools
-                          _tools
+            ┌───────────────┼───────────────┐
+            │               │               │
+     ┌──────┴───────┐ ┌─────┴─────┐ ┌──────┴──────┐
+     │Session Pool  │ │   MCP     │ │ Conversation│
+     │(per-session  │ │ Manager   │ │     DB      │
+     │orchestrators)│ │           │ │ (PostgreSQL)│
+     └──────┬───────┘ └─────┬─────┘ └─────────────┘
+            │               │
+            │      ┌────────┼────────┬──────────┐
+            │      │        │        │          │
+            ▼      ▼        ▼        ▼          ▼
+         vLLM  general   home      qdrant     mqtt
+        (8000) _tools  assistant  _tools     _tools
+                        _tools
 ```
 
 Everything runs on a single port (6002). There is no Gradio — the UI is a custom SvelteKit dashboard built into the Docker image and served as static files by FastAPI.
@@ -60,11 +61,12 @@ JSON endpoints consumed by the dashboard frontend. Can also be called directly.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/chat` | Send a message, get full response + tool event log. Body: `{"message": "..."}`. Returns: `{"response": "...", "events": [...]}` |
-| `GET` | `/api/status` | System health — agent, MCP servers (connected/failed), database, vLLM model info |
+| `POST` | `/api/chat` | Send a message, get full response + tool event log. Body: `{"message": "..."}`. Optional `X-Session-Id` header binds to an existing session; response echoes the active `X-Session-Id`. Returns: `{"response": "...", "session_id": "...", "events": [...]}` |
+| `GET` | `/api/status` | System health — agent (incl. `sessions: {active_sessions, max_size, sweep_running}`), MCP servers (connected/failed), database, vLLM model info |
 | `GET` | `/api/tools` | All registered tools grouped by MCP server, with descriptions and parameter schemas |
 | `GET` | `/api/conversations?limit=20&offset=0` | Paginated list of stored conversations |
 | `GET` | `/api/conversations/{session_id}` | Full message history for a specific conversation |
+| `POST` | `/api/conversations/{session_id}/resume` | Hydrate a stored session into the live pool so `/chat` can continue it. Returns `{session_id, resumed, message_count}` |
 | `GET` | `/api/mcp/status` | MCP connection details (configured, connected, failed servers) |
 | `GET` | `/api/ha/entities?domain=light` | Home Assistant entity states, optionally filtered by domain |
 | `GET` | `/api/ha/entities/summary` | Entity counts per domain with active counts |
@@ -99,6 +101,12 @@ Used by the chat page.
 ```
 Connect:  ws://HOST:6002/ws/chat
 
+Optional first frame (client → server):
+  {"type": "session", "session_id": "existing-uuid-or-device-id"}
+
+Server always announces the active session before the first turn:
+  {"type": "session", "session_id": "..."}
+
 Send:     {"message": "What's the weather like?"}
 
 Receive (in order):
@@ -113,7 +121,7 @@ Error:
   {"type": "error", "error": "description of what went wrong"}
 ```
 
-The connection stays open for multiple messages. Each message triggers a full agent loop (LLM call, optional tool calls, final response). The `metric` event is emitted once per turn, just before `done`, and is persisted to the `turn_metrics` table.
+The connection stays open for multiple messages. Each message triggers a full agent loop (LLM call, optional tool calls, final response), serialized per-session via the pool's per-session `asyncio.Lock` so in-flight turns never overlap on the same `session_id`. The `metric` event is emitted once per turn, just before `done`, and is persisted to the `turn_metrics` table.
 
 #### `/ws/logs`
 
@@ -125,7 +133,7 @@ These endpoints maintain backward compatibility with the voice pipeline and any 
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/v1/chat/completions` | Chat completions. Supports `stream: true` for SSE streaming. Only the last user message is processed (agent manages its own conversation history). |
+| `POST` | `/v1/chat/completions` | Chat completions. Supports `stream: true` for SSE streaming. **Stateless** — each request builds an ephemeral orchestrator, runs the agent loop, and discards it. No pool, no history persistence, no `turn_metrics` writes. The caller owns its full message history in the request body. For pool-backed, history-tracked chat, use `/api/chat` or `/ws/chat` instead. |
 | `GET` | `/v1/models` | Lists the agent as an available model |
 
 **Non-streaming example:**
@@ -156,13 +164,24 @@ SSE streaming follows the OpenAI format: `data: {"choices": [{"delta": {"content
 The core agent loop lives in `selene_agent/orchestrator.py`. It:
 
 1. Receives a user message
-2. Checks for session timeout (configurable, default 180s) — if expired, stores the conversation to PostgreSQL and resets
-3. Appends the user message with system context (timestamp, location)
-4. Calls the LLM with the conversation history and available tools
-5. If the LLM requests tool calls, executes them via MCP and loops back to step 4
-6. Returns the final text response
+2. Appends the user message with system context (timestamp, location)
+3. Calls the LLM with the conversation history and available tools
+4. If the LLM requests tool calls, executes them via MCP and loops back to step 3
+5. Returns the final text response
 
 Each step yields typed events (`THINKING`, `TOOL_CALL`, `TOOL_RESULT`, `METRIC`, `DONE`, `ERROR`) that enable streaming and tool visibility in the UI. The `METRIC` event carries per-turn timings (LLM latency, per-tool latencies, total, iteration count) and is both forwarded over the chat WebSocket and persisted to the `turn_metrics` Postgres table for the Metrics page.
+
+### Session pool
+
+Each conversation owns its own `AgentOrchestrator` (messages, `session_id`, `last_query_time`); the expensive singletons (OpenAI client, MCP manager, model, tool list) are shared. The `SessionOrchestratorPool` in `selene_agent/utils/session_pool.py` manages the lifecycle:
+
+- **Per-session `asyncio.Lock`** — turns on the same `session_id` serialize, turns across sessions run concurrently
+- **LRU cap (default 64)** — when the pool fills, the least-recently-used session is flushed to Postgres and evicted
+- **30-second idle sweep** — background task flushes sessions past `CONVERSATION_TIMEOUT` (default 180s) and reinitializes them in place (same `session_id`, empty messages, L4 memory block reapplied). Busy sessions are skipped, not blocked
+- **Shutdown flush** — on restart/stop/SIGTERM, every non-empty session is persisted before exit
+- **Cold resume** — an unknown `session_id` that exists in `conversation_histories` is rehydrated; `prepare()` re-prepends the L4 block without clobbering the restored messages
+
+`/api/chat` and `/ws/chat` route through the pool. `/v1/chat/completions` bypasses it entirely (stateless, ephemeral orchestrator per request). The autonomy engine also bypasses the pool — it builds its own ephemeral orchestrators per task in `autonomy/turn.py`.
 
 **Safety limits:**
 - Max 8 tool iterations per request (prevents runaway loops)
@@ -284,6 +303,7 @@ services/agent/
     │   ├── logger.py         # Loki + ring-buffer log handlers
     │   ├── conversation_db.py # PostgreSQL conversation storage/retrieval
     │   ├── metrics_db.py     # PostgreSQL turn_metrics read/write (shared pool)
+    │   ├── session_pool.py   # SessionOrchestratorPool (LRU + idle sweep + flush + cold-resume)
     │   └── mcp_client_manager.py # MCP server lifecycle, tool discovery
     └── modules/              # MCP tool servers (each runs as a subprocess)
         ├── mcp_general_tools/

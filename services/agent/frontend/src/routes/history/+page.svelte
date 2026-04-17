@@ -1,7 +1,9 @@
 <script>
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
-	import { listConversations, getConversation } from '$lib/api';
+	import { listConversations, getConversation, resumeConversation } from '$lib/api';
+	import { setSessionId } from '$lib/stores/chat';
 
 	let conversations = $state([]);
 	let selectedConv = $state(null);
@@ -66,6 +68,23 @@
 		loadConversations();
 	}
 
+	let resumingSid = $state(null);
+
+	async function handleResume(conv, event) {
+		// Prevent the row's selectConversation click.
+		if (event) event.stopPropagation();
+		resumingSid = conv.session_id;
+		try {
+			const result = await resumeConversation(conv.session_id);
+			setSessionId(result.session_id);
+			await goto('/chat');
+		} catch (e) {
+			error = `Resume failed: ${e.message || e}`;
+		} finally {
+			resumingSid = null;
+		}
+	}
+
 	function getMessagePreview(messages) {
 		if (!messages || messages.length === 0) return 'Empty conversation';
 		const userMsg = messages.find(m => m.role === 'user');
@@ -95,14 +114,23 @@
 				<p class="muted">No conversations stored yet</p>
 			{:else}
 				{#each conversations as conv}
-					<button
-						class="conv-item"
-						class:selected={selectedConv?.session_id === conv.session_id}
-						onclick={() => selectConversation(conv)}
-					>
-						<div class="conv-time">{formatTime(conv.created_at)}</div>
-						<div class="conv-info">{conv.message_count} messages</div>
-					</button>
+					<div class="conv-row" class:selected={selectedConv?.session_id === conv.session_id}>
+						<button
+							class="conv-item"
+							onclick={() => selectConversation(conv)}
+						>
+							<div class="conv-time">{formatTime(conv.created_at)}</div>
+							<div class="conv-info">{conv.message_count} messages</div>
+						</button>
+						<button
+							class="resume-btn"
+							onclick={(e) => handleResume(conv, e)}
+							disabled={resumingSid === conv.session_id}
+							title="Resume this conversation in /chat"
+						>
+							{resumingSid === conv.session_id ? '…' : 'Resume'}
+						</button>
+					</div>
 				{/each}
 
 				<div class="pagination">
@@ -189,9 +217,23 @@
 		gap: 4px;
 	}
 
+	.conv-row {
+		display: flex;
+		gap: 6px;
+		align-items: stretch;
+	}
+
+	.conv-row .conv-item {
+		flex: 1;
+	}
+
+	.conv-row.selected .conv-item {
+		background: #252a3e;
+		border-color: #6366f1;
+	}
+
 	.conv-item {
 		display: block;
-		width: 100%;
 		text-align: left;
 		padding: 12px;
 		background: #161822;
@@ -206,9 +248,25 @@
 		background: #1e2235;
 	}
 
-	.conv-item.selected {
+	.resume-btn {
+		padding: 0 12px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		color: #a5b4fc;
+		font-size: 12px;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.resume-btn:hover:not(:disabled) {
 		background: #252a3e;
 		border-color: #6366f1;
+	}
+
+	.resume-btn:disabled {
+		opacity: 0.5;
+		cursor: wait;
 	}
 
 	.conv-time {

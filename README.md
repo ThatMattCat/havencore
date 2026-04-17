@@ -134,6 +134,9 @@ This is the part that's worth scrolling for.
 ### Single-process, event-driven agent orchestrator
 The core loop ([`orchestrator.py`](services/agent/selene_agent/orchestrator.py)) is a typed async generator that emits `THINKING` / `TOOL_CALL` / `TOOL_RESULT` / `METRIC` / `DONE` / `ERROR` events. The WebSocket handler streams them straight to the dashboard; the OpenAI-compatible endpoint assembles them into SSE. **Same code path, three surfaces.**
 
+### Per-session orchestrator pool with cold-resume
+Concurrent users don't share state. A [`SessionOrchestratorPool`](services/agent/selene_agent/utils/session_pool.py) keyed by `session_id` gives each conversation its own orchestrator, its own messages, its own `asyncio.Lock` — so two dashboard tabs or a dashboard plus a voice puck never race on each other's turns. The pool runs a 30-second idle sweep (flush timed-out sessions to Postgres, reinitialize in place), an LRU cap at 64 (evict + persist), and a shutdown flush (nothing lost on restart). A stored `session_id` can be cold-resumed from the DB via `POST /api/conversations/{id}/resume` — the `/history` page's **Resume** button hydrates a past conversation straight into `/chat` and keeps going. `/v1/chat/completions` deliberately bypasses all of this: it's stateless by design, ephemeral orchestrator per request, caller owns the history.
+
 ### MCP all the way down
 Tools aren't a hardcoded registry — they're discovered at startup by a [`MCPClientManager`](services/agent/selene_agent/utils/mcp_client_manager.py) that spawns each tool server as a subprocess and speaks stdio JSON-RPC to it. A `UnifiedTool` abstraction converts MCP tool schemas to OpenAI function-calling format on the fly. Adding a tool server is a new folder with a `__main__.py`.
 

@@ -1,6 +1,6 @@
 <script>
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { messages, isConnected, isProcessing, connectionState, connect, sendMessage, disconnect, clearMessages, retryNow } from '$lib/stores/chat';
+	import { messages, isConnected, isProcessing, connectionState, currentSessionId, connect, sendMessage, disconnect, clearMessages, retryNow, startNewChat } from '$lib/stores/chat';
 	import ToolCallCard from '$lib/components/ToolCallCard.svelte';
 	import { sttTranscribe, ttsSpeak } from '$lib/api';
 	import { marked } from 'marked';
@@ -67,6 +67,17 @@
 	function getErrorEvent(events) {
 		if (!events) return null;
 		return events.find((e) => e.type === 'error') || null;
+	}
+
+	function shortSessionId(sid) {
+		if (!sid) return '—';
+		return sid.slice(-8);
+	}
+
+	function handleNewChat() {
+		stopPlayback();
+		if (recording) stopRecording();
+		startNewChat();
 	}
 
 	const bannerLabels = {
@@ -279,6 +290,9 @@
 				<span class="dot"></span>
 				{$isConnected ? 'Connected' : 'Disconnected'}
 			</span>
+			<span class="session-badge" title={$currentSessionId ?? 'No session yet'}>
+				session · <span class="session-id">{shortSessionId($currentSessionId)}</span>
+			</span>
 			<button
 				class="icon-btn"
 				class:active={autoSpeak}
@@ -293,7 +307,8 @@
 				{/if}
 				{#if speaking}<span class="speaking-dot"></span>{/if}
 			</button>
-			<button class="clear-btn" onclick={clearMessages}>Clear</button>
+			<button class="clear-btn" onclick={handleNewChat} title="Start a fresh session">New Chat</button>
+			<button class="clear-btn" onclick={clearMessages} title="Clear visible messages (same session)">Clear</button>
 		</div>
 	</div>
 
@@ -470,6 +485,23 @@
 
 	.connection-status.connected .dot {
 		background: #4ade80;
+	}
+
+	.session-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 8px;
+		background: #1a1d2e;
+		border: 1px solid #2d3148;
+		border-radius: 10px;
+		color: #9ca3af;
+		font-size: 11px;
+	}
+
+	.session-badge .session-id {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		color: #c9cdd5;
 	}
 
 	.clear-btn {

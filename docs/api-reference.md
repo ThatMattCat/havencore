@@ -20,7 +20,7 @@ The `/api/*` dashboard endpoints are unauthenticated — the dashboard is intend
 
 ### POST /v1/chat/completions
 
-OpenAI-compatible chat completions endpoint for conversational AI.
+OpenAI-compatible chat completions endpoint for conversational AI. **Stateless**: each request builds an ephemeral orchestrator for the one call, runs the agent loop, and discards it. The endpoint never touches the session pool, the conversation-history DB, or the `turn_metrics` table. Callers must supply their full message history in the request body — the server remembers nothing between calls. For a pool-backed, history-tracked chat surface, use `/api/chat` or `/ws/chat` instead.
 
 **Endpoint**: `POST http://localhost/v1/chat/completions`
 
@@ -351,11 +351,12 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `POST` | `/api/chat` | One-shot message with tool event log |
-| `GET`  | `/api/status` | Agent, MCP, DB, vLLM health |
+| `POST` | `/api/chat` | One-shot message with tool event log. Accepts `X-Session-Id` request header (optional); echoes the active `X-Session-Id` response header. |
+| `GET`  | `/api/status` | Agent, MCP, DB, vLLM health. Includes `agent.sessions` = `{active_sessions, max_size, sweep_running}` for the session pool. |
 | `GET`  | `/api/tools` | Registered tools grouped by MCP server |
 | `GET`  | `/api/conversations` | Paginated conversation history |
 | `GET`  | `/api/conversations/{session_id}` | Full messages for a session |
+| `POST` | `/api/conversations/{session_id}/resume` | Hydrate a stored session into the live pool. Returns `{session_id, resumed, message_count}`. Used by the dashboard's "Resume" button on `/history`. |
 | `GET`  | `/api/ha/entities` | HA entities (optionally `?domain=light`) |
 | `GET`  | `/api/ha/entities/summary` | Entity counts per domain |
 | `GET`  | `/api/ha/automations` | HA automations |
@@ -396,7 +397,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | URL | Direction | Purpose |
 |-----|-----------|---------|
-| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events |
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"..."}` as the first frame to resume or bind a specific session; the server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
 | `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling

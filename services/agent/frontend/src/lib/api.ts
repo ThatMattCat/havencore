@@ -72,6 +72,18 @@ export function getConversation(sessionId: string): Promise<{ conversation: Conv
 	return fetchJSON(`/api/conversations/${sessionId}`);
 }
 
+export interface ResumeResponse {
+	session_id: string;
+	resumed: boolean;
+	message_count: number;
+}
+
+export function resumeConversation(sessionId: string): Promise<ResumeResponse> {
+	return fetchJSON(`/api/conversations/${sessionId}/resume`, {
+		method: 'POST',
+	});
+}
+
 // --- Chat ---
 
 export interface ChatResponse {
