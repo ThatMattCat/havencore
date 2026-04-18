@@ -69,9 +69,12 @@ The `SessionOrchestratorPool` flushes a session to Postgres on one of
 three triggers (see the agent's
 [Conversation history](../agent/conversation-history.md) doc for detail):
 
-- **Idle sweep** — a 30s background task persists sessions whose
-  `last_query_time` is older than `CONVERSATION_TIMEOUT` (default 180s)
-  and reinitializes them in place. `reset_reason` = `timeout_<seconds>_seconds`.
+- **Idle sweep (summarize-and-continue)** — a 30s background task persists sessions whose
+  `last_query_time` is older than their effective idle window (per-session
+  override if set, else `CONVERSATION_TIMEOUT`, default 90s), then runs a
+  one-shot LLM summary and reinitializes `messages` to
+  `[system, summary, last N exchanges]` with the same `session_id`.
+  `reset_reason` = `idle_timeout_summarize`.
 - **LRU eviction** — when the pool hits `max_size` (64) and a new
   session is admitted, the least-recently-used entry is flushed and
   dropped. `reset_reason` = `lru_eviction`.
@@ -84,12 +87,22 @@ Sessions with only the system prompt (`messages` length ≤ 1) are skipped.
 
 ```json
 {
-  "reset_reason": "timeout_180_seconds",
+  "reset_reason": "idle_timeout_summarize",
   "message_count": 5,
   "last_query_time": 1705315800.123,
-  "agent_name": "Selene"
+  "agent_name": "Selene",
+  "idle_timeout_override": 45,
+  "rolling_summary": "User asked about weather and turned on the bedroom lamp...",
+  "tail_exchanges_kept": 2,
+  "idle_seconds": 47,
+  "timeout_seconds": 45
 }
 ```
+
+`idle_timeout_override`, `rolling_summary`, `tail_exchanges_kept`,
+`idle_seconds`, and `timeout_seconds` are written on `idle_timeout_summarize`
+rows only. `rolling_summary` may be `null` if the summary LLM call timed out
+or errored (the reset still happened, with the tail preserved).
 
 ## Database operations
 

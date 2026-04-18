@@ -76,7 +76,7 @@ AgentOrchestrator.run(user_message) -> AsyncGenerator[AgentEvent]
   - Yields typed events as the agent loop progresses
   - Enables both streaming (SSE/WebSocket) and non-streaming consumption
   - Includes tool result truncation (max 8000 chars)
-  - Session timeout detection (configurable via CONVERSATION_TIMEOUT)
+  - Session timeout detection (configurable via `CONVERSATION_TIMEOUT`; since extended with a per-session override and a summarize-and-continue reset — see [`conversation-history.md`](conversation-history.md))
   - Max 8 tool iterations per request to prevent runaway loops
 ```
 

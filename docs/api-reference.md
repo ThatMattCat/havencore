@@ -351,7 +351,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `POST` | `/api/chat` | One-shot message with tool event log. Accepts `X-Session-Id` request header (optional); echoes the active `X-Session-Id` response header. |
+| `POST` | `/api/chat` | One-shot message with tool event log. Accepts `X-Session-Id` request header (optional); echoes the active `X-Session-Id` response header. Accepts `X-Idle-Timeout: <seconds>` (optional) to set the per-session idle window for summarize-and-reset; value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` and bad values are log-and-ignored. |
 | `GET`  | `/api/status` | Agent, MCP, DB, vLLM health. Includes `agent.sessions` = `{active_sessions, max_size, sweep_running}` for the session pool. |
 | `GET`  | `/api/tools` | Registered tools grouped by MCP server |
 | `GET`  | `/api/conversations` | Paginated conversation history |
@@ -397,7 +397,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | URL | Direction | Purpose |
 |-----|-----------|---------|
-| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"..."}` as the first frame to resume or bind a specific session; the server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90}` as the first frame to resume/bind a session and/or set a per-session idle window; both fields are optional. A later `{"type":"session","idle_timeout":N}` mid-stream updates the window on the active session. The server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
 | `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling

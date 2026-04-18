@@ -177,7 +177,7 @@ Each conversation owns its own `AgentOrchestrator` (messages, `session_id`, `las
 
 - **Per-session `asyncio.Lock`** — turns on the same `session_id` serialize, turns across sessions run concurrently
 - **LRU cap (default 64)** — when the pool fills, the least-recently-used session is flushed to Postgres and evicted
-- **30-second idle sweep** — background task flushes sessions past `CONVERSATION_TIMEOUT` (default 180s) and reinitializes them in place (same `session_id`, empty messages, L4 memory block reapplied). Busy sessions are skipped, not blocked
+- **30-second idle sweep (summarize-and-continue)** — background task persists sessions past their effective idle window (per-session override, else `CONVERSATION_TIMEOUT`, default 90s), runs a one-shot LLM summary, and resets `messages` to `[system + L4, summary, last 2 exchanges]` with the same `session_id`. On summary LLM timeout/failure, falls back to keep-tail-only. Busy sessions are skipped, not blocked
 - **Shutdown flush** — on restart/stop/SIGTERM, every non-empty session is persisted before exit
 - **Cold resume** — an unknown `session_id` that exists in `conversation_histories` is rehydrated; `prepare()` re-prepends the L4 block without clobbering the restored messages
 
@@ -186,7 +186,7 @@ Each conversation owns its own `AgentOrchestrator` (messages, `session_id`, `las
 **Safety limits:**
 - Max 8 tool iterations per request (prevents runaway loops)
 - Tool results truncated to 8000 chars (configurable via `TOOL_RESULT_MAX_CHARS`)
-- Session timeout stores conversation and resets context (configurable via `CONVERSATION_TIMEOUT`)
+- Session timeout persists the full conversation and resets to `[system, summary, last N exchanges]` (configurable via `CONVERSATION_TIMEOUT`; per-session override via `X-Idle-Timeout` header or WS `idle_timeout` field)
 
 ## MCP Tool Servers
 
@@ -239,7 +239,12 @@ All configuration is via environment variables (loaded in `selene_agent/utils/co
 | `LLM_API_KEY` | — | API key for the LLM backend |
 | `AGENT_NAME` | `""` | Name of the assistant persona |
 | `MCP_SERVERS` | `{}` | JSON array of MCP server configs |
-| `CONVERSATION_TIMEOUT` | `180` | Seconds of inactivity before conversation resets |
+| `CONVERSATION_TIMEOUT` | `90` | Seconds of inactivity before summarize-and-reset fires (per-session override via `X-Idle-Timeout` header or WS `idle_timeout` field) |
+| `CONVERSATION_TIMEOUT_MIN` | `10` | Lower clamp for per-session overrides |
+| `CONVERSATION_TIMEOUT_MAX` | `3600` | Upper clamp for per-session overrides |
+| `SESSION_SUMMARY_MAX_TOKENS` | `400` | Cap on the summarize-on-timeout LLM recap length |
+| `SESSION_SUMMARY_TAIL_EXCHANGES` | `2` | Raw user/assistant pairs preserved after summarize-and-reset |
+| `SESSION_SUMMARY_LLM_TIMEOUT_SEC` | `15` | Summary LLM call wall-clock timeout; falls back to keep-tail-only |
 | `TOOL_RESULT_MAX_CHARS` | `8000` | Max characters per tool result before truncation |
 | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | — | PostgreSQL connection for conversation storage |
 | `QDRANT_HOST` | `qdrant` | Qdrant vector DB host |

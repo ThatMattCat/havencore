@@ -159,13 +159,31 @@ EMBEDDING_DIM=1024   # Match the model: bge-large-en-v1.5 = 1024, MiniLM-L6 = 38
 ### Agent runtime tuning
 
 ```bash
-# Seconds of inactivity before an idle sweep flushes a pooled session to
-# Postgres and reinitializes it in place. Also bounds LRU eviction behavior.
-CONVERSATION_TIMEOUT=180
+# Seconds of inactivity before the session pool summarizes the conversation
+# and resets it in place (same session_id, compact recap preserved as a
+# system message, last 2 user/assistant exchanges kept verbatim).
+CONVERSATION_TIMEOUT=90
+
+# Bounds for the per-session override (see below). Values outside this range
+# are clamped rather than rejected.
+CONVERSATION_TIMEOUT_MIN=10
+CONVERSATION_TIMEOUT_MAX=3600
+
+# Tuning for the summarize-on-timeout LLM call.
+SESSION_SUMMARY_MAX_TOKENS=400       # cap on the recap length
+SESSION_SUMMARY_TAIL_EXCHANGES=2     # raw user/assistant pairs kept after reset
+SESSION_SUMMARY_LLM_TIMEOUT_SEC=15   # fall back to tail-only if the call hangs
 
 # Cap on tool-result text before it's summarized back to the LLM
 TOOL_RESULT_MAX_CHARS=8000
 ```
+
+Per-session override: clients can pass `X-Idle-Timeout: <seconds>` on
+`POST /api/chat`, or include an `idle_timeout` field on any
+`{"type":"session", ...}` WebSocket frame (first frame or mid-stream), to
+widen or tighten the idle window for that session. The value sticks for
+the session's life (or until another turn sends a new value) and is
+persisted alongside the conversation for cold resume.
 
 ### Autonomy engine
 

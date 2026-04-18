@@ -13,13 +13,15 @@ Stores conversation history, per-turn metrics, and autonomy run logs.
 Initialized from [`init.sql`](./init.sql) on first boot. Tables:
 
 - `conversation_histories` — archived conversations flushed by the
-  `SessionOrchestratorPool` on one of three triggers: idle timeout
-  (default 180s; see `CONVERSATION_TIMEOUT`), LRU eviction when the pool
-  hits its 64-session cap, or shutdown flush on agent restart/stop.
-  `metadata.reset_reason` records which fired. Rows are keyed by an
-  externally-stable `session_id` (dashboard tab UUID, puck mac-hash), so
-  one logical device accumulates multiple rows over time — and any row
-  can be cold-resumed into the live pool via
+  `SessionOrchestratorPool` on one of three triggers: idle timeout with
+  summarize-and-continue (default 90s; see `CONVERSATION_TIMEOUT` plus
+  per-session override via `X-Idle-Timeout` / WS `idle_timeout`), LRU
+  eviction when the pool hits its 64-session cap, or shutdown flush on
+  agent restart/stop. `metadata.reset_reason` records which fired (idle
+  rows carry `rolling_summary` and `idle_timeout_override` too). Rows are
+  keyed by an externally-stable `session_id` (dashboard tab UUID, puck
+  mac-hash), so one logical device accumulates multiple rows over time —
+  and any row can be cold-resumed into the live pool via
   `POST /api/conversations/{session_id}/resume`
 - `turn_metrics` — one row per agent turn, fed by the orchestrator's
   `METRIC` event; powers the `/metrics` dashboard page

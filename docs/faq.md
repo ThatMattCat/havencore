@@ -492,14 +492,25 @@ response = client.chat.completions.create(
 - **Database storage**: Unlimited (bounded by disk space)
 - **Auto-flush**: the `SessionOrchestratorPool` flushes a session to
   Postgres on one of three triggers — idle timeout (default
-  `CONVERSATION_TIMEOUT=180` seconds = 3 min, swept every 30s), LRU
-  eviction when the pool hits its 64-session cap, or shutdown flush on
-  agent restart/stop.
+  `CONVERSATION_TIMEOUT=90` seconds, swept every 30s), LRU eviction when
+  the pool hits its 64-session cap, or shutdown flush on agent
+  restart/stop.
+- **Summarize and continue**: on idle expiration the agent does *not*
+  hard-wipe the conversation. It runs a one-shot summary LLM call,
+  persists the full prior history with a `rolling_summary` in metadata,
+  then resets `messages` to `[system prompt, summary, last 2 exchanges]`
+  — the `session_id` is preserved, so the thread continues with a
+  compact recap of what came before.
 
 **Configuration options**:
 ```bash
-# .env — tune how quickly idle conversations are persisted
-CONVERSATION_TIMEOUT=180
+# .env — default idle window (seconds) before summarize-and-reset
+CONVERSATION_TIMEOUT=90
+
+# Per-session override (clamped to [CONVERSATION_TIMEOUT_MIN=10,
+# CONVERSATION_TIMEOUT_MAX=3600]):
+#   REST:  POST /api/chat  -H "X-Idle-Timeout: 45"
+#   WS:    {"type":"session","session_id":"...","idle_timeout":45}
 ```
 
 ```sql

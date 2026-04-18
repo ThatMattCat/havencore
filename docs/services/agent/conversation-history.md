@@ -2,16 +2,19 @@
 
 ## Overview
 
-HavenCore stores conversation histories to PostgreSQL whenever a pooled session's messages would otherwise be lost — on idle timeout, LRU eviction, or agent shutdown. Rows are keyed by `session_id`, so a single external session can produce multiple stored rows over its lifetime (one per reset).
+HavenCore stores conversation histories to PostgreSQL whenever a pooled session's messages would otherwise be lost — on idle timeout (summarize-and-continue), LRU eviction, or agent shutdown. Rows are keyed by `session_id`, so a single external session can produce multiple stored rows over its lifetime (one per reset).
 
 ## Features
 
 - **Automatic Storage**: The agent flushes conversations to PostgreSQL before they are dropped or reset. The `metadata.reset_reason` field records which trigger fired.
 - **Rich Metadata**: Each stored conversation includes metadata such as:
-  - Reset reason — one of `timeout_<seconds>_seconds` (idle sweep), `lru_eviction` (pool at capacity), or `shutdown_flush` (agent stopping)
+  - Reset reason — one of `idle_timeout_summarize` (idle sweep; see below), `lru_eviction` (pool at capacity), or `shutdown_flush` (agent stopping)
   - Message count
   - Last query timestamp
   - Agent name
+  - `idle_timeout_override` — the per-session window in seconds, if the client set one; `null` otherwise
+  - `rolling_summary` — compact recap written by the summarize-on-timeout path (idle sweeps only; `null` on LRU/shutdown flushes or when the summary LLM call fails)
+  - `tail_exchanges_kept` — how many user/assistant pairs were carried forward
   - Trace ID for debugging
   - Storage timestamp
 
@@ -53,11 +56,25 @@ The PostgreSQL connection is configured via environment variables:
 
 A session is flushed to PostgreSQL whenever its messages would be lost. Three triggers can fire:
 
-1. **Idle sweep** — a 30-second background task in `SessionOrchestratorPool` looks for sessions whose `last_query_time` is older than `CONVERSATION_TIMEOUT` (default 180s) and calls the orchestrator's `_check_session_timeout()` under the per-session lock. That flushes the messages and re-initializes the session in place (same `session_id`, empty messages, L4 block reapplied). Busy sessions are skipped, not blocked.
+1. **Idle sweep (summarize-and-continue)** — a 30-second background task in `SessionOrchestratorPool` looks for sessions whose `last_query_time` is older than their effective idle window (`orch.effective_timeout()` — the per-session override, or `CONVERSATION_TIMEOUT` default `90s`). For each expired session it acquires the per-session lock and runs `_summarize_and_reset(reason="idle_timeout_summarize")`:
+   - persist the full prior history to Postgres (with `rolling_summary` and `idle_timeout_override` in metadata),
+   - reinitialize `messages` to `[system prompt (+ L4 block), summary as a system message, last N user/assistant exchanges verbatim]` (N = `SESSION_SUMMARY_TAIL_EXCHANGES`, default 2),
+   - preserve the same `session_id` so the thread continues.
+
+   The summary is a one-shot LLM call capped by `SESSION_SUMMARY_MAX_TOKENS` and `SESSION_SUMMARY_LLM_TIMEOUT_SEC`. On timeout or error the reset falls back to keep-tail-only (no summary injected) and logs a structured `session_summarize_reset` line with `summary_ok=false`. Busy sessions are skipped (non-blocking lock try-acquire), not blocked.
 2. **LRU eviction** — when the pool hits `max_size` (default 64) and a new session is admitted, the least-recently-used entry is flushed and removed from memory. Its `session_id` persists in the DB and can be cold-resumed later.
 3. **Shutdown flush** — on agent shutdown (restart, stop, SIGTERM), the pool iterates every live session and flushes it before the process exits. Every non-empty session is guaranteed to be persisted across restarts.
 
 In all three cases, sessions with only the system prompt (no real turns) are skipped — the threshold is `> 1` message.
+
+### Per-session idle timeout override
+
+Clients can widen or tighten the idle window for a single session without touching the global default:
+
+- REST: `POST /api/chat` accepts an optional `X-Idle-Timeout: <seconds>` header.
+- WebSocket: `/ws/chat` accepts an optional `idle_timeout` integer on any `{"type":"session", ...}` frame (first frame or mid-stream).
+
+The value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` (defaults 10 and 3600). Bad values are logged and ignored. The override is stored on the live orchestrator and persisted into `metadata.idle_timeout_override` so that cold-resume via `POST /api/conversations/{session_id}/resume` rehydrates the same window.
 
 ### Cold resume
 
@@ -82,9 +99,14 @@ FROM conversation_histories
 ORDER BY created_at DESC 
 LIMIT 10;
 
--- Get conversations by reset reason
-SELECT * FROM conversation_histories 
-WHERE metadata->>'reset_reason' = 'timeout_3_minutes';
+-- Get conversations closed by the idle sweep (summarize-and-continue)
+SELECT session_id, created_at,
+       metadata->>'rolling_summary' AS summary,
+       metadata->>'idle_timeout_override' AS override
+FROM conversation_histories
+WHERE metadata->>'reset_reason' = 'idle_timeout_summarize'
+ORDER BY created_at DESC
+LIMIT 20;
 
 -- Get conversation messages
 SELECT jsonb_pretty(conversation_data) 
