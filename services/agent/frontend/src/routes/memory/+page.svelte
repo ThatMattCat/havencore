@@ -10,6 +10,10 @@
 	let l3Entries = $state([]);
 	let l3Offset = $state(0);
 	let l3HasMore = $state(false);
+	let l2Entries = $state([]);
+	let l2Offset = $state(0);
+	let l2HasMore = $state(false);
+	let l2Expanded = $state(false);
 	let sourcesModal = $state(null);
 	let loading = $state(true);
 	let error = $state('');
@@ -23,6 +27,10 @@
 	let searchResults = $state(null);
 	let searchLoading = $state(false);
 	let searchError = $state('');
+
+	let phase = $state(null);
+	let phaseSince = $state(null);
+	let phaseSaving = $state(false);
 
 	const PAGE_SIZE = 50;
 
@@ -38,26 +46,74 @@
 		l3HasMore = !!r.has_more;
 	}
 
+	async function refreshL2() {
+		const r = await fetchJSON(`/api/memory/l2?limit=${PAGE_SIZE}&offset=${l2Offset}`);
+		l2Entries = r.entries ?? [];
+		l2HasMore = !!r.has_more;
+	}
+
+	async function toggleL2() {
+		l2Expanded = !l2Expanded;
+		if (l2Expanded) await refreshL2();
+	}
+
+	async function deleteL2(id) {
+		if (!confirm('Delete this L2 entry? This is a hard delete.')) return;
+		await fetch(`/api/memory/l2/${id}`, { method: 'DELETE' });
+		await Promise.all([refreshL2(), refresh()]);
+	}
+
+	function l2PrevPage() {
+		l2Offset = Math.max(0, l2Offset - PAGE_SIZE);
+		refreshL2();
+	}
+
+	function l2NextPage() {
+		l2Offset += PAGE_SIZE;
+		refreshL2();
+	}
+
 	async function refresh() {
 		loading = true;
 		error = '';
 		try {
-			const [s, l, p, r] = await Promise.all([
+			const [s, l, p, r, ph] = await Promise.all([
 				fetchJSON('/api/memory/stats'),
 				fetchJSON('/api/memory/l4'),
 				fetchJSON('/api/memory/l4/proposals'),
 				fetchJSON('/api/memory/runs?limit=20'),
+				fetchJSON('/api/agent/phase'),
 			]);
 			stats = s;
 			l4 = l.entries ?? [];
 			proposals = p.proposals ?? [];
 			runs = r.runs ?? [];
 			lastRunTime = runs.length ? runs[0].triggered_at : null;
+			phase = ph.phase;
+			phaseSince = ph.since;
 			await refreshL3();
 		} catch (e) {
 			error = e?.message ?? String(e);
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function setPhase(newPhase) {
+		if (newPhase === phase) return;
+		phaseSaving = true;
+		try {
+			const r = await fetchJSON('/api/agent/phase', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ phase: newPhase }),
+			});
+			phase = r.phase;
+			phaseSince = r.since;
+		} catch (e) {
+			error = e?.message ?? String(e);
+		} finally {
+			phaseSaving = false;
 		}
 	}
 
@@ -71,7 +127,7 @@
 	}
 
 	async function deleteL3(id) {
-		if (!confirm('Delete this L3 entry? Source L2 entries will remain untouched.')) return;
+		if (!confirm('Delete this L3 entry? Archived source texts will be lost; the L2 sources were already absorbed at consolidation time.')) return;
 		await fetch(`/api/memory/l3/${id}`, { method: 'DELETE' });
 		await refreshL3();
 	}
@@ -181,6 +237,34 @@
 	{#if error}
 		<div class="error-banner">{error}</div>
 	{/if}
+
+	<div class="phase-bar">
+		<span class="phase-label">Agent phase:</span>
+		<div class="phase-options">
+			<button
+				class="btn {phase === 'learning' ? 'primary' : 'ghost'}"
+				disabled={phaseSaving}
+				onclick={() => setPhase('learning')}
+			>
+				Learning
+			</button>
+			<button
+				class="btn {phase === 'operating' ? 'primary' : 'ghost'}"
+				disabled={phaseSaving}
+				onclick={() => setPhase('operating')}
+			>
+				Operating
+			</button>
+		</div>
+		{#if phaseSince}
+			<span class="muted">since {fmtTime(phaseSince)}</span>
+		{/if}
+		<span class="muted phase-hint">
+			{phase === 'learning'
+				? 'Assistant leans into memory creation & retrieval.'
+				: 'Assistant creates memories only for new durable facts.'}
+		</span>
+	</div>
 
 	<div class="stats">
 		<Card title="L2 episodic">
@@ -346,6 +430,52 @@
 		{/if}
 	</Card>
 
+	<Card title="L2 — Episodic ({stats?.l2_count ?? 0})">
+		<div class="l2-toggle-row">
+			<button class="btn ghost" onclick={toggleL2}>
+				{l2Expanded ? 'Hide' : 'Browse'} L2 entries
+			</button>
+			<span class="muted">Raw per-turn memories; consolidated into L3 on nightly run.</span>
+		</div>
+		{#if l2Expanded}
+			{#if l2Entries.length === 0}
+				<p class="muted">No L2 entries on this page.</p>
+			{:else}
+				<div class="table-wrapper">
+					<table class="table">
+						<thead>
+							<tr>
+								<th>Text</th>
+								<th class="num">Importance (eff)</th>
+								<th class="num">Access</th>
+								<th class="num">Age</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each l2Entries as e}
+								<tr>
+									<td class="wrap">{e.text}</td>
+									<td class="num">{e.importance_effective?.toFixed(2) ?? e.importance}</td>
+									<td class="num">{e.access_count ?? 0}</td>
+									<td class="num">{fmtDate(e.timestamp)}</td>
+									<td class="actions">
+										<button class="link danger" onclick={() => deleteL2(e.id)}>Delete</button>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<div class="pager">
+					<button class="btn ghost" disabled={l2Offset === 0} onclick={l2PrevPage}>Prev</button>
+					<span class="muted">Showing {l2Offset + 1}–{l2Offset + l2Entries.length}</span>
+					<button class="btn ghost" disabled={!l2HasMore} onclick={l2NextPage}>Next</button>
+				</div>
+			{/if}
+		{/if}
+	</Card>
+
 	<Card title="L3 — Consolidated memories">
 		{#if l3Entries.length === 0}
 			<p class="muted">No L3 entries yet.</p>
@@ -488,6 +618,33 @@
 		font-size: 14px;
 	}
 
+	.phase-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+		padding: 10px 14px;
+		background: #111827;
+		border: 1px solid #1f2937;
+		border-radius: 8px;
+	}
+
+	.phase-label {
+		font-size: 13px;
+		font-weight: 600;
+		color: #cbd5e1;
+	}
+
+	.phase-options {
+		display: flex;
+		gap: 6px;
+	}
+
+	.phase-hint {
+		margin-left: auto;
+		font-style: italic;
+	}
+
 	.muted {
 		color: #6b7280;
 		font-size: 13px;
@@ -517,6 +674,13 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
+	}
+
+	.l2-toggle-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-bottom: 12px;
 	}
 
 	.btn {

@@ -386,12 +386,17 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/memory/l4/proposals` | L3 entries flagged `pending_l4_approval` by the nightly job |
 | `POST` | `/api/memory/l4/proposals/{id}/approve` | Promote a proposal to L4 |
 | `POST` | `/api/memory/l4/proposals/{id}/reject` | Clear the pending flag, leave entry at L3 |
+| `GET`  | `/api/memory/l2?limit=&offset=` | Browse L2 episodic entries with paging |
+| `DELETE`| `/api/memory/l2/{id}` | Hard-delete an L2 entry |
 | `GET`  | `/api/memory/l3?limit=&offset=` | Browse consolidated L3 summaries with paging |
-| `GET`  | `/api/memory/l3/{id}/sources` | Resolve an L3 entry's `source_ids` back to the originating L2 entries |
-| `DELETE`| `/api/memory/l3/{id}` | Hard-delete an L3 entry (source L2 entries untouched) |
+| `GET`  | `/api/memory/l3/{id}/sources` | Resolve an L3 entry's sources — returns `source_texts` from the payload when present (post-absorption), falls back to `retrieve(source_ids)` for legacy L3s |
+| `DELETE`| `/api/memory/l3/{id}` | Hard-delete an L3 entry |
 | `POST` | `/api/memory/search` | Semantic search across selected tiers (`{q, tiers:[L2,L3,L4], limit}`) |
+| `POST` | `/api/memory/admin/purge` | Hygiene delete: body `{tier: "L2"\|"L3"\|"all", source: "<tag>"}` or `{ids: [...]}`. Requires `source` or `ids` to avoid wildcard wipes. Returns `{deleted_ids, count}` |
 | `GET`  | `/api/memory/runs?limit=` | History of `memory_review` consolidation runs |
 | `POST` | `/api/memory/runs/trigger` | Run the consolidation pipeline now (delegates to autonomy engine) |
+| `GET`  | `/api/agent/phase` | Current operational phase: `{phase: "learning"\|"operating", since: "<iso>"}` |
+| `POST` | `/api/agent/phase` | Set the phase (body `{phase}`); refreshes active sessions' system prompts on return |
 
 ### WebSockets
 

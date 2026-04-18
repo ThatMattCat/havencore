@@ -40,6 +40,7 @@ from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
 from selene_agent.api.autonomy import router as autonomy_router, ws_router as autonomy_ws_router
 from selene_agent.api.memory import router as memory_router
+from selene_agent.api.agent import router as agent_router
 from selene_agent.api.logs import ws_router as logs_ws_router
 from selene_agent.utils import log_stream
 from selene_agent.utils.metrics_db import metrics_db
@@ -143,6 +144,8 @@ async def lifespan(app: FastAPI):
         await conversation_db.initialize()
         logger.info("Database connection initialized successfully")
         await metrics_db.ensure_schema()
+        from selene_agent.utils import agent_state
+        await agent_state.ensure_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
 
@@ -268,6 +271,7 @@ app.include_router(vision_router, prefix="/api")
 app.include_router(comfy_router, prefix="/api")
 app.include_router(autonomy_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
+app.include_router(agent_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")
 app.include_router(autonomy_ws_router, prefix="/ws")
@@ -337,6 +341,9 @@ async def _build_ephemeral_orchestrator() -> AgentOrchestrator:
         model_name=app.state.model_name,
         tools=app.state.base_tools,
     )
+    # Stateless callers already manage their own context; per-turn retrieval
+    # injection would silently mutate what they sent.
+    orch.retrieval_enabled = False
     await orch.initialize()
     return orch
 

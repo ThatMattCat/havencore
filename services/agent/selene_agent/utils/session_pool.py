@@ -258,6 +258,53 @@ class SessionOrchestratorPool:
             finally:
                 lock.release()
 
+    # ----- System-prompt rebuild (phase change) ---------------------------------
+
+    async def rebuild_system_prompts(self) -> None:
+        """Refresh the system message (messages[0]) of every active session.
+
+        Called when the operational phase changes — the phase-specific prompt
+        addendum differs between learning and operating, so in-flight sessions
+        need their system prompt regenerated. Mid-turn sessions are skipped
+        (non-blocking try-acquire); their next prepare() call will pick up the
+        change if we arrange for it, but phase changes are rare enough that
+        "updates next turn after any ongoing one" is acceptable.
+        """
+        async with self._pool_lock:
+            items = list(self._sessions.items())
+
+        refreshed = 0
+        for sid, orch in items:
+            lock = self.lock_for(sid)
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=0.05)
+            except (asyncio.TimeoutError, Exception):
+                continue
+            try:
+                if not orch.messages or orch.messages[0].get("role") != "system":
+                    continue
+                # Rebuild a fresh system prompt inline. Reuse the same logic
+                # as initialize() without nuking the rest of the message list.
+                from selene_agent.utils.agent_state import get_agent_phase
+                from selene_agent.utils.l4_context import build_l4_block
+                try:
+                    system_prompt = config.SYSTEM_PROMPT
+                    phase = await get_agent_phase()
+                    if phase == "learning":
+                        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_LEARNING_ADDENDUM
+                    else:
+                        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
+                    block = await build_l4_block()
+                    if block:
+                        system_prompt = block + "\n\n" + system_prompt
+                    orch.messages[0] = {"role": "system", "content": system_prompt}
+                    refreshed += 1
+                except Exception as e:
+                    logger.warning(f"rebuild_system_prompts failed for {sid}: {e}")
+            finally:
+                lock.release()
+        logger.info(f"rebuild_system_prompts: refreshed {refreshed}/{len(items)} sessions")
+
     # ----- Shutdown flush -------------------------------------------------------
 
     async def _flush_one(self, orch: AgentOrchestrator, reason: str) -> None:

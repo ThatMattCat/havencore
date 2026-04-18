@@ -14,7 +14,7 @@ to give the agent a persistent memory layer.
 | Server name | `qdrant-server` |
 | Vector backend | Qdrant, default collection `user_data`, cosine distance |
 | Embeddings backend | `embeddings` service (HuggingFace text-embeddings-inference) serving `BAAI/bge-large-en-v1.5` (1024-dim) |
-| Tool count | 2 |
+| Tool count | 3 |
 
 On startup the server opens a Qdrant client and ensures the target
 collection exists (creates it with the configured dimension + cosine
@@ -28,10 +28,7 @@ as the vector.
 |------|---------|
 | `create_memory(text, importance?, tags?, expires_in_days?)` | Embed `text` and upsert a new point into the collection. `importance` is `1..5` (default `3`). `tags` is a list of strings. `expires_in_days` adds a future `expires` timestamp used by the search-time filter. Returns the generated UUID. |
 | `search_memories(query, limit?, days_back?)` | Semantic search for the most similar memories. `limit` is `1..20` (default `5`). `days_back` restricts to entries created within the last N days. Expired entries (where `expires` has passed) are always excluded. Returns `id`, `text`, `timestamp`, `importance`, `tags`, and `relevance_score`. |
-
-No delete tool is exposed — despite what earlier docs mentioned, removal
-currently requires a direct Qdrant API call. Add a `delete_memory` tool
-in `qdrant_mcp_server.py` if you need that surface.
+| `delete_memory(memory_id)` | Hard-delete a stored point by UUID. The expected flow is `search_memories` → read the `id` of the matching hit → `delete_memory(id)`. If the deleted point's tier was `L4`, the server also invalidates the L4 block cache so the next prompt rebuild drops it. Returns `{success, memory_id, tier_deleted}`. |
 
 ## Point payload schema
 
@@ -41,6 +38,7 @@ in `qdrant_mcp_server.py` if you need that surface.
   "timestamp": "2026-04-12T12:34:56+00:00",
   "importance": 3,
   "tags": ["user", "preference"],
+  "tier": "L2",
   "source": "mcp_server",
   "expires": "2026-07-12T12:34:56+00:00"
 }
@@ -49,6 +47,28 @@ in `qdrant_mcp_server.py` if you need that surface.
 `expires` is only written when `expires_in_days` is passed. The search
 filter uses `must_not` on `expires.lte=<now>` to exclude past entries —
 points without an `expires` field are never excluded by that filter.
+
+`tier` defaults to `L2` for MCP-created points. The nightly memory-review
+job writes `L3` clusters and the dashboard writes `L4` promotions; those
+tiers also carry extra fields:
+
+```json
+// L3 (consolidated)
+{
+  "tier": "L3",
+  "source_ids": ["uuid1", "uuid2"],
+  "source_texts": [
+    {"id": "uuid1", "text": "...", "timestamp": "...", "importance": 3}
+  ]
+}
+```
+
+`source_texts` is populated during consolidation so that the originating
+L2 points can be hard-deleted immediately after the L3 upsert verifies —
+the L3 row archives the text itself. The dashboard's "view sources"
+modal reads `source_texts` when present and falls back to a
+`retrieve(source_ids)` against Qdrant for L3 rows written before the
+absorption change.
 
 ## Configuration
 
@@ -90,13 +110,24 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 ## Usage patterns from the system prompt
 
 The agent's system prompt (in `selene_agent/utils/config.py`) tells the
-LLM to use `create_memory` and `search_memories` for anything about the
-user, preferences, or the house. Typical flow:
+LLM to use `create_memory`, `search_memories`, and `delete_memory` for
+anything about the user, preferences, or the house. The prompt is
+augmented with a phase-specific addendum — see
+[autonomy/memory → Agent phases](../autonomy/memory/README.md#agent-phases).
+Typical flows:
 
-1. A user says something worth remembering ("I prefer the bedroom at 68
-   degrees at night") → agent calls `create_memory`.
-2. On later turns the agent calls `search_memories` with whatever the
-   user said, then conditions its response on the retrieved points.
+1. **Remember.** User says something worth remembering ("I prefer the
+   bedroom at 68 degrees at night") → agent calls `create_memory`.
+2. **Recall.** On later turns the agent can call `search_memories`
+   explicitly. In pool-backed sessions (`/api/chat`, `/ws/chat`) the
+   orchestrator *also* injects a top-K retrieval block before the LLM
+   call, so even without a tool call the model sees relevant memories —
+   see [autonomy/memory → Per-turn injection](../autonomy/memory/README.md#per-turn-injection-pool-backed-chats).
+3. **Forget.** User asks to correct or delete a stored fact → agent
+   calls `search_memories` to find the matching `id`, then
+   `delete_memory(id)`. The system prompt is explicit about this flow
+   because models otherwise tend to "remember" the delete request
+   instead of acting on it.
 
 Keep this in mind when tuning prompts or debugging retrieval: hits come
 back in `relevance_score` order and low scores are often still returned.

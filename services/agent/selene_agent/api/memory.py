@@ -216,6 +216,37 @@ def reject_proposal(entry_id: str):
     return {"id": entry_id, "stays_tier": "L3"}
 
 
+# ---------- L2 browse ----------
+
+@router.get("/memory/l2")
+def list_l2(limit: int = 50, offset: int = 0):
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    c = _qdrant_client()
+    flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))])
+    gathered: List[Any] = []
+    next_offset = None
+    while len(gathered) < offset + limit:
+        pts, next_offset = c.scroll(
+            collection_name=_collection(), scroll_filter=flt,
+            limit=min(256, offset + limit - len(gathered)),
+            with_payload=True, with_vectors=False, offset=next_offset,
+        )
+        gathered.extend(pts)
+        if next_offset is None:
+            break
+    page = gathered[offset: offset + limit]
+    return {"entries": [_point_out(p) for p in page], "has_more": next_offset is not None}
+
+
+@router.delete("/memory/l2/{entry_id}")
+def delete_l2(entry_id: str):
+    from qdrant_client.models import PointIdsList
+    c = _qdrant_client()
+    c.delete(collection_name=_collection(),
+             points_selector=PointIdsList(points=[entry_id]))
+    return {"id": entry_id, "deleted": True}
+
+
 # ---------- L3 browse ----------
 
 @router.get("/memory/l3")
@@ -245,7 +276,35 @@ def l3_sources(entry_id: str):
     l3s = c.retrieve(collection_name=_collection(), ids=[entry_id], with_payload=True)
     if not l3s:
         raise HTTPException(404, "L3 entry not found")
-    src_ids = (l3s[0].payload or {}).get("source_ids") or []
+    payload = l3s[0].payload or {}
+
+    # Prefer archived source texts (post-absorption). Fall back to the
+    # legacy retrieve-by-id path for L3s created before absorption landed.
+    source_texts = payload.get("source_texts") or []
+    if source_texts:
+        sources = []
+        for entry in source_texts:
+            if not isinstance(entry, dict):
+                continue
+            sources.append({
+                "id": str(entry.get("id", "")),
+                "text": entry.get("text", ""),
+                "importance": entry.get("importance", 0),
+                "importance_effective": entry.get("importance", 0),
+                "tier": "L2",
+                "tags": [],
+                "timestamp": entry.get("timestamp", ""),
+                "source_ids": [],
+                "access_count": 0,
+                "last_accessed_at": None,
+                "pending_l4_approval": False,
+                "proposed_at": None,
+                "proposal_rationale": None,
+                "absorbed": True,
+            })
+        return {"sources": sources}
+
+    src_ids = payload.get("source_ids") or []
     if not src_ids:
         return {"sources": []}
     sources = c.retrieve(collection_name=_collection(), ids=list(src_ids),
@@ -332,8 +391,82 @@ async def trigger_run():
     return {"agenda_item_id": target["id"], "result": result}
 
 
+# ---------- Admin purge (hygiene) ----------
+
+class PurgeRequest(BaseModel):
+    tier: Optional[str] = None          # "L2" | "L3" | "L4" | "all"
+    source: Optional[str] = None        # payload.source match (e.g. "test")
+    ids: Optional[List[str]] = None     # explicit id list
+    pending_l4_approval: Optional[bool] = None
+
+
+@router.post("/memory/admin/purge")
+def admin_purge(body: PurgeRequest):
+    """Bulk-delete memories by tier + source tag, or by explicit ids.
+
+    Must specify either `ids`, or at least one of `source`/`pending_l4_approval`
+    to avoid wiping real data by accident. `tier="all"` is allowed when paired
+    with a `source` filter.
+    """
+    from qdrant_client.models import (
+        Filter, FieldCondition, MatchValue, PointIdsList,
+    )
+
+    # Guardrail: must have either explicit ids, or a narrowing filter beyond tier.
+    if not body.ids and not body.source and body.pending_l4_approval is None:
+        raise HTTPException(
+            400,
+            "refuse to purge without `ids`, `source`, or `pending_l4_approval` filter",
+        )
+
+    c = _qdrant_client()
+
+    if body.ids:
+        c.delete(
+            collection_name=_collection(),
+            points_selector=PointIdsList(points=body.ids),
+        )
+        l4_context.invalidate_cache()
+        return {"deleted_ids": body.ids, "count": len(body.ids)}
+
+    must: List[Any] = []
+    if body.tier and body.tier != "all":
+        if body.tier not in ("L2", "L3", "L4"):
+            raise HTTPException(400, f"invalid tier: {body.tier}")
+        must.append(FieldCondition(key="tier", match=MatchValue(value=body.tier)))
+    if body.source:
+        must.append(FieldCondition(key="source", match=MatchValue(value=body.source)))
+    if body.pending_l4_approval is not None:
+        must.append(FieldCondition(
+            key="pending_l4_approval",
+            match=MatchValue(value=body.pending_l4_approval),
+        ))
+
+    flt = Filter(must=must)
+    # Collect matching ids first so we can return a count.
+    offset = None
+    to_delete: List[str] = []
+    while True:
+        pts, offset = c.scroll(
+            collection_name=_collection(), scroll_filter=flt,
+            limit=512, with_payload=False, with_vectors=False, offset=offset,
+        )
+        to_delete.extend(str(p.id) for p in pts)
+        if offset is None:
+            break
+
+    if to_delete:
+        c.delete(
+            collection_name=_collection(),
+            points_selector=PointIdsList(points=to_delete),
+        )
+        l4_context.invalidate_cache()
+
+    return {"deleted_ids": to_delete, "count": len(to_delete)}
+
+
 @router.get("/memory/stats")
-def stats():
+async def stats():
     from qdrant_client.models import Filter, FieldCondition, MatchValue
     c = _qdrant_client()
 
@@ -352,14 +485,8 @@ def stats():
     ]))
 
     # Approximate token count: ~4 chars per token applied to the rendered block.
-    import asyncio
-    try:
-        block = asyncio.get_event_loop().run_until_complete(
-            __import__("selene_agent.utils.l4_context", fromlist=["build_l4_block"]).build_l4_block()
-        )
-        l4_est_tokens = max(0, len(block) // 4)
-    except Exception:
-        l4_est_tokens = 0
+    block = await l4_context.build_l4_block()
+    l4_est_tokens = max(0, len(block) // 4)
 
     return {
         "l2_count": l2,

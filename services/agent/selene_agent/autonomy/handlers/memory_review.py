@@ -196,6 +196,18 @@ async def _cluster_to_l3(
         importances.sort()
         median_imp = importances[len(importances) // 2] if importances else 3.0
 
+        # Capture source texts up front so the L3 can stand on its own after
+        # the L2 rows are deleted below.
+        source_texts = [
+            {
+                "id": str(m.id),
+                "text": str((m.payload or {}).get("text", "")),
+                "timestamp": (m.payload or {}).get("timestamp", ""),
+                "importance": float((m.payload or {}).get("importance", 0) or 0),
+            }
+            for m in members
+        ]
+
         new_id = str(uuid.uuid4())
         client.upsert(
             collection_name=COLLECTION_NAME,
@@ -211,6 +223,7 @@ async def _cluster_to_l3(
                     "source": "memory_review",
                     "tier": "L3",
                     "source_ids": [str(m.id) for m in members],
+                    "source_texts": source_texts,
                     "access_count": 0,
                     "last_accessed_at": None,
                     "pending_l4_approval": False,
@@ -221,6 +234,33 @@ async def _cluster_to_l3(
             )],
         )
         stats["l3_created"] += 1
+
+        # Verify the L3 landed, then absorb by deleting the source L2s. If the
+        # verify fails, leave L2s in place so the next consolidation run can retry.
+        try:
+            check = client.retrieve(
+                collection_name=COLLECTION_NAME,
+                ids=[new_id],
+                with_payload=False,
+                with_vectors=False,
+            )
+            if check:
+                from qdrant_client.models import PointIdsList
+                client.delete(
+                    collection_name=COLLECTION_NAME,
+                    points_selector=PointIdsList(points=[str(m.id) for m in members]),
+                )
+                stats["l2_absorbed"] = stats.get("l2_absorbed", 0) + len(members)
+            else:
+                logger.warning(
+                    f"[memory_review] L3 {new_id} upsert could not be verified; "
+                    f"skipping L2 absorption for this cluster"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[memory_review] L3 verify/absorb failed for {new_id}: {e}; "
+                f"L2 sources left intact"
+            )
 
 
 async def _propose_l4(
@@ -301,19 +341,17 @@ async def _propose_l4(
 
 
 async def _prune_l2(client, stats: Dict[str, Any]) -> None:
-    """Step 5: delete stale low-importance L2 entries not referenced by any L3."""
+    """Step 5: delete stale low-importance L2 entries.
+
+    Source L2s are absorbed into their L3 at consolidation time (see
+    ``_cluster_to_l3``), so no source-protection set is needed here. Only
+    L2s that never clustered (HDBSCAN noise) or that were created after
+    the last consolidation survive to this step.
+    """
     from qdrant_client.models import (
         Filter, FieldCondition, MatchValue, Range, PointIdsList,
     )
     from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
-
-    # Gather all L3 source_ids first (protection set).
-    l3_flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])
-    l3s = _scroll_all(client, flt=l3_flt, collection=COLLECTION_NAME, cap=5000)
-    protected: set[str] = set()
-    for p in l3s:
-        for sid in (p.payload or {}).get("source_ids") or []:
-            protected.add(str(sid))
 
     # Scroll candidates: L2, importance_effective below threshold.
     cand_flt = Filter(
@@ -336,10 +374,7 @@ async def _prune_l2(client, stats: Dict[str, Any]) -> None:
         age_days = max(0, (now - created).days)
         if age_days < config.MEMORY_L2_PRUNE_AGE_DAYS:
             continue
-        pid = str(p.id)
-        if pid in protected:
-            continue
-        to_delete.append(pid)
+        to_delete.append(str(p.id))
 
     if to_delete:
         client.delete(
@@ -361,8 +396,9 @@ async def handle(
     qc = _qdrant_client()
     stats: Dict[str, Any] = {
         "l2_scanned": 0, "l3_created": 0, "l3_updated": 0,
-        "l4_proposed": 0, "l2_pruned": 0, "importance_adjusted": 0,
-        "clusters_found": 0, "noise_points": 0, "llm_calls": 0,
+        "l4_proposed": 0, "l2_pruned": 0, "l2_absorbed": 0,
+        "importance_adjusted": 0, "clusters_found": 0, "noise_points": 0,
+        "llm_calls": 0,
     }
 
     last_fired = item.get("last_fired_at")
@@ -395,7 +431,8 @@ async def handle(
 
     total_ms = int((time.perf_counter() - start) * 1000)
     summary = (
-        f"{stats['l3_created']} new L3 from {stats['l2_scanned']} L2 scanned, "
+        f"{stats['l3_created']} new L3 (absorbed {stats['l2_absorbed']} L2s) "
+        f"from {stats['l2_scanned']} L2 scanned, "
         f"{stats['l4_proposed']} L4 proposal, {stats['l2_pruned']} pruned"
     )
     return {

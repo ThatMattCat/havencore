@@ -66,7 +66,8 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/autonomy/items` | GET | List agenda items (scheduled autonomous behaviors) |
 | `/api/autonomy/runs` | GET | Recent run history; `include_messages=1` for full traces |
 | `/api/autonomy/trigger/{id}` | POST | Fire an agenda item immediately, bypassing schedule + rate limit |
-| `/api/memory/*` | GET/POST/PATCH/DELETE | Tiered memory (L2/L3/L4): stats, L4 CRUD, proposal approve/reject, L3 browse + source drill-down, semantic search, run history + manual trigger. See [autonomy/memory/README.md](autonomy/memory/README.md). |
+| `/api/memory/*` | GET/POST/PATCH/DELETE | Tiered memory (L2/L3/L4): stats, L2/L3/L4 browse, L4 CRUD, proposal approve/reject, L3 source drill-down, semantic search, run history + manual trigger, `admin/purge` hygiene endpoint. See [autonomy/memory/README.md](autonomy/memory/README.md). |
+| `/api/agent/phase` | GET/POST | Read or set the agent's operational phase (`learning` \| `operating`). Writes to the `agent_state` Postgres table and refreshes active sessions' system prompts. |
 | `/ws/chat` | WS | Streaming chat with tool visibility + metric events |
 | `/ws/logs` | WS | Live server log tail |
 | `/v1/chat/completions` | POST | OpenAI-compatible chat — **stateless**: each request builds an ephemeral orchestrator; no pool, no history persistence, no metrics. The caller owns its own history. |
@@ -97,7 +98,7 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
 | Music Assistant | Audio-only playback router for speakers, Chromecasts, and Google Homes (queue / play / pause / transport). | [tools/music-assistant.md](tools/music-assistant.md) |
 | General Tools | Up to 7 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
-| Qdrant | 2 — `create_memory`, `search_memories` | [tools/qdrant.md](tools/qdrant.md) |
+| Qdrant | 3 — `create_memory`, `search_memories`, `delete_memory` | [tools/qdrant.md](tools/qdrant.md) |
 | MQTT / Cameras | 1 (when MQTT is connected) — `get_camera_snapshots` | [tools/mqtt.md](tools/mqtt.md) |
 
 See [Media Control](../../integrations/media-control.md) for the split between Plex and Home Assistant on TV playback, required TV setup, and the optional wake/launch mapping.

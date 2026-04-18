@@ -94,13 +94,31 @@ class AgentOrchestrator:
         self.device_name: Optional[str] = None
         self._user_turn_since_reset: bool = False
 
+        # Per-turn retrieval injection. Session-pool sessions enable it; the
+        # stateless /v1/chat/completions path overrides this to False.
+        self.retrieval_enabled: bool = True
+
     def effective_timeout(self) -> int:
         """Idle window in seconds — per-session override or global default."""
         return int(self.idle_timeout_override or config.CONVERSATION_TIMEOUT)
 
     async def initialize(self):
-        """Initialize with system prompt (prepends L4 persistent-memory block when present)."""
+        """Initialize with system prompt (prepends L4 persistent-memory block
+        when present; appends phase-specific addendum)."""
         system_prompt = config.SYSTEM_PROMPT
+
+        # Append phase-specific guidance so memory behavior shifts with the
+        # operational phase (learning encourages aggressive memory creation).
+        try:
+            from selene_agent.utils.agent_state import get_agent_phase
+            phase = await get_agent_phase()
+            if phase == "learning":
+                system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_LEARNING_ADDENDUM
+            else:
+                system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
+        except Exception as e:
+            logger.warning(f"phase addendum lookup failed: {e}")
+
         try:
             from selene_agent.utils.l4_context import build_l4_block
             block = await build_l4_block()
@@ -298,6 +316,33 @@ class AgentOrchestrator:
 
         return cleaned
 
+    async def _build_retrieval_block(self, user_message: str) -> Optional[str]:
+        """Fetch top-K L2/L3 for this user turn. Returns None when disabled or empty."""
+        if not self.retrieval_enabled:
+            return None
+        try:
+            from selene_agent.utils.retrieval import build_retrieval_block
+            from selene_agent.utils.agent_state import get_agent_phase
+            phase = await get_agent_phase()
+            return await build_retrieval_block(user_message, phase=phase)
+        except Exception as e:
+            logger.warning(f"retrieval block build failed: {e}")
+            return None
+
+    def _messages_for_llm(self, retrieval_block: Optional[str]) -> List[Dict[str, Any]]:
+        """Return self.messages with the retrieval block inserted before the
+        most recent user message. Does not mutate self.messages.
+        """
+        if not retrieval_block:
+            return self.messages
+        msgs = list(self.messages)
+        # Find the last user message and insert the retrieval block before it.
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "user":
+                msgs.insert(i, {"role": "system", "content": retrieval_block})
+                return msgs
+        return msgs
+
     async def prepare(self) -> None:
         """Lazily prepend L4 block if the orchestrator was set up without initialize()."""
         if not getattr(self, "_l4_pending", True):
@@ -341,6 +386,12 @@ class AgentOrchestrator:
         llm_ms_total = 0.0
         tool_calls_timing: List[Dict[str, Any]] = []
 
+        # Per-turn ephemeral retrieval block. Built once at turn start from the
+        # raw user message; passed to the LLM on every iteration; never stored
+        # in self.messages, so it can't compound across turns or survive into
+        # a cold-resumed session.
+        retrieval_block = await self._build_retrieval_block(user_message)
+
         try:
             self.messages.append({"role": "user", "content": wrapped_message})
             logger.info(f"Query: {user_message}")
@@ -356,7 +407,7 @@ class AgentOrchestrator:
                 llm_start = time.perf_counter()
                 response = await self.client.chat.completions.create(
                     model=self.model_name,
-                    messages=self.messages,
+                    messages=self._messages_for_llm(retrieval_block),
                     tools=self.tools,
                     tool_choice="auto",
                     temperature=self.temperature,

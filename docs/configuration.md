@@ -232,6 +232,32 @@ Notes:
 - `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
   `mobile_app_<device>`; the leading `notify.` is stripped.
 
+### Memory retrieval & agent phase
+
+Per-turn retrieval injection and phase-aware system prompts. Full
+reference: [services/agent/autonomy/memory/README.md](services/agent/autonomy/memory/README.md).
+
+```bash
+# Master switch for per-turn retrieval injection into pool-backed chats
+MEMORY_RETRIEVAL_ENABLED=true
+
+# Top-K memories injected per user turn; switches on the current agent phase
+MEMORY_RETRIEVAL_TOPK_LEARNING=5
+MEMORY_RETRIEVAL_TOPK_OPERATING=3
+
+# Hits below this cosine score are dropped (0.0–1.0)
+MEMORY_RETRIEVAL_MIN_SCORE=0.3
+
+# Seed phase on fresh installs (ignored once the agent_state row exists)
+AGENT_PHASE_DEFAULT="learning"
+```
+
+Notes:
+- Retrieval injection runs on `/api/chat` + `/ws/chat`. `/v1/chat/completions`
+  and the autonomy engine skip it — they manage their own context.
+- Phase is persisted in Postgres (`agent_state` table) and can be flipped
+  at runtime via the `/memory` dashboard toggle or `POST /api/agent/phase`.
+
 ### MCP (Model Context Protocol) Configuration
 
 The agent's tool surface is delivered by MCP servers bundled in the agent
