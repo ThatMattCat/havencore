@@ -95,6 +95,17 @@ class SessionOrchestratorPool:
 
         orch = self._build_orchestrator(session_id)
         orch.messages = list(messages)
+        # Rehydrate per-session idle-timeout override if it was persisted.
+        metadata = histories[0].get("metadata") or {}
+        raw_override = metadata.get("idle_timeout_override")
+        if isinstance(raw_override, (int, float)):
+            v = int(raw_override)
+            lo, hi = config.CONVERSATION_TIMEOUT_MIN, config.CONVERSATION_TIMEOUT_MAX
+            if v < lo:
+                v = lo
+            elif v > hi:
+                v = hi
+            orch.idle_timeout_override = v
         # prepare() will prepend the L4 block to the existing system message
         # (or be a no-op if the first message isn't system).
         try:
@@ -204,14 +215,18 @@ class SessionOrchestratorPool:
                 logger.error(f"Idle sweep iteration failed: {e}")
 
     async def idle_sweep(self) -> None:
-        """Reset timed-out sessions. Non-blocking: skips busy sessions."""
-        timeout = config.CONVERSATION_TIMEOUT
+        """Reset timed-out sessions. Non-blocking: skips busy sessions.
+
+        Each session's idle window is `orch.effective_timeout()` — the
+        per-session override when set, otherwise the global default.
+        """
         now = time.time()
         # Snapshot under pool lock to avoid mutation during iteration.
         async with self._pool_lock:
             candidates = [
                 (sid, orch) for sid, orch in self._sessions.items()
-                if orch.last_query_time and (now - orch.last_query_time) > timeout
+                if orch.last_query_time
+                and (now - orch.last_query_time) > orch.effective_timeout()
             ]
 
         for sid, orch in candidates:
@@ -225,8 +240,11 @@ class SessionOrchestratorPool:
                 continue
             try:
                 # Re-check under the lock — a turn may have just started.
-                if orch.last_query_time and (time.time() - orch.last_query_time) > timeout:
-                    await orch._check_session_timeout()
+                if (
+                    orch.last_query_time
+                    and (time.time() - orch.last_query_time) > orch.effective_timeout()
+                ):
+                    await orch._summarize_and_reset(reason="idle_timeout_summarize")
             except Exception as e:
                 logger.error(f"Idle-sweep reset failed for session {sid}: {e}")
             finally:
@@ -245,6 +263,7 @@ class SessionOrchestratorPool:
                 "message_count": len(msgs),
                 "last_query_time": orch.last_query_time,
                 "agent_name": orch.agent_name,
+                "idle_timeout_override": orch.idle_timeout_override,
             }
             await conversation_db.store_conversation_history(
                 messages=msgs,

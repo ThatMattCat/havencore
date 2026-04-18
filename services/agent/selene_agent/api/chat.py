@@ -10,13 +10,23 @@ Session identity:
   `{"type": "session", "session_id": "..."}` before any `thinking` event.
   Clients that send `{"message": "..."}` as the first frame get a minted
   session.
+
+Per-session idle timeout:
+- REST `/api/chat` accepts an optional `X-Idle-Timeout: <seconds>` header. The
+  value sticks to the session and governs when the idle sweep summarizes and
+  resets it. Bad values are log-and-ignored; out-of-range values are clamped.
+- WS `/ws/chat` accepts an optional `idle_timeout` field on any
+  `{"type": "session", ...}` frame (first frame or mid-stream) to apply or
+  update the override.
 """
+
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request, Response, Header
 from pydantic import BaseModel
-from typing import List, Optional
 
-from selene_agent.orchestrator import EventType
+from selene_agent.orchestrator import AgentOrchestrator, EventType
+from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.metrics_db import metrics_db
 from selene_agent.utils.session_pool import SessionOrchestratorPool
@@ -25,6 +35,35 @@ logger = custom_logger.get_logger('loki')
 
 router = APIRouter()
 ws_router = APIRouter()
+
+
+def _apply_idle_timeout_override(orch: AgentOrchestrator, raw: Any) -> None:
+    """Parse and apply an idle-timeout override onto the orchestrator.
+
+    Bad inputs (None, empty, non-numeric) are ignored. Out-of-range values are
+    clamped to [CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX].
+    """
+    if raw is None or raw == "":
+        return
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Ignoring invalid idle-timeout override (session={orch.session_id}): {raw!r}"
+        )
+        return
+    lo, hi = config.CONVERSATION_TIMEOUT_MIN, config.CONVERSATION_TIMEOUT_MAX
+    if v < lo:
+        logger.warning(
+            f"Clamping idle-timeout override {v} to minimum {lo} (session={orch.session_id})"
+        )
+        v = lo
+    elif v > hi:
+        logger.warning(
+            f"Clamping idle-timeout override {v} to maximum {hi} (session={orch.session_id})"
+        )
+        v = hi
+    orch.idle_timeout_override = v
 
 
 class ChatRequest(BaseModel):
@@ -43,6 +82,7 @@ async def chat(
     req: Request,
     response: Response,
     x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
+    x_idle_timeout: Optional[str] = Header(default=None, alias="X-Idle-Timeout"),
 ):
     """Non-streaming chat endpoint that returns the full response plus tool events."""
     pool: SessionOrchestratorPool = req.app.state.session_pool
@@ -54,6 +94,7 @@ async def chat(
         raise HTTPException(status_code=400, detail="No message provided")
 
     orchestrator = await pool.get_or_create(x_session_id)
+    _apply_idle_timeout_override(orchestrator, x_idle_timeout)
     session_id = orchestrator.session_id
     response.headers["X-Session-Id"] = session_id
 
@@ -82,7 +123,10 @@ async def websocket_chat(websocket: WebSocket):
 
     Connect: ws://host:port/ws/chat
     Protocol:
-      Client → {"type": "session", "session_id": "..."}  (optional first frame)
+      Client → {"type": "session", "session_id": "...", "idle_timeout": 90}
+               (optional first frame; `session_id` and `idle_timeout` both optional.
+                A later `{"type": "session", "idle_timeout": N}` mid-stream also updates
+                the override on the active session.)
       Server → {"type": "session", "session_id": "..."}  (always sent once, before first turn)
       Client → {"message": "your question"}
       Server → {"type": "thinking|tool_call|tool_result|metric|done|error", ...}
@@ -121,9 +165,13 @@ async def websocket_chat(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
 
-            # Session-bind frame: optional, must be the first frame if used.
+            # Session-bind frame: may be sent as the first frame or mid-stream.
+            # `session_id` is honored only on the first frame (once the session is
+            # announced, re-binding to a different session is not supported — open
+            # a new WS). `idle_timeout` applies both on first frame and mid-stream.
             if data.get("type") == "session":
-                await _ensure_session(data.get("session_id"))
+                orch, _ = await _ensure_session(data.get("session_id"))
+                _apply_idle_timeout_override(orch, data.get("idle_timeout"))
                 continue
 
             user_message = data.get("message", "")
