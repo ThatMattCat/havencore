@@ -351,17 +351,17 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `POST` | `/api/chat` | One-shot message with tool event log. Accepts `X-Session-Id` request header (optional); echoes the active `X-Session-Id` response header. Accepts `X-Idle-Timeout: <seconds>` (optional) to set the per-session idle window for summarize-and-reset; value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` and bad values are log-and-ignored. |
+| `POST` | `/api/chat` | One-shot message with tool event log. Accepts `X-Session-Id` request header (optional); echoes the active `X-Session-Id` response header. Accepts `X-Idle-Timeout: <seconds>` (optional) to set the per-session idle window for summarize-and-reset; value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` and bad values are log-and-ignored. Accepts `X-Device-Name` (optional, e.g. `Kitchen Speaker`) — a human-readable label for the satellite/client driving the session; persists with every flush and rides each `turn_metrics` row. Trimmed, ASCII control chars stripped, capped at 64 chars; empty/whitespace values are no-ops (won't clobber a previously set name). |
 | `GET`  | `/api/status` | Agent, MCP, DB, vLLM health. Includes `agent.sessions` = `{active_sessions, max_size, sweep_running}` for the session pool. |
 | `GET`  | `/api/tools` | Registered tools grouped by MCP server |
-| `GET`  | `/api/conversations` | Paginated conversation history |
+| `GET`  | `/api/conversations` | Paginated conversation history. Each row's `metadata` includes a `device_name` key (string or `null`) — the label of the device that wrote that flush, captured per-flush so renames are preserved historically. |
 | `GET`  | `/api/conversations/{session_id}` | Full messages for a session |
 | `POST` | `/api/conversations/{session_id}/resume` | Hydrate a stored session into the live pool. Returns `{session_id, resumed, message_count}`. Used by the dashboard's "Resume" button on `/history`. |
 | `GET`  | `/api/ha/entities` | HA entities (optionally `?domain=light`) |
 | `GET`  | `/api/ha/entities/summary` | Entity counts per domain |
 | `GET`  | `/api/ha/automations` | HA automations |
 | `GET`  | `/api/ha/scenes` | HA scenes |
-| `GET`  | `/api/metrics/turns` | Recent per-turn timings |
+| `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. |
 | `GET`  | `/api/metrics/summary` | Daily aggregates, p95 |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
 | `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
@@ -397,7 +397,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | URL | Direction | Purpose |
 |-----|-----------|---------|
-| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90}` as the first frame to resume/bind a session and/or set a per-session idle window; both fields are optional. A later `{"type":"session","idle_timeout":N}` mid-stream updates the window on the active session. The server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90,"device_name":"Kitchen Speaker"}` as the first frame to resume/bind a session, set a per-session idle window, and/or label the device; all fields optional. A later `{"type":"session", ...}` mid-stream may update `idle_timeout` or `device_name` on the active session (omitted fields are left untouched; `session_id` is honored only on the first frame). The server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
 | `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling

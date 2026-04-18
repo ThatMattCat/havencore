@@ -44,12 +44,19 @@ CREATE TABLE turn_metrics (
     tool_ms_total INTEGER NOT NULL,
     total_ms INTEGER NOT NULL,
     iterations INTEGER NOT NULL,
-    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
+    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
+    device_name TEXT
 );
 ```
 
 `tool_calls` is a JSONB array of `{name, duration_ms, ok}` entries — one
-per tool call in the turn.
+per tool call in the turn. `device_name` denormalizes the satellite/client
+label set via `X-Device-Name` (or the WS `device_name` session field) so
+metrics views can group by device without joining `conversation_histories`;
+`NULL` for turns where the client didn't send a label or for the stateless
+`/v1/chat/completions` path. The column is added on existing deployments
+via an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` that runs at
+agent startup (`MetricsDB.ensure_schema`).
 
 ## Configuration
 
@@ -92,6 +99,7 @@ Sessions with only the system prompt (`messages` length ≤ 1) are skipped.
   "last_query_time": 1705315800.123,
   "agent_name": "Selene",
   "idle_timeout_override": 45,
+  "device_name": "Kitchen Speaker",
   "rolling_summary": "User asked about weather and turned on the bedroom lamp...",
   "tail_exchanges_kept": 2,
   "idle_seconds": 47,
@@ -99,10 +107,12 @@ Sessions with only the system prompt (`messages` length ≤ 1) are skipped.
 }
 ```
 
-`idle_timeout_override`, `rolling_summary`, `tail_exchanges_kept`,
-`idle_seconds`, and `timeout_seconds` are written on `idle_timeout_summarize`
-rows only. `rolling_summary` may be `null` if the summary LLM call timed out
-or errored (the reset still happened, with the tail preserved).
+`idle_timeout_override` and `device_name` are written on every flush
+regardless of trigger (`null` if the client never set them).
+`rolling_summary`, `tail_exchanges_kept`, `idle_seconds`, and
+`timeout_seconds` are written on `idle_timeout_summarize` rows only.
+`rolling_summary` may be `null` if the summary LLM call timed out or
+errored (the reset still happened, with the tail preserved).
 
 ## Database operations
 

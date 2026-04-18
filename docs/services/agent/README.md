@@ -36,11 +36,11 @@ Response ← JSON ← Agent Logic ← Tool Results ← API Responses
 
 | Surface | Client → server | Server → client |
 |---|---|---|
-| `POST /api/chat` | `X-Session-Id` request header (optional) | `X-Session-Id` response header |
-| `WS /ws/chat` | First frame `{"type":"session","session_id":"..."}` (optional) | First frame `{"type":"session","session_id":"..."}` |
-| `POST /v1/chat/completions` | — (ignored; stateless) | — |
+| `POST /api/chat` | `X-Session-Id` request header (optional); `X-Idle-Timeout: <seconds>` (optional, per-session); `X-Device-Name: <label>` (optional, satellite/client label) | `X-Session-Id` response header |
+| `WS /ws/chat` | First frame `{"type":"session","session_id":"...","idle_timeout":N,"device_name":"..."}` (all fields optional; `idle_timeout` and `device_name` may also be sent on later session frames mid-stream) | First frame `{"type":"session","session_id":"..."}` |
+| `POST /v1/chat/completions` | — (ignored; stateless, no device-name attribution) | — |
 
-Missing/unknown `session_id` → the pool mints a new UUID and returns it. Known `session_id` that isn't in memory → the pool cold-resumes from `conversation_db` and rehydrates the orchestrator (calls `prepare()` to prepend the L4 block without clobbering restored messages).
+Missing/unknown `session_id` → the pool mints a new UUID and returns it. Known `session_id` that isn't in memory → the pool cold-resumes from `conversation_db` and rehydrates the orchestrator (calls `prepare()` to prepend the L4 block without clobbering restored messages). `device_name` rides with every flushed history row and is denormalized onto every `turn_metrics` row so the dashboard can render human-readable labels instead of opaque session ids — see [Conversation history → Device attribution](conversation-history.md#device-attribution).
 
 ## API endpoints
 

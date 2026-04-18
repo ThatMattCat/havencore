@@ -183,7 +183,12 @@ Per-session override: clients can pass `X-Idle-Timeout: <seconds>` on
 `{"type":"session", ...}` WebSocket frame (first frame or mid-stream), to
 widen or tighten the idle window for that session. The value sticks for
 the session's life (or until another turn sends a new value) and is
-persisted alongside the conversation for cold resume.
+persisted alongside the conversation for cold resume. The same surfaces
+also accept an optional `X-Device-Name` header (REST) or `device_name`
+field (WS) carrying a human-readable satellite/client label (e.g.
+`"Kitchen Speaker"`); see
+[services/agent/conversation-history.md](services/agent/conversation-history.md#device-attribution)
+for validation rules and persistence behavior.
 
 ### Autonomy engine
 

@@ -13,6 +13,7 @@ HavenCore stores conversation histories to PostgreSQL whenever a pooled session'
   - Last query timestamp
   - Agent name
   - `idle_timeout_override` — the per-session window in seconds, if the client set one; `null` otherwise
+  - `device_name` — human-readable label of the satellite/client driving the session (e.g. `"Kitchen Speaker"`); `null` if the client never sent one
   - `rolling_summary` — compact recap written by the summarize-on-timeout path (idle sweeps only; `null` on LRU/shutdown flushes or when the summary LLM call fails)
   - `tail_exchanges_kept` — how many user/assistant pairs were carried forward
   - Trace ID for debugging
@@ -77,6 +78,17 @@ Clients can widen or tighten the idle window for a single session without touchi
 - WebSocket: `/ws/chat` accepts an optional `idle_timeout` integer on any `{"type":"session", ...}` frame (first frame or mid-stream).
 
 The value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` (defaults 10 and 3600). Bad values are logged and ignored. The override is stored on the live orchestrator and persisted into `metadata.idle_timeout_override` so that cold-resume via `POST /api/conversations/{session_id}/resume` rehydrates the same window.
+
+### Device attribution
+
+Clients can label which satellite/tab/puck is driving the session so the dashboard can render "Kitchen Speaker asked X" instead of an opaque session id:
+
+- REST: `POST /api/chat` accepts an optional `X-Device-Name: <label>` header.
+- WebSocket: `/ws/chat` accepts an optional `device_name` string on any `{"type":"session", ...}` frame (first frame or mid-stream).
+
+Validation: trimmed, ASCII control characters stripped, capped at 64 characters (truncate-and-warn). Unicode and emoji are allowed — this is a UI label, never spoken. Empty/whitespace-only values are no-ops, so a frame omitting the field never clobbers a previously set name. Non-string values are logged and ignored. Renames are last-write-wins; each flushed history row preserves whatever the value was at flush time, so renaming a puck mid-conversation surfaces correctly in the timeline.
+
+The label is persisted to `metadata.device_name` on every flush and denormalized onto each `turn_metrics` row (so the metrics view can group by device without joining). Cold-resume via `POST /api/conversations/{session_id}/resume` rehydrates the most recent value. `/v1/chat/completions` is stateless and unattributed.
 
 ### Cold resume
 
