@@ -36,12 +36,32 @@
 		selectedMessages = null;
 		loadingDetail = true;
 		try {
-			const data = await getConversation(conv.session_id);
+			const data = await getConversation(conv.session_id, conv.id);
 			selectedMessages = data.conversation;
 		} catch (e) {
 			error = e.message;
 		}
 		loadingDetail = false;
+	}
+
+	const SUMMARY_PREFIX = '[Prior conversation summary]';
+
+	function isSummaryMessage(msg) {
+		return (
+			msg.role === 'system' &&
+			typeof msg.content === 'string' &&
+			msg.content.startsWith(SUMMARY_PREFIX)
+		);
+	}
+
+	function summaryBody(msg) {
+		const rest = msg.content.slice(SUMMARY_PREFIX.length);
+		return rest.startsWith('\n') ? rest.slice(1) : rest.trimStart();
+	}
+
+	function shouldRenderMessage(msg) {
+		if (msg.role !== 'system') return true;
+		return isSummaryMessage(msg);
 	}
 
 	function formatTime(iso) {
@@ -115,7 +135,7 @@
 			{:else}
 				{#each conversations as conv}
 					{@const dname = getConversationDeviceName(conv)}
-					<div class="conv-row" class:selected={selectedConv?.session_id === conv.session_id}>
+					<div class="conv-row" class:selected={selectedConv?.id === conv.id}>
 						<button
 							class="conv-item"
 							onclick={() => selectConversation(conv)}
@@ -166,24 +186,31 @@
 						{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
 					</span>
 				</div>
-				{#each selectedMessages as history}
+				{#if selectedMessages.length > 0}
 					<div class="message-list">
-						{#each history.messages as msg}
-							{#if msg.role !== 'system'}
-								<div class="msg" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'} class:tool={msg.role === 'tool'}>
-									<span class="msg-role">{msg.role}</span>
-									<div class="msg-content">
-										{#if typeof msg.content === 'string'}
-											{msg.content}
-										{:else}
-											<pre>{JSON.stringify(msg.content, null, 2)}</pre>
-										{/if}
+						{#each selectedMessages[0].messages as msg}
+							{#if shouldRenderMessage(msg)}
+								{#if isSummaryMessage(msg)}
+									<div class="msg summary">
+										<span class="msg-role">Prior conversation summary</span>
+										<div class="msg-content">{summaryBody(msg)}</div>
 									</div>
-								</div>
+								{:else}
+									<div class="msg" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'} class:tool={msg.role === 'tool'}>
+										<span class="msg-role">{msg.role}</span>
+										<div class="msg-content">
+											{#if typeof msg.content === 'string'}
+												{msg.content}
+											{:else}
+												<pre>{JSON.stringify(msg.content, null, 2)}</pre>
+											{/if}
+										</div>
+									</div>
+								{/if}
 							{/if}
 						{/each}
 					</div>
-				{/each}
+				{/if}
 			{/if}
 		</div>
 	</div>
@@ -395,6 +422,18 @@
 	.msg.tool {
 		background: #1a2218;
 		border-left: 3px solid #4ade80;
+	}
+
+	.msg.summary {
+		background: #1a1d2e;
+		border-left: 3px solid #a5b4fc;
+		font-style: italic;
+	}
+
+	.msg.summary .msg-role {
+		color: #a5b4fc;
+		font-style: normal;
+		letter-spacing: 0.04em;
 	}
 
 	.msg-role {

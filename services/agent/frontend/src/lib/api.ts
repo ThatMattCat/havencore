@@ -51,6 +51,7 @@ export function getTools(): Promise<ToolsResponse> {
 // --- Conversations ---
 
 export interface ConversationSummary {
+	id: number;
 	session_id: string;
 	created_at: string;
 	message_count: number;
@@ -59,6 +60,7 @@ export interface ConversationSummary {
 }
 
 export interface ConversationDetail {
+	id: number;
 	messages: any[];
 	created_at: string;
 	metadata: Record<string, any>;
@@ -73,8 +75,12 @@ export function listConversations(limit = 20, offset = 0): Promise<{ conversatio
 	return fetchJSON(`/api/conversations?limit=${limit}&offset=${offset}`);
 }
 
-export function getConversation(sessionId: string): Promise<{ conversation: ConversationDetail[] }> {
-	return fetchJSON(`/api/conversations/${sessionId}`);
+export function getConversation(
+	sessionId: string,
+	flushId?: number,
+): Promise<{ conversation: ConversationDetail[] }> {
+	const qs = flushId != null ? `?id=${flushId}` : '';
+	return fetchJSON(`/api/conversations/${sessionId}${qs}`);
 }
 
 export interface ResumeResponse {

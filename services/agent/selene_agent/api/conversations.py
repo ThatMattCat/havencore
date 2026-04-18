@@ -2,7 +2,9 @@
 Conversations API router — browse and retrieve stored conversation histories.
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from selene_agent.utils.conversation_db import conversation_db
 from selene_agent.utils import logger as custom_logger
@@ -23,9 +25,17 @@ async def list_conversations(limit: int = 20, offset: int = 0):
 
 
 @router.get("/conversations/{session_id}")
-async def get_conversation(session_id: str):
-    """Get a specific conversation by session ID"""
-    history = await conversation_db.get_conversation_history(session_id)
+async def get_conversation(
+    session_id: str,
+    id: Optional[int] = Query(default=None),
+):
+    """Get stored conversation histories for a session.
+
+    Without `id`, returns every stored flush for this session_id ordered
+    newest-first. With `id`, returns only the single flush whose primary key
+    matches (scoped to `session_id` so a mismatched pair 404s).
+    """
+    history = await conversation_db.get_conversation_history(session_id, flush_id=id)
     if history is None:
         raise HTTPException(status_code=500, detail="Failed to retrieve conversation")
     if not history:
