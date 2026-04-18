@@ -29,6 +29,10 @@ The `session_id` column is set by the client, not minted per turn:
 
 Because the id is externally stable, `get_conversation_history(session_id)` can return multiple rows for one logical device: each row is a self-contained conversation bounded by a reset event.
 
+### Fetching a specific flush
+
+`GET /api/conversations/{session_id}` returns every stored flush for that `session_id` newest-first. When the caller already has a specific row in mind (e.g. the dashboard's `/history` list, which shows one entry per flush), append `?id=<flush_id>` — using the `id` primary-key exposed on each list row — to scope the response to that single snapshot. The DB query still filters by `session_id` under the hood, so a mismatched `session_id`/`id` pair 404s. The dashboard uses this to keep each row's detail view aligned with its own header metadata (same `device_name`, same `message_count`, same `created_at`).
+
 ## Database Schema
 
 The conversation histories are stored in the `conversation_histories` table with the following structure:
