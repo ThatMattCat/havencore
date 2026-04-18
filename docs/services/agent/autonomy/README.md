@@ -60,8 +60,9 @@ FastAPI process; no extra container.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Invariant:** autonomous turns never touch `app.state.orchestrator.messages`.
-Each run constructs a fresh `AgentOrchestrator`, drives its event stream to
+**Invariant:** autonomous turns never touch any user session in
+`app.state.session_pool`. Each run constructs a fresh `AgentOrchestrator`
+directly (bypassing the pool entirely), drives its event stream to
 completion, captures the trace into `autonomy_runs.messages`, and is
 discarded. User conversation state stays clean.
 

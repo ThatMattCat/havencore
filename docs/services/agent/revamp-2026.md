@@ -164,7 +164,7 @@ app.include_router(ha_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 ```
 
-Shared state is accessed via `request.app.state.orchestrator` and `request.app.state.mcp_manager`, set during the FastAPI lifespan.
+Shared state is accessed via `request.app.state.session_pool` and `request.app.state.mcp_manager`, set during the FastAPI lifespan. (At the time of the rewrite this was a singleton `request.app.state.orchestrator`; it was superseded by the per-session pool later — see [services/agent/README.md](../../../services/agent/README.md#session-pool).)
 
 ---
 

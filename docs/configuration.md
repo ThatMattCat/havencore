@@ -159,8 +159,9 @@ EMBEDDING_DIM=1024   # Match the model: bge-large-en-v1.5 = 1024, MiniLM-L6 = 38
 ### Agent runtime tuning
 
 ```bash
-# Seconds of inactivity before a conversation is flushed to Postgres
-CONVERSATION_TIMEOUT=600
+# Seconds of inactivity before an idle sweep flushes a pooled session to
+# Postgres and reinitializes it in place. Also bounds LRU eviction behavior.
+CONVERSATION_TIMEOUT=180
 
 # Cap on tool-result text before it's summarized back to the LLM
 TOOL_RESULT_MAX_CHARS=8000

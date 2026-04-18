@@ -65,21 +65,29 @@ POSTGRES_PASSWORD="havencore_password"
 
 ### Conversation storage
 
-Triggered automatically when:
+The `SessionOrchestratorPool` flushes a session to Postgres on one of
+three triggers (see the agent's
+[Conversation history](../agent/conversation-history.md) doc for detail):
 
-- A new query is received after 3+ minutes of inactivity
-- The existing conversation has multiple messages
-- A session timeout occurs
+- **Idle sweep** — a 30s background task persists sessions whose
+  `last_query_time` is older than `CONVERSATION_TIMEOUT` (default 180s)
+  and reinitializes them in place. `reset_reason` = `timeout_<seconds>_seconds`.
+- **LRU eviction** — when the pool hits `max_size` (64) and a new
+  session is admitted, the least-recently-used entry is flushed and
+  dropped. `reset_reason` = `lru_eviction`.
+- **Shutdown flush** — on agent restart/stop/SIGTERM every non-empty
+  session is persisted. `reset_reason` = `shutdown_flush`.
+
+Sessions with only the system prompt (`messages` length ≤ 1) are skipped.
 
 ### Metadata structure
 
 ```json
 {
-  "reset_reason": "timeout_3_minutes",
+  "reset_reason": "timeout_180_seconds",
   "message_count": 5,
-  "last_query_timestamp": "2024-01-15T10:30:00Z",
-  "agent_name": "Selene",
-  "trace_id": "abc123"
+  "last_query_time": 1705315800.123,
+  "agent_name": "Selene"
 }
 ```
 

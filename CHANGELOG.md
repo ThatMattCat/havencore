@@ -5,6 +5,40 @@ All notable changes to HavenCore are tracked here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Per-session orchestrator pool.** Replaced the singleton
+  `AgentOrchestrator` with a `SessionOrchestratorPool` keyed by
+  `session_id`. Each conversation gets its own orchestrator, messages,
+  and per-session `asyncio.Lock` (turns on one session serialize, turns
+  across sessions run concurrently). Expensive singletons (OpenAI
+  client, MCP manager, model, tool list) stay shared. Pool runs a 30s
+  idle sweep (flush timed-out sessions), an LRU cap at 64 (evict +
+  flush), and a shutdown flush (nothing lost on restart). Cold-resume
+  from `conversation_histories` rehydrates a stored session on demand.
+- **`/api/chat` + `/ws/chat` are now session-scoped.** `/api/chat`
+  accepts an optional `X-Session-Id` request header and echoes the
+  active one back. `/ws/chat` accepts an optional first frame
+  `{"type":"session","session_id":"..."}`; the server always announces
+  the active session via its own `{"type":"session"}` frame before turn
+  events.
+- **`/v1/chat/completions` is now stateless.** Builds an ephemeral
+  orchestrator per request — no pool, no history persistence, no
+  `turn_metrics` writes. Callers own their own history.
+
+### Added
+
+- **`POST /api/conversations/{session_id}/resume`** — hydrate a stored
+  conversation back into the live pool. Powers the dashboard's new
+  **Resume** button on `/history`.
+- **`/api/status` session block** — `agent.sessions` now includes
+  `{active_sessions, max_size, sweep_running}` for the pool.
+- **Dashboard `/chat` session badge + New Chat button.** The chat page
+  shows the active `session_id` and lets you mint a fresh one without
+  losing the tab. `sessionStorage` key: `haven.chat.session_id`.
+
 ## [1.0.0] — 2026-04-16
 
 First tagged release. HavenCore is a self-hosted, voice-capable AI smart-home

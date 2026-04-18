@@ -490,13 +490,16 @@ response = client.chat.completions.create(
 **Default limits**:
 - **Active conversation**: No hard limit (in-memory, bounded by session length)
 - **Database storage**: Unlimited (bounded by disk space)
-- **Auto-flush**: a conversation is flushed to Postgres after
-  `CONVERSATION_TIMEOUT` seconds of inactivity (default `600` = 10 min).
+- **Auto-flush**: the `SessionOrchestratorPool` flushes a session to
+  Postgres on one of three triggers — idle timeout (default
+  `CONVERSATION_TIMEOUT=180` seconds = 3 min, swept every 30s), LRU
+  eviction when the pool hits its 64-session cap, or shutdown flush on
+  agent restart/stop.
 
 **Configuration options**:
 ```bash
 # .env — tune how quickly idle conversations are persisted
-CONVERSATION_TIMEOUT=600
+CONVERSATION_TIMEOUT=180
 ```
 
 ```sql
