@@ -1,6 +1,6 @@
 <script>
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { messages, isConnected, isProcessing, connectionState, currentSessionId, connect, sendMessage, disconnect, clearMessages, retryNow, startNewChat } from '$lib/stores/chat';
+	import { messages, isConnected, isProcessing, connectionState, currentSessionId, currentDeviceName, connect, sendMessage, disconnect, clearMessages, retryNow, startNewChat } from '$lib/stores/chat';
 	import ToolCallCard from '$lib/components/ToolCallCard.svelte';
 	import { sttTranscribe, ttsSpeak } from '$lib/api';
 	import { marked } from 'marked';
@@ -291,6 +291,10 @@
 				{$isConnected ? 'Connected' : 'Disconnected'}
 			</span>
 			<span class="session-badge" title={$currentSessionId ?? 'No session yet'}>
+				{#if $currentDeviceName}
+					<span class="device-label">{$currentDeviceName}</span>
+					<span class="badge-sep">·</span>
+				{/if}
 				session · <span class="session-id">{shortSessionId($currentSessionId)}</span>
 			</span>
 			<button
@@ -502,6 +506,15 @@
 	.session-badge .session-id {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		color: #c9cdd5;
+	}
+
+	.session-badge .device-label {
+		color: #a5b4fc;
+		font-weight: 500;
+	}
+
+	.session-badge .badge-sep {
+		color: #4b5563;
 	}
 
 	.clear-btn {

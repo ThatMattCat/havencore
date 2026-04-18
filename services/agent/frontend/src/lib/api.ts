@@ -64,6 +64,11 @@ export interface ConversationDetail {
 	metadata: Record<string, any>;
 }
 
+export function getConversationDeviceName(c: { metadata?: Record<string, any> }): string | null {
+	const v = c.metadata?.device_name;
+	return typeof v === 'string' && v.trim() ? v : null;
+}
+
 export function listConversations(limit = 20, offset = 0): Promise<{ conversations: ConversationSummary[]; limit: number; offset: number }> {
 	return fetchJSON(`/api/conversations?limit=${limit}&offset=${offset}`);
 }
@@ -261,6 +266,7 @@ export function getComfyHealth(): Promise<{ status: string }> {
 export interface TurnRow {
 	id: number;
 	session_id: string | null;
+	device_name: string | null;
 	created_at: string;
 	llm_ms: number;
 	tool_ms_total: number;

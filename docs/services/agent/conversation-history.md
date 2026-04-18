@@ -90,6 +90,8 @@ Validation: trimmed, ASCII control characters stripped, capped at 64 characters 
 
 The label is persisted to `metadata.device_name` on every flush and denormalized onto each `turn_metrics` row (so the metrics view can group by device without joining). Cold-resume via `POST /api/conversations/{session_id}/resume` rehydrates the most recent value. `/v1/chat/completions` is stateless and unattributed.
 
+The dashboard tab is itself a client and self-identifies the same way. The user sets a name from **System → "This Browser"**; it's persisted in `localStorage` under `haven.device_name` (per-browser, durable across tabs and reloads) and sent on the WS open frame, with mid-stream updates pushed when the user edits the name with a chat session live. Naming is opt-in — leave it blank and dashboard-driven turns flush with `device_name = null`, the same as any unlabelled client. When set, the label surfaces in the chat-page session badge, as a chip on each row of `/history`, and in both the per-row "Device" column and the "Per-device activity" card on `/metrics`.
+
 ### Cold resume
 
 A stored `session_id` can be reloaded into the live pool via `POST /api/conversations/{session_id}/resume`. The dashboard's "Resume" button on `/history` calls this endpoint, sets the returned id in `sessionStorage`, and navigates back to `/chat`. The pool rehydrates the orchestrator from the latest stored row, re-prepends the L4 memory block via `prepare()` (not `initialize()`, which would clobber the restored messages), and the next turn continues the conversation.

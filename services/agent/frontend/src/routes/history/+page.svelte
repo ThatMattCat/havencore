@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
-	import { listConversations, getConversation, resumeConversation } from '$lib/api';
+	import { listConversations, getConversation, resumeConversation, getConversationDeviceName } from '$lib/api';
 	import { setSessionId } from '$lib/stores/chat';
 
 	let conversations = $state([]);
@@ -114,13 +114,20 @@
 				<p class="muted">No conversations stored yet</p>
 			{:else}
 				{#each conversations as conv}
+					{@const dname = getConversationDeviceName(conv)}
 					<div class="conv-row" class:selected={selectedConv?.session_id === conv.session_id}>
 						<button
 							class="conv-item"
 							onclick={() => selectConversation(conv)}
 						>
+							{#if dname}
+								<div class="conv-device">{dname}</div>
+							{/if}
 							<div class="conv-time">{formatTime(conv.created_at)}</div>
-							<div class="conv-info">{conv.message_count} messages</div>
+							<div class="conv-info">
+								{conv.message_count} messages
+								{#if !dname}<span class="conv-sid">· {conv.session_id.slice(-8)}</span>{/if}
+							</div>
 						</button>
 						<button
 							class="resume-btn"
@@ -154,7 +161,10 @@
 			{:else if selectedMessages}
 				<div class="detail-header">
 					<h2>{formatTime(selectedConv.created_at)}</h2>
-					<span class="muted">{selectedConv.message_count} messages</span>
+					<span class="muted">
+						{#if getConversationDeviceName(selectedConv)}{getConversationDeviceName(selectedConv)} · {/if}
+						{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
+					</span>
 				</div>
 				{#each selectedMessages as history}
 					<div class="message-list">
@@ -269,6 +279,18 @@
 		cursor: wait;
 	}
 
+	.conv-device {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: #a5b4fc;
+		margin-bottom: 4px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.conv-time {
 		font-size: 13px;
 		color: #e1e4e8;
@@ -278,6 +300,12 @@
 	.conv-info {
 		font-size: 12px;
 		color: #6b7280;
+	}
+
+	.conv-sid {
+		margin-left: 4px;
+		color: #4b5563;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 	}
 
 	.pagination {

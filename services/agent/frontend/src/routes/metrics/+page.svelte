@@ -50,6 +50,30 @@
 
 	let chart = $derived(chartDays(summary?.per_day));
 	let chartMax = $derived(Math.max(1, ...chart.map((d) => d.turns)));
+
+	function groupByDevice(rows) {
+		const m = new Map();
+		for (const r of rows) {
+			const key = r.device_name ?? '__unattributed__';
+			const name = r.device_name ?? 'Unattributed';
+			const e = m.get(key) ?? { name, count: 0, total_ms_sum: 0, last_ts: '' };
+			e.count += 1;
+			e.total_ms_sum += r.total_ms || 0;
+			if (!e.last_ts || r.created_at > e.last_ts) e.last_ts = r.created_at;
+			m.set(key, e);
+		}
+		return [...m.values()]
+			.map((e) => ({
+				name: e.name,
+				count: e.count,
+				avg_ms: Math.round(e.total_ms_sum / e.count),
+				last_ts: e.last_ts,
+				unattributed: e.name === 'Unattributed',
+			}))
+			.sort((a, b) => b.count - a.count);
+	}
+
+	let perDevice = $derived(groupByDevice(turns));
 </script>
 
 <div class="page">
@@ -109,6 +133,30 @@
 		</Card>
 	</div>
 
+	<div class="row single">
+		<Card title="Per-device activity (last {turns.length} turns)">
+			{#if perDevice.length === 0}
+				<p class="muted">No turns recorded yet.</p>
+			{:else}
+				<table class="table">
+					<thead>
+						<tr><th>Device</th><th>Turns</th><th>Avg ms</th><th>Last seen</th></tr>
+					</thead>
+					<tbody>
+						{#each perDevice as d}
+							<tr>
+								<td class="device-name" class:unattributed={d.unattributed}>{d.name}</td>
+								<td>{d.count}</td>
+								<td>{d.avg_ms}</td>
+								<td>{formatTime(d.last_ts)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+		</Card>
+	</div>
+
 	<Card title="Recent turns">
 		{#if turns.length === 0}
 			<p class="muted">No turns recorded yet. Send a chat message to populate metrics.</p>
@@ -118,6 +166,7 @@
 					<thead>
 						<tr>
 							<th>Time</th>
+							<th>Device</th>
 							<th>Total</th>
 							<th>LLM</th>
 							<th>Tools</th>
@@ -129,6 +178,15 @@
 						{#each turns as t}
 							<tr>
 								<td>{formatTime(t.created_at)}</td>
+								<td class="device-cell">
+									{#if t.device_name}
+										<span class="device-label">{t.device_name}</span>
+									{:else if t.session_id}
+										<span class="device-fallback">…{t.session_id.slice(-8)}</span>
+									{:else}
+										<span class="device-fallback">—</span>
+									{/if}
+								</td>
 								<td>{formatMs(t.total_ms)}</td>
 								<td>{formatMs(t.llm_ms)}</td>
 								<td>{formatMs(t.tool_ms_total)}</td>
@@ -174,6 +232,9 @@
 		grid-template-columns: 2fr 1fr;
 		gap: 16px;
 		margin-bottom: 16px;
+	}
+	.row.single {
+		grid-template-columns: 1fr;
 	}
 	@media (max-width: 900px) {
 		.row { grid-template-columns: 1fr; }
@@ -223,6 +284,23 @@
 		color: #c9cdd5;
 	}
 	.tool-name { color: #a78bfa; }
+	.device-name { color: #a5b4fc; font-weight: 500; }
+	.device-name.unattributed { color: #6b7280; font-style: italic; font-weight: 400; }
+	.device-cell { white-space: nowrap; }
+	.device-label {
+		color: #a5b4fc;
+		background: #1a1d2e;
+		border: 1px solid #2d3148;
+		padding: 2px 8px;
+		border-radius: 10px;
+		font-size: 11px;
+		font-weight: 500;
+	}
+	.device-fallback {
+		color: #4b5563;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 11px;
+	}
 	.tools-used {
 		display: flex;
 		flex-wrap: wrap;

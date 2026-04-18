@@ -24,8 +24,10 @@ export const isConnected = writable(false);
 export const isProcessing = writable(false);
 export const connectionState = writable<ConnectionState>('connecting');
 export const currentSessionId = writable<string | null>(null);
+export const currentDeviceName = writable<string | null>(null);
 
 const SESSION_STORAGE_KEY = 'haven.chat.session_id';
+const DEVICE_NAME_STORAGE_KEY = 'haven.device_name';
 
 function readPersistedSessionId(): string | null {
 	if (typeof window === 'undefined') return null;
@@ -53,9 +55,34 @@ if (typeof window !== 'undefined') {
 	if (persisted) currentSessionId.set(persisted);
 }
 
+// Hydrate device name from localStorage (per-browser, persists across tabs).
+if (typeof window !== 'undefined') {
+	try {
+		const v = window.localStorage.getItem(DEVICE_NAME_STORAGE_KEY);
+		if (v && v.trim()) currentDeviceName.set(v);
+	} catch {}
+}
+
 export function setSessionId(sid: string | null) {
 	currentSessionId.set(sid);
 	persistSessionId(sid);
+}
+
+export function setDeviceName(name: string | null) {
+	const cleaned = name?.trim() || null;
+	currentDeviceName.set(cleaned);
+	if (typeof window !== 'undefined') {
+		try {
+			if (cleaned) window.localStorage.setItem(DEVICE_NAME_STORAGE_KEY, cleaned);
+			else window.localStorage.removeItem(DEVICE_NAME_STORAGE_KEY);
+		} catch {}
+	}
+	// Push the change to an open WS so the active session adopts the new label.
+	// Backend treats empty/whitespace as a no-op, so unsetting locally won't
+	// clear the server-side label until a new WS opens.
+	if (ws && ws.readyState === WebSocket.OPEN && cleaned) {
+		ws.send(JSON.stringify({ type: 'session', device_name: cleaned }));
+	}
 }
 
 let ws: WebSocket | null = null;
@@ -94,8 +121,11 @@ export function connect() {
 		// Send our session preference (if any) as the first frame. Server
 		// will either honor it, cold-resume from DB, or mint a new one.
 		const sid = get(currentSessionId);
+		const dname = get(currentDeviceName);
+		const frame: Record<string, unknown> = { type: 'session', session_id: sid };
+		if (dname) frame.device_name = dname;
 		if (ws && ws.readyState === WebSocket.OPEN) {
-			ws.send(JSON.stringify({ type: 'session', session_id: sid }));
+			ws.send(JSON.stringify(frame));
 		}
 	};
 
