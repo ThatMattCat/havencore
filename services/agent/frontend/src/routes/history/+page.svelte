@@ -1,7 +1,9 @@
 <script>
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
-	import { listConversations, getConversation } from '$lib/api';
+	import { listConversations, getConversation, resumeConversation, getConversationDeviceName } from '$lib/api';
+	import { setSessionId } from '$lib/stores/chat';
 
 	let conversations = $state([]);
 	let selectedConv = $state(null);
@@ -10,6 +12,7 @@
 	let loadingDetail = $state(false);
 	let error = $state('');
 	let offset = $state(0);
+	let atEnd = $state(false);
 	const limit = 20;
 
 	onMount(async () => {
@@ -21,6 +24,7 @@
 		try {
 			const data = await listConversations(limit, offset);
 			conversations = data.conversations;
+			atEnd = conversations.length < limit;
 		} catch (e) {
 			error = e.message;
 		}
@@ -32,7 +36,7 @@
 		selectedMessages = null;
 		loadingDetail = true;
 		try {
-			const data = await getConversation(conv.session_id);
+			const data = await getConversation(conv.session_id, conv.id);
 			selectedMessages = data.conversation;
 		} catch (e) {
 			error = e.message;
@@ -40,19 +44,65 @@
 		loadingDetail = false;
 	}
 
+	const SUMMARY_PREFIX = '[Prior conversation summary]';
+
+	function isSummaryMessage(msg) {
+		return (
+			msg.role === 'system' &&
+			typeof msg.content === 'string' &&
+			msg.content.startsWith(SUMMARY_PREFIX)
+		);
+	}
+
+	function summaryBody(msg) {
+		const rest = msg.content.slice(SUMMARY_PREFIX.length);
+		return rest.startsWith('\n') ? rest.slice(1) : rest.trimStart();
+	}
+
+	function shouldRenderMessage(msg) {
+		if (msg.role !== 'system') return true;
+		return isSummaryMessage(msg);
+	}
+
 	function formatTime(iso) {
 		if (!iso) return '';
 		return new Date(iso).toLocaleString();
 	}
 
-	function nextPage() {
+	async function nextPage() {
+		if (atEnd) return;
+		const prevOffset = offset;
 		offset += limit;
-		loadConversations();
+		await loadConversations();
+		if (conversations.length === 0) {
+			// Rolled past the end — restore prior page and mark as end.
+			offset = prevOffset;
+			atEnd = true;
+			await loadConversations();
+			atEnd = true;
+		}
 	}
 
 	function prevPage() {
 		offset = Math.max(0, offset - limit);
 		loadConversations();
+	}
+
+	let resumingSid = $state(null);
+
+	async function handleResume(conv, event) {
+		// Prevent the row's selectConversation click.
+		if (event) event.stopPropagation();
+		resumingSid = conv.session_id;
+		try {
+			const result = await resumeConversation(conv.session_id);
+			setSessionId(result.session_id);
+			await goto('/chat');
+		} catch (e) {
+			error = `Resume failed: ${e.message || e}`;
+		} finally {
+			resumingSid = null;
+		}
 	}
 
 	function getMessagePreview(messages) {
@@ -84,20 +134,39 @@
 				<p class="muted">No conversations stored yet</p>
 			{:else}
 				{#each conversations as conv}
-					<button
-						class="conv-item"
-						class:selected={selectedConv?.session_id === conv.session_id}
-						onclick={() => selectConversation(conv)}
-					>
-						<div class="conv-time">{formatTime(conv.created_at)}</div>
-						<div class="conv-info">{conv.message_count} messages</div>
-					</button>
+					{@const dname = getConversationDeviceName(conv)}
+					<div class="conv-row" class:selected={selectedConv?.id === conv.id}>
+						<button
+							class="conv-item"
+							onclick={() => selectConversation(conv)}
+						>
+							{#if dname}
+								<div class="conv-device">{dname}</div>
+							{/if}
+							<div class="conv-time">{formatTime(conv.created_at)}</div>
+							<div class="conv-info">
+								{conv.message_count} messages
+								{#if !dname}<span class="conv-sid">· {conv.session_id.slice(-8)}</span>{/if}
+							</div>
+						</button>
+						<button
+							class="resume-btn"
+							onclick={(e) => handleResume(conv, e)}
+							disabled={resumingSid === conv.session_id}
+							title="Resume this conversation in /chat"
+						>
+							{resumingSid === conv.session_id ? '…' : 'Resume'}
+						</button>
+					</div>
 				{/each}
 
 				<div class="pagination">
 					<button onclick={prevPage} disabled={offset === 0}>Previous</button>
-					<span class="page-info">Page {Math.floor(offset / limit) + 1}</span>
-					<button onclick={nextPage} disabled={conversations.length < limit}>Next</button>
+					<span class="page-info">
+						Page {Math.floor(offset / limit) + 1}
+						{#if atEnd}<span class="end-hint">· end</span>{/if}
+					</span>
+					<button onclick={nextPage} disabled={atEnd}>Next</button>
 				</div>
 			{/if}
 		</div>
@@ -112,26 +181,36 @@
 			{:else if selectedMessages}
 				<div class="detail-header">
 					<h2>{formatTime(selectedConv.created_at)}</h2>
-					<span class="muted">{selectedConv.message_count} messages</span>
+					<span class="muted">
+						{#if getConversationDeviceName(selectedConv)}{getConversationDeviceName(selectedConv)} · {/if}
+						{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
+					</span>
 				</div>
-				{#each selectedMessages as history}
+				{#if selectedMessages.length > 0}
 					<div class="message-list">
-						{#each history.messages as msg}
-							{#if msg.role !== 'system'}
-								<div class="msg" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'} class:tool={msg.role === 'tool'}>
-									<span class="msg-role">{msg.role}</span>
-									<div class="msg-content">
-										{#if typeof msg.content === 'string'}
-											{msg.content}
-										{:else}
-											<pre>{JSON.stringify(msg.content, null, 2)}</pre>
-										{/if}
+						{#each selectedMessages[0].messages as msg}
+							{#if shouldRenderMessage(msg)}
+								{#if isSummaryMessage(msg)}
+									<div class="msg summary">
+										<span class="msg-role">Prior conversation summary</span>
+										<div class="msg-content">{summaryBody(msg)}</div>
 									</div>
-								</div>
+								{:else}
+									<div class="msg" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'} class:tool={msg.role === 'tool'}>
+										<span class="msg-role">{msg.role}</span>
+										<div class="msg-content">
+											{#if typeof msg.content === 'string'}
+												{msg.content}
+											{:else}
+												<pre>{JSON.stringify(msg.content, null, 2)}</pre>
+											{/if}
+										</div>
+									</div>
+								{/if}
 							{/if}
 						{/each}
 					</div>
-				{/each}
+				{/if}
 			{/if}
 		</div>
 	</div>
@@ -175,9 +254,23 @@
 		gap: 4px;
 	}
 
+	.conv-row {
+		display: flex;
+		gap: 6px;
+		align-items: stretch;
+	}
+
+	.conv-row .conv-item {
+		flex: 1;
+	}
+
+	.conv-row.selected .conv-item {
+		background: #252a3e;
+		border-color: #6366f1;
+	}
+
 	.conv-item {
 		display: block;
-		width: 100%;
 		text-align: left;
 		padding: 12px;
 		background: #161822;
@@ -192,9 +285,37 @@
 		background: #1e2235;
 	}
 
-	.conv-item.selected {
+	.resume-btn {
+		padding: 0 12px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		color: #a5b4fc;
+		font-size: 12px;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.resume-btn:hover:not(:disabled) {
 		background: #252a3e;
 		border-color: #6366f1;
+	}
+
+	.resume-btn:disabled {
+		opacity: 0.5;
+		cursor: wait;
+	}
+
+	.conv-device {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: #a5b4fc;
+		margin-bottom: 4px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.conv-time {
@@ -206,6 +327,12 @@
 	.conv-info {
 		font-size: 12px;
 		color: #6b7280;
+	}
+
+	.conv-sid {
+		margin-left: 4px;
+		color: #4b5563;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 	}
 
 	.pagination {
@@ -234,6 +361,11 @@
 	.page-info {
 		font-size: 12px;
 		color: #6b7280;
+	}
+
+	.end-hint {
+		color: #4b5563;
+		margin-left: 4px;
 	}
 
 	.conversation-detail-panel {
@@ -290,6 +422,18 @@
 	.msg.tool {
 		background: #1a2218;
 		border-left: 3px solid #4ade80;
+	}
+
+	.msg.summary {
+		background: #1a1d2e;
+		border-left: 3px solid #a5b4fc;
+		font-style: italic;
+	}
+
+	.msg.summary .msg-role {
+		color: #a5b4fc;
+		font-style: normal;
+		letter-spacing: 0.04em;
 	}
 
 	.msg-role {

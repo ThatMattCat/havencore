@@ -7,10 +7,10 @@ HavenCore exposes two surfaces:
 
 ## Authentication
 
-The OpenAI-compatible endpoints forwarded to vLLM use the `DEV_CUSTOM_API_KEY` configured in `.env`:
+The OpenAI-compatible endpoints forwarded to vLLM use the `LLM_API_KEY` configured in `.env`:
 
 ```bash
-DEV_CUSTOM_API_KEY="your_secret_key"
+LLM_API_KEY="your_secret_key"
 curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/chat/completions ...
 ```
 
@@ -20,7 +20,7 @@ The `/api/*` dashboard endpoints are unauthenticated — the dashboard is intend
 
 ### POST /v1/chat/completions
 
-OpenAI-compatible chat completions endpoint for conversational AI.
+OpenAI-compatible chat completions endpoint for conversational AI. **Stateless**: each request builds an ephemeral orchestrator for the one call, runs the agent loop, and discards it. The endpoint never touches the session pool, the conversation-history DB, or the `turn_metrics` table. Callers must supply their full message history in the request body — the server remembers nothing between calls. For a pool-backed, history-tracked chat surface, use `/api/chat` or `/ws/chat` instead.
 
 **Endpoint**: `POST http://localhost/v1/chat/completions`
 
@@ -141,6 +141,9 @@ doc with the full tool list, arguments, config, and troubleshooting.
   (`plex_search`, `plex_list_recent`, `plex_list_on_deck`,
   `plex_list_clients`, `plex_play`). See
   [MCP Plex](services/agent/tools/plex.md) and [Media Control](integrations/media-control.md).
+- **Music Assistant** — audio-only playback router for speakers,
+  Chromecasts, and Google Homes. See
+  [MCP Music Assistant](services/agent/tools/music-assistant.md).
 - **General Tools** — `get_weather_forecast`, `brave_search`,
   `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_signal_message`,
   `query_multimodal_api`. See [MCP General](services/agent/tools/general.md).
@@ -348,16 +351,17 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `POST` | `/api/chat` | One-shot message with tool event log |
-| `GET`  | `/api/status` | Agent, MCP, DB, vLLM health |
+| `POST` | `/api/chat` | One-shot message with tool event log. Accepts `X-Session-Id` request header (optional); echoes the active `X-Session-Id` response header. Accepts `X-Idle-Timeout: <seconds>` (optional) to set the per-session idle window for summarize-and-reset; value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` and bad values are log-and-ignored. Accepts `X-Device-Name` (optional, e.g. `Kitchen Speaker`) — a human-readable label for the satellite/client driving the session; persists with every flush and rides each `turn_metrics` row. Trimmed, ASCII control chars stripped, capped at 64 chars; empty/whitespace values are no-ops (won't clobber a previously set name). |
+| `GET`  | `/api/status` | Agent, MCP, DB, vLLM health. Includes `agent.sessions` = `{active_sessions, max_size, sweep_running}` for the session pool. |
 | `GET`  | `/api/tools` | Registered tools grouped by MCP server |
-| `GET`  | `/api/conversations` | Paginated conversation history |
-| `GET`  | `/api/conversations/{session_id}` | Full messages for a session |
+| `GET`  | `/api/conversations` | Paginated conversation history. Each row carries its primary-key `id` (addresses a specific stored flush) alongside `session_id`, `created_at`, `message_count`, and `metadata` (which includes a `device_name` key — the label of the device that wrote that flush, captured per-flush so renames are preserved historically). |
+| `GET`  | `/api/conversations/{session_id}` | Stored conversation snapshots for a session. Without query args, returns every flush for that `session_id` newest-first. With `?id=<flush_id>` (the `id` from a list row), returns only that single flush; mismatched `session_id`/`id` pairs 404. Each returned record includes its `id`, `messages`, `created_at`, and `metadata`. |
+| `POST` | `/api/conversations/{session_id}/resume` | Hydrate a stored session into the live pool. Returns `{session_id, resumed, message_count}`. Used by the dashboard's "Resume" button on `/history`. |
 | `GET`  | `/api/ha/entities` | HA entities (optionally `?domain=light`) |
 | `GET`  | `/api/ha/entities/summary` | Entity counts per domain |
 | `GET`  | `/api/ha/automations` | HA automations |
 | `GET`  | `/api/ha/scenes` | HA scenes |
-| `GET`  | `/api/metrics/turns` | Recent per-turn timings |
+| `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. |
 | `GET`  | `/api/metrics/summary` | Daily aggregates, p95 |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
 | `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
@@ -382,18 +386,23 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/memory/l4/proposals` | L3 entries flagged `pending_l4_approval` by the nightly job |
 | `POST` | `/api/memory/l4/proposals/{id}/approve` | Promote a proposal to L4 |
 | `POST` | `/api/memory/l4/proposals/{id}/reject` | Clear the pending flag, leave entry at L3 |
+| `GET`  | `/api/memory/l2?limit=&offset=` | Browse L2 episodic entries with paging |
+| `DELETE`| `/api/memory/l2/{id}` | Hard-delete an L2 entry |
 | `GET`  | `/api/memory/l3?limit=&offset=` | Browse consolidated L3 summaries with paging |
-| `GET`  | `/api/memory/l3/{id}/sources` | Resolve an L3 entry's `source_ids` back to the originating L2 entries |
-| `DELETE`| `/api/memory/l3/{id}` | Hard-delete an L3 entry (source L2 entries untouched) |
+| `GET`  | `/api/memory/l3/{id}/sources` | Resolve an L3 entry's sources — returns `source_texts` from the payload when present (post-absorption), falls back to `retrieve(source_ids)` for legacy L3s |
+| `DELETE`| `/api/memory/l3/{id}` | Hard-delete an L3 entry |
 | `POST` | `/api/memory/search` | Semantic search across selected tiers (`{q, tiers:[L2,L3,L4], limit}`) |
+| `POST` | `/api/memory/admin/purge` | Hygiene delete: body `{tier: "L2"\|"L3"\|"all", source: "<tag>"}` or `{ids: [...]}`. Requires `source` or `ids` to avoid wildcard wipes. Returns `{deleted_ids, count}` |
 | `GET`  | `/api/memory/runs?limit=` | History of `memory_review` consolidation runs |
 | `POST` | `/api/memory/runs/trigger` | Run the consolidation pipeline now (delegates to autonomy engine) |
+| `GET`  | `/api/agent/phase` | Current operational phase: `{phase: "learning"\|"operating", since: "<iso>"}` |
+| `POST` | `/api/agent/phase` | Set the phase (body `{phase}`); refreshes active sessions' system prompts on return |
 
 ### WebSockets
 
 | URL | Direction | Purpose |
 |-----|-----------|---------|
-| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events |
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90,"device_name":"Kitchen Speaker"}` as the first frame to resume/bind a session, set a per-session idle window, and/or label the device; all fields optional. A later `{"type":"session", ...}` mid-stream may update `idle_timeout` or `device_name` on the active session (omitted fields are left untouched; `session_id` is honored only on the first frame). The server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
 | `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling

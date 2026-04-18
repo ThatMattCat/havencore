@@ -20,7 +20,7 @@ HavenCore configuration is managed through:
 HOST_IP_ADDRESS="192.168.1.100"  # Find with: ip route get 1.1.1.1 | awk '{print $7}'
 
 # Required: API access key
-DEV_CUSTOM_API_KEY="your_secret_key"  # Set to any value for API access
+LLM_API_KEY="your_secret_key"  # Set to any value for API access
 
 # Debug and logging
 DEBUG_LOGGING=0  # 0 = INFO, 1 = DEBUG
@@ -159,12 +159,36 @@ EMBEDDING_DIM=1024   # Match the model: bge-large-en-v1.5 = 1024, MiniLM-L6 = 38
 ### Agent runtime tuning
 
 ```bash
-# Seconds of inactivity before a conversation is flushed to Postgres
-CONVERSATION_TIMEOUT=600
+# Seconds of inactivity before the session pool summarizes the conversation
+# and resets it in place (same session_id, compact recap preserved as a
+# system message, last 2 user/assistant exchanges kept verbatim).
+CONVERSATION_TIMEOUT=90
+
+# Bounds for the per-session override (see below). Values outside this range
+# are clamped rather than rejected.
+CONVERSATION_TIMEOUT_MIN=10
+CONVERSATION_TIMEOUT_MAX=3600
+
+# Tuning for the summarize-on-timeout LLM call.
+SESSION_SUMMARY_MAX_TOKENS=400       # cap on the recap length
+SESSION_SUMMARY_TAIL_EXCHANGES=2     # raw user/assistant pairs kept after reset
+SESSION_SUMMARY_LLM_TIMEOUT_SEC=15   # fall back to tail-only if the call hangs
 
 # Cap on tool-result text before it's summarized back to the LLM
 TOOL_RESULT_MAX_CHARS=8000
 ```
+
+Per-session override: clients can pass `X-Idle-Timeout: <seconds>` on
+`POST /api/chat`, or include an `idle_timeout` field on any
+`{"type":"session", ...}` WebSocket frame (first frame or mid-stream), to
+widen or tighten the idle window for that session. The value sticks for
+the session's life (or until another turn sends a new value) and is
+persisted alongside the conversation for cold resume. The same surfaces
+also accept an optional `X-Device-Name` header (REST) or `device_name`
+field (WS) carrying a human-readable satellite/client label (e.g.
+`"Kitchen Speaker"`); see
+[services/agent/conversation-history.md](services/agent/conversation-history.md#device-attribution)
+for validation rules and persistence behavior.
 
 ### Autonomy engine
 
@@ -208,6 +232,32 @@ Notes:
 - `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
   `mobile_app_<device>`; the leading `notify.` is stripped.
 
+### Memory retrieval & agent phase
+
+Per-turn retrieval injection and phase-aware system prompts. Full
+reference: [services/agent/autonomy/memory/README.md](services/agent/autonomy/memory/README.md).
+
+```bash
+# Master switch for per-turn retrieval injection into pool-backed chats
+MEMORY_RETRIEVAL_ENABLED=true
+
+# Top-K memories injected per user turn; switches on the current agent phase
+MEMORY_RETRIEVAL_TOPK_LEARNING=5
+MEMORY_RETRIEVAL_TOPK_OPERATING=3
+
+# Hits below this cosine score are dropped (0.0–1.0)
+MEMORY_RETRIEVAL_MIN_SCORE=0.3
+
+# Seed phase on fresh installs (ignored once the agent_state row exists)
+AGENT_PHASE_DEFAULT="learning"
+```
+
+Notes:
+- Retrieval injection runs on `/api/chat` + `/ws/chat`. `/v1/chat/completions`
+  and the autonomy engine skip it — they manage their own context.
+- Phase is persisted in Postgres (`agent_state` table) and can be flipped
+  at runtime via the `/memory` dashboard toggle or `POST /api/agent/phase`.
+
 ### MCP (Model Context Protocol) Configuration
 
 The agent's tool surface is delivered by MCP servers bundled in the agent
@@ -250,8 +300,7 @@ command: [
   "--served-model-name", "gpt-3.5-turbo",
   "--gpu-memory-utilization", "0.9",
   "--max-model-len", "16384",
-  "--dtype", "auto",
-  "--api-key", "${DEV_CUSTOM_API_KEY}"
+  "--dtype", "auto"
 ]
 ```
 
@@ -393,7 +442,7 @@ volumes:
 # .env.dev
 DEBUG_LOGGING=1
 HOST_IP_ADDRESS="127.0.0.1"
-DEV_CUSTOM_API_KEY="dev123"
+LLM_API_KEY="dev123"
 POSTGRES_PASSWORD="dev_password"
 ```
 
@@ -402,7 +451,7 @@ POSTGRES_PASSWORD="dev_password"
 # .env.prod
 DEBUG_LOGGING=0
 HOST_IP_ADDRESS="your.production.ip"
-DEV_CUSTOM_API_KEY="secure_random_key"
+LLM_API_KEY="secure_random_key"
 POSTGRES_PASSWORD="secure_database_password"
 HAOS_TOKEN="production_ha_token"
 ```
@@ -430,7 +479,7 @@ docker compose exec postgres psql -U havencore -d havencore -c "SELECT 1;"
 docker compose exec agent nvidia-smi
 
 # Validate API keys
-curl -H "Authorization: Bearer ${DEV_CUSTOM_API_KEY}" http://localhost/health
+curl -H "Authorization: Bearer ${LLM_API_KEY}" http://localhost/health
 ```
 
 ### Common Configuration Issues
@@ -473,7 +522,7 @@ df -h
 ### API Security
 ```bash
 # Use strong API keys
-DEV_CUSTOM_API_KEY="$(openssl rand -base64 32)"
+LLM_API_KEY="$(openssl rand -base64 32)"
 
 # Enable rate limiting in nginx.conf
 limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;

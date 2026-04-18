@@ -86,6 +86,10 @@ class AutonomousTurn:
         orch.messages = [{"role": "system", "content": _sys}]
         # Autonomous turn already handled L4 injection — skip prepare()'s path.
         orch._l4_pending = False
+        # Autonomy turns drive themselves from a handler-authored message, not
+        # an arbitrary user prompt — per-turn retrieval isn't useful here and
+        # burns an embed + Qdrant query per turn.
+        orch.retrieval_enabled = False
         orch.temperature = self.temperature
         orch.max_tokens = self.max_tokens
 

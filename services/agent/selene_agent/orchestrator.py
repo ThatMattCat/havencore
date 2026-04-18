@@ -5,6 +5,7 @@ Separates the LLM interaction loop from the FastAPI server, yielding typed event
 that can be consumed by both non-streaming (collect all) and streaming (SSE/WebSocket) endpoints.
 """
 
+import asyncio
 import json
 import re
 import time
@@ -71,6 +72,7 @@ class AgentOrchestrator:
         mcp_manager: MCPClientManager,
         model_name: str,
         tools: List[Dict[str, Any]],
+        session_id: Optional[str] = None,
     ):
         self.client = client
         self.mcp_manager = mcp_manager
@@ -80,16 +82,43 @@ class AgentOrchestrator:
         self.messages: List[Dict[str, Any]] = []
         self.last_query_time: float = time.time()
         self.agent_name = config.AGENT_NAME
-        self.session_id: str = str(uuid.uuid4())
+        self.session_id: str = session_id or str(uuid.uuid4())
+        self._session_id_pinned: bool = session_id is not None
 
         self.temperature = 0.7
         self.top_p = 0.8
         self.max_tokens = 1024
         self._l4_pending = True
 
+        self.idle_timeout_override: Optional[int] = None
+        self.device_name: Optional[str] = None
+        self._user_turn_since_reset: bool = False
+
+        # Per-turn retrieval injection. Session-pool sessions enable it; the
+        # stateless /v1/chat/completions path overrides this to False.
+        self.retrieval_enabled: bool = True
+
+    def effective_timeout(self) -> int:
+        """Idle window in seconds — per-session override or global default."""
+        return int(self.idle_timeout_override or config.CONVERSATION_TIMEOUT)
+
     async def initialize(self):
-        """Initialize with system prompt (prepends L4 persistent-memory block when present)."""
+        """Initialize with system prompt (prepends L4 persistent-memory block
+        when present; appends phase-specific addendum)."""
         system_prompt = config.SYSTEM_PROMPT
+
+        # Append phase-specific guidance so memory behavior shifts with the
+        # operational phase (learning encourages aggressive memory creation).
+        try:
+            from selene_agent.utils.agent_state import get_agent_phase
+            phase = await get_agent_phase()
+            if phase == "learning":
+                system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_LEARNING_ADDENDUM
+            else:
+                system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
+        except Exception as e:
+            logger.warning(f"phase addendum lookup failed: {e}")
+
         try:
             from selene_agent.utils.l4_context import build_l4_block
             block = await build_l4_block()
@@ -99,31 +128,220 @@ class AgentOrchestrator:
             logger.warning(f"L4 block build failed during initialize: {e}")
         self.messages = [{"role": "system", "content": system_prompt}]
         self._l4_pending = False
-        self.session_id = str(uuid.uuid4())
+        if not getattr(self, "_session_id_pinned", False):
+            self.session_id = str(uuid.uuid4())
 
     async def _check_session_timeout(self):
-        """Check if conversation should be reset due to timeout."""
-        timeout = config.CONVERSATION_TIMEOUT
+        """Route into summarize-and-reset if the session has been idle past its window."""
+        timeout = self.effective_timeout()
         if self.last_query_time and time.time() - self.last_query_time > timeout:
-            logger.debug(f"{timeout}s without a message, resetting conversation")
+            await self._summarize_and_reset(reason="idle_timeout_summarize")
 
-            if self.messages and len(self.messages) > 1:
-                try:
-                    metadata = {
-                        'reset_reason': f'timeout_{timeout}_seconds',
-                        'message_count': len(self.messages),
-                        'last_query_time': self.last_query_time,
-                        'agent_name': self.agent_name,
-                    }
-                    await conversation_db.store_conversation_history(
-                        messages=self.messages,
-                        metadata=metadata,
-                    )
-                    logger.info(f"Stored conversation history with {len(self.messages)} messages before reset")
-                except Exception as e:
-                    logger.error(f"Failed to store conversation history before reset: {e}")
+    async def _summarize_and_reset(self, reason: str) -> None:
+        """Persist full history, then reset `messages` to [system, summary, last N exchanges].
 
+        Falls back to keep-tail-only if the summary LLM call fails or times out.
+        Preserves `session_id` (pool orchestrators are always pinned).
+        """
+        msgs = list(self.messages or [])
+        msg_count = len(msgs)
+        timeout = self.effective_timeout()
+        idle = int(time.time() - self.last_query_time) if self.last_query_time else 0
+
+        # No-op for fresh/empty sessions (system prompt only or less).
+        if msg_count <= 1:
             await self.initialize()
+            self.last_query_time = time.time()
+            self._user_turn_since_reset = False
+            return
+
+        # Count real user/assistant exchanges excluding the leading system msg.
+        real_turns = [m for m in msgs[1:] if m.get("role") in ("user", "assistant")]
+        if not real_turns:
+            await self.initialize()
+            self.last_query_time = time.time()
+            self._user_turn_since_reset = False
+            return
+
+        summary = await self._build_session_summary(msgs)
+        summary_ok = summary is not None
+        tail = self._tail_exchanges(msgs, config.SESSION_SUMMARY_TAIL_EXCHANGES)
+
+        # Persist full pre-reset history with summary and override in metadata.
+        try:
+            metadata = {
+                "reset_reason": reason,
+                "message_count": msg_count,
+                "last_query_time": self.last_query_time,
+                "agent_name": self.agent_name,
+                "idle_timeout_override": self.idle_timeout_override,
+                "device_name": self.device_name,
+                "idle_seconds": idle,
+                "timeout_seconds": timeout,
+                "rolling_summary": summary,
+                "tail_exchanges_kept": len(tail),
+            }
+            await conversation_db.store_conversation_history(
+                messages=msgs,
+                session_id=self.session_id,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist history during summarize-reset ({self.session_id}): {e}")
+
+        # Rebuild messages: system prompt (+ L4) + summary + tail.
+        await self.initialize()
+        if summary:
+            self.messages.append({
+                "role": "system",
+                "content": f"[Prior conversation summary]\n{summary}",
+            })
+        self.messages.extend(tail)
+        self.last_query_time = time.time()
+        self._user_turn_since_reset = False
+
+        logger.info(
+            "session_summarize_reset",
+            extra={
+                "event": "session_summarize_reset",
+                "session_id": self.session_id,
+                "reason": reason,
+                "prev_msg_count": msg_count,
+                "idle_seconds": idle,
+                "timeout_seconds": timeout,
+                "summary_ok": summary_ok,
+                "tail_kept": len(tail),
+            },
+        )
+
+    async def _build_session_summary(self, msgs: List[Dict[str, Any]]) -> Optional[str]:
+        """One-shot LLM call that condenses `msgs` to a compact recap. Returns None on failure."""
+        transcript_lines: List[str] = []
+        for m in msgs[1:]:  # skip system prompt
+            role = m.get("role", "")
+            if role not in ("user", "assistant", "tool"):
+                continue
+            content = m.get("content") or ""
+            if not isinstance(content, str):
+                continue
+            if role == "tool":
+                tool_name = m.get("name") or "tool"
+                transcript_lines.append(f"[{tool_name}]: {content}")
+            else:
+                transcript_lines.append(f"{role}: {content}")
+        transcript = "\n".join(transcript_lines)[:16000]
+        if not transcript.strip():
+            return None
+
+        system_prompt = (
+            f"You are summarizing a conversation between a user and an assistant named "
+            f"{self.agent_name}. Produce a compact recap (<= {config.SESSION_SUMMARY_MAX_TOKENS} "
+            "tokens) covering: (1) user intents and questions, (2) any side effects the "
+            "assistant caused (device changes, media playback, memory writes, messages sent), "
+            "(3) unresolved threads or open questions. Do NOT include pleasantries, role "
+            "labels, or step-by-step tool traces. Plain text only, no markdown, no emojis."
+        )
+
+        try:
+            resp = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": transcript},
+                    ],
+                    max_tokens=config.SESSION_SUMMARY_MAX_TOKENS,
+                    temperature=0.2,
+                ),
+                timeout=config.SESSION_SUMMARY_LLM_TIMEOUT_SEC,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+            return text or None
+        except asyncio.TimeoutError:
+            logger.warning(f"Session summary timed out for session {self.session_id}")
+            return None
+        except Exception as e:
+            logger.warning(f"Session summary LLM call failed for session {self.session_id}: {e}")
+            return None
+
+    def _tail_exchanges(self, msgs: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+        """Return up to the last `n` complete user→assistant exchanges (including
+        associated tool_call / tool messages). Drops orphaned tool messages at the
+        boundary to keep OpenAI schema valid.
+        """
+        if n <= 0 or len(msgs) <= 1:
+            return []
+
+        body = msgs[1:]  # drop system prompt
+        # Find indices of each 'user' message.
+        user_idxs = [i for i, m in enumerate(body) if m.get("role") == "user"]
+        if not user_idxs:
+            return []
+
+        start = user_idxs[-n] if n <= len(user_idxs) else user_idxs[0]
+        tail = body[start:]
+
+        # Drop any trailing assistant message that declared tool_calls whose
+        # tool responses aren't in the tail (or vice-versa) — iterate from the
+        # end and trim dangling tool messages with no matching assistant.
+        # Strategy: walk forward, keep only assistant tool_calls whose ids are
+        # fully satisfied by subsequent tool messages.
+        cleaned: List[Dict[str, Any]] = []
+        pending_tool_ids: set = set()
+        for m in tail:
+            role = m.get("role")
+            if role == "tool":
+                # Only keep if we have a pending matching id from an assistant
+                # we've already included; otherwise drop as orphan.
+                tcid = m.get("tool_call_id")
+                if tcid and tcid in pending_tool_ids:
+                    cleaned.append(m)
+                    pending_tool_ids.discard(tcid)
+                continue
+            if role == "assistant" and m.get("tool_calls"):
+                pending_tool_ids.update(
+                    tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")
+                )
+            cleaned.append(m)
+
+        # Drop any trailing assistant whose tool_calls are still unsatisfied —
+        # the model would otherwise expect tool responses that aren't here.
+        while cleaned and cleaned[-1].get("role") == "assistant" and cleaned[-1].get("tool_calls"):
+            ids = {tc.get("id") for tc in (cleaned[-1].get("tool_calls") or [])}
+            if ids & pending_tool_ids:
+                cleaned.pop()
+                pending_tool_ids -= ids
+                continue
+            break
+
+        return cleaned
+
+    async def _build_retrieval_block(self, user_message: str) -> Optional[str]:
+        """Fetch top-K L2/L3 for this user turn. Returns None when disabled or empty."""
+        if not self.retrieval_enabled:
+            return None
+        try:
+            from selene_agent.utils.retrieval import build_retrieval_block
+            from selene_agent.utils.agent_state import get_agent_phase
+            phase = await get_agent_phase()
+            return await build_retrieval_block(user_message, phase=phase)
+        except Exception as e:
+            logger.warning(f"retrieval block build failed: {e}")
+            return None
+
+    def _messages_for_llm(self, retrieval_block: Optional[str]) -> List[Dict[str, Any]]:
+        """Return self.messages with the retrieval block inserted before the
+        most recent user message. Does not mutate self.messages.
+        """
+        if not retrieval_block:
+            return self.messages
+        msgs = list(self.messages)
+        # Find the last user message and insert the retrieval block before it.
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "user":
+                msgs.insert(i, {"role": "system", "content": retrieval_block})
+                return msgs
+        return msgs
 
     async def prepare(self) -> None:
         """Lazily prepend L4 block if the orchestrator was set up without initialize()."""
@@ -162,10 +380,17 @@ class AgentOrchestrator:
 
         await self._check_session_timeout()
         self.last_query_time = time.time()
+        self._user_turn_since_reset = True
 
         turn_start = time.perf_counter()
         llm_ms_total = 0.0
         tool_calls_timing: List[Dict[str, Any]] = []
+
+        # Per-turn ephemeral retrieval block. Built once at turn start from the
+        # raw user message; passed to the LLM on every iteration; never stored
+        # in self.messages, so it can't compound across turns or survive into
+        # a cold-resumed session.
+        retrieval_block = await self._build_retrieval_block(user_message)
 
         try:
             self.messages.append({"role": "user", "content": wrapped_message})
@@ -182,7 +407,7 @@ class AgentOrchestrator:
                 llm_start = time.perf_counter()
                 response = await self.client.chat.completions.create(
                     model=self.model_name,
-                    messages=self.messages,
+                    messages=self._messages_for_llm(retrieval_block),
                     tools=self.tools,
                     tool_choice="auto",
                     temperature=self.temperature,
@@ -278,9 +503,18 @@ class AgentOrchestrator:
                 break
 
             if iteration >= MAX_TOOL_ITERATIONS:
-                error_msg = "ERROR: Maximum tool calling iterations reached. The model may be stuck in a loop."
-                logger.error(f"Hit maximum iterations ({MAX_TOOL_ITERATIONS}) in tool calling loop")
-                yield AgentEvent(type=EventType.ERROR, data={"error": error_msg})
+                error_msg = (
+                    f"ERROR: Maximum tool calling iterations ({MAX_TOOL_ITERATIONS}) "
+                    "reached. The model may be stuck in a loop."
+                )
+                logger.error(
+                    f"Hit maximum iterations ({MAX_TOOL_ITERATIONS}) in tool "
+                    f"calling loop (session_id={self.session_id})"
+                )
+                yield AgentEvent(
+                    type=EventType.ERROR,
+                    data={"error": error_msg, "iterations": iteration},
+                )
                 return
 
             yield AgentEvent(type=EventType.ERROR, data={"error": "ERROR: No valid response generated"})

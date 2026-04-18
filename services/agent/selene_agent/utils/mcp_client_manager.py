@@ -16,6 +16,7 @@ from mcp import StdioServerParameters, ClientSession, Tool
 from mcp.client.stdio import stdio_client
 
 from selene_agent.utils import logger as custom_logger
+from selene_agent.utils import config
 
 logger = custom_logger.get_logger('loki')
 
@@ -80,9 +81,6 @@ class MCPServerConnection:
     async def connect(self):
         """Connect to the MCP server"""
         try:
-            # if "python" in self.mcp_config.command.lower() or "sys.executable" in self.mcp_config.command.lower():
-            #     self.mcp_config.command = sys.executable
-            # set "self.config.env" to the current environment variables
             self.mcp_config.env = dict(os.environ)
             stdio_params = self.mcp_config.to_stdio_params()
             
@@ -258,8 +256,10 @@ class MCPClientManager:
                 # If it's a string, try to parse it
                 try:
                     parameters = json.loads(mcp_tool.inputSchema)
-                except:
-                    logger.warning(f"Could not parse input schema for tool {mcp_tool.name}")
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(
+                        f"Could not parse input schema for tool {mcp_tool.name}: {e}"
+                    )
         
         return UnifiedTool(
             name=mcp_tool.name,
@@ -287,12 +287,17 @@ class MCPClientManager:
         
         client_session = connection.client_session
         
+        timeout = config.MCP_TOOL_TIMEOUT_SECONDS
         try:
             logger.debug(f"Executing MCP tool {tool_name} with args: {arguments}")
-            
-            # Call the tool through MCP
-            result = await client_session.call_tool(tool_name, arguments)
-            
+
+            # Call the tool through MCP, with a hard cap so a wedged server
+            # cannot block the orchestrator indefinitely.
+            result = await asyncio.wait_for(
+                client_session.call_tool(tool_name, arguments),
+                timeout=timeout,
+            )
+
             # Handle the result based on its type (CallToolResult)
             if hasattr(result, 'isError') and result.isError:
                 # Error case - extract text from content
@@ -331,6 +336,14 @@ class MCPClientManager:
             else:
                 return str(result)
                 
+        except asyncio.TimeoutError:
+            error_msg = (
+                f"MCP tool '{tool_name}' on server '{server_name}' did not "
+                f"return within {timeout:.0f}s and was cancelled. The tool may be "
+                "hung or the request was too large; you can retry with simpler inputs."
+            )
+            logger.error(error_msg)
+            return error_msg
         except Exception as e:
             error_msg = f"Error executing MCP tool {tool_name}: {e}"
             logger.error(error_msg)

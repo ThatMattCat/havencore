@@ -62,8 +62,14 @@ DEFAULT_SEARCH_LIMIT = 5
 DEFAULT_IMPORTANCE = 3
 MAX_SEARCH_RESULTS = 20
 
-CONVERSATION_TIMEOUT = int(os.getenv("CONVERSATION_TIMEOUT", "180"))
+CONVERSATION_TIMEOUT = int(os.getenv("CONVERSATION_TIMEOUT", "90"))
+CONVERSATION_TIMEOUT_MIN = int(os.getenv("CONVERSATION_TIMEOUT_MIN", "10"))
+CONVERSATION_TIMEOUT_MAX = int(os.getenv("CONVERSATION_TIMEOUT_MAX", "3600"))
+SESSION_SUMMARY_MAX_TOKENS = int(os.getenv("SESSION_SUMMARY_MAX_TOKENS", "400"))
+SESSION_SUMMARY_TAIL_EXCHANGES = int(os.getenv("SESSION_SUMMARY_TAIL_EXCHANGES", "2"))
+SESSION_SUMMARY_LLM_TIMEOUT_SEC = float(os.getenv("SESSION_SUMMARY_LLM_TIMEOUT_SEC", "15"))
 TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
+MCP_TOOL_TIMEOUT_SECONDS = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120"))
 
 CURRENT_LOCATION = os.getenv("CURRENT_LOCATION", "New York, NY")
 CURRENT_ZIPCODE = os.getenv("CURRENT_ZIPCODE", "10001")
@@ -131,6 +137,16 @@ MEMORY_L3_RANK_BOOST = float(os.getenv("MEMORY_L3_RANK_BOOST", "1.2"))
 MEMORY_L4_MAX_ENTRIES = int(os.getenv("MEMORY_L4_MAX_ENTRIES", "20"))
 MEMORY_L4_WARN_TOKENS = int(os.getenv("MEMORY_L4_WARN_TOKENS", "1500"))
 
+# Per-turn retrieval injection (embeds user message, pulls top-K L2/L3 into prompt).
+MEMORY_RETRIEVAL_ENABLED = os.getenv("MEMORY_RETRIEVAL_ENABLED", "true").lower() in ("1", "true", "yes")
+MEMORY_RETRIEVAL_TOPK_LEARNING = int(os.getenv("MEMORY_RETRIEVAL_TOPK_LEARNING", "5"))
+MEMORY_RETRIEVAL_TOPK_OPERATING = int(os.getenv("MEMORY_RETRIEVAL_TOPK_OPERATING", "3"))
+MEMORY_RETRIEVAL_MIN_SCORE = float(os.getenv("MEMORY_RETRIEVAL_MIN_SCORE", "0.3"))
+
+# Agent operational phase. Persisted in the `agent_state` Postgres table;
+# this env var is only the seed/fallback value for the very first read.
+AGENT_PHASE_DEFAULT = os.getenv("AGENT_PHASE_DEFAULT", "learning")
+
 SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly personal assistant with access to various tools.
         Current Location: {CURRENT_LOCATION}
         Zip Code: {CURRENT_ZIPCODE}
@@ -139,7 +155,7 @@ SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly personal assistant with acc
         - Use Home Assistant controls for smart home devices including various media device control
         - Brave Search returns URL search results and will often need to be followed by using "fetch" tool on the chosen URL
         - Wolfram Alpha is useful for complex math problems but can also provide encyclopedic knowledge
-        - "create_memory" and "search_memories" utilize a vector database with embeddings. Use these tools for managing data about the user, preferences, house, and more. Search memories when relevant to improve responses to user requests.
+        - Memory tools ("create_memory", "search_memories", "delete_memory") use a vector database. Use "create_memory" when the user reveals a durable preference, routine, relationship, constraint, or fact worth remembering. Use "search_memories" whenever past context could improve your response. Use "delete_memory" when the user asks you to forget, remove, or correct a stored item — first call "search_memories" to locate the entry and its id, then call "delete_memory" with that id. Do NOT respond by creating a new memory that says the user wants something deleted.
         - Camera snapshots are returned as URLs and will often need to be sent for analysis using "query_multimodal_ai" before responding to the user.
         - Chain your tool calls across multiple messages, using one tool's response as another's input, when needed to fulfill user requests.
         - Be mindful of the user's context and preferences when using tools.
@@ -152,3 +168,17 @@ SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly personal assistant with acc
         - Do NOT use special characters or emojis, they cannot be translated to audio properly
         - Use the Qdrant memories whenever it might be relevant
         """
+
+SYSTEM_PROMPT_LEARNING_ADDENDUM = """
+### Operational phase: LEARNING
+You are still getting to know the user. Prioritize building a useful memory of them:
+- When natural, ask one clarifying question about preferences, routines, people, places, constraints, or goals — but don't interrogate.
+- When the user shares a durable fact (preferences, relationships, schedules, devices, names, constraints), call `create_memory` to store it. Prefer specific, self-contained statements.
+- Lean on `search_memories` liberally when any prior context could improve your response.
+- If the user asks you to forget or correct something, use `search_memories` to locate the entry and then `delete_memory` with its id. Never respond by creating a new "user wants to delete X" memory.
+"""
+
+SYSTEM_PROMPT_OPERATING_ADDENDUM = """
+### Operational phase: OPERATING
+You know the user reasonably well. Create memories only when genuinely new durable facts emerge, search when past context would improve the response, and use `delete_memory` (after `search_memories`) whenever the user asks to forget or correct something.
+"""

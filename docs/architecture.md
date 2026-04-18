@@ -52,9 +52,10 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 - Serves a custom SvelteKit dashboard (static SPA) with chat, metrics, service playgrounds, Home Assistant views, and live logs
 
 **Key Components**:
+- **Session Orchestrator Pool**: per-session `AgentOrchestrator` instances keyed by `session_id`, with per-session locks, 30s idle sweep, LRU cap (64 sessions), cold-resume from the history DB, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` bypasses it with an ephemeral orchestrator for stateless OpenAI-compat calls.
 - **Orchestrator**: Event-based agent loop with per-turn metrics
 - **MCP Client Manager**: Tool discovery and lifecycle across MCP servers
-- **Conversation Database**: PostgreSQL session and history management
+- **Conversation Database**: PostgreSQL session and history management — rows keyed by externally-stable `session_id` (dashboard tab UUID, Selene-puck mac-hash) so a single logical device accumulates turns across restarts
 - **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
 - **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 

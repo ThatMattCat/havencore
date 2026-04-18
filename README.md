@@ -25,7 +25,9 @@ Voice in, voice out. Your own LLM. Your own tools. Your data never leaves the bo
 
 Everything is one `docker compose up -d` away. Twelve containers, one GPU fleet, one dashboard.
 
-> The assistant's name is **Selene**. She lives on four RTX 3090s in my basement.
+> The assistant's name is **Selene**. She lives on four RTX 3090s in my shed.
+
+> **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default Qwen2.5-72B-AWQ stack wants **≥ 48 GB VRAM split across two cards**; a single 24 GB card works if you swap in a smaller model. Plan on ~60 GB of disk for images + model weights on first build.
 
 ---
 
@@ -132,6 +134,9 @@ This is the part that's worth scrolling for.
 ### Single-process, event-driven agent orchestrator
 The core loop ([`orchestrator.py`](services/agent/selene_agent/orchestrator.py)) is a typed async generator that emits `THINKING` / `TOOL_CALL` / `TOOL_RESULT` / `METRIC` / `DONE` / `ERROR` events. The WebSocket handler streams them straight to the dashboard; the OpenAI-compatible endpoint assembles them into SSE. **Same code path, three surfaces.**
 
+### Per-session orchestrator pool with cold-resume
+Concurrent users don't share state. A [`SessionOrchestratorPool`](services/agent/selene_agent/utils/session_pool.py) keyed by `session_id` gives each conversation its own orchestrator, its own messages, its own `asyncio.Lock` — so two dashboard tabs or a dashboard plus a voice puck never race on each other's turns. The pool runs a 30-second idle sweep (flush timed-out sessions to Postgres, reinitialize in place), an LRU cap at 64 (evict + persist), and a shutdown flush (nothing lost on restart). A stored `session_id` can be cold-resumed from the DB via `POST /api/conversations/{id}/resume` — the `/history` page's **Resume** button hydrates a past conversation straight into `/chat` and keeps going. `/v1/chat/completions` deliberately bypasses all of this: it's stateless by design, ephemeral orchestrator per request, caller owns the history.
+
 ### MCP all the way down
 Tools aren't a hardcoded registry — they're discovered at startup by a [`MCPClientManager`](services/agent/selene_agent/utils/mcp_client_manager.py) that spawns each tool server as a subprocess and speaks stdio JSON-RPC to it. A `UnifiedTool` abstraction converts MCP tool schemas to OpenAI function-calling format on the fly. Adding a tool server is a new folder with a `__main__.py`.
 
@@ -167,8 +172,8 @@ Port 6002 serves:
 
 One uvicorn, one network surface. Nginx in front just does TLS termination and path routing.
 
-### The voice edge is a separate repo
-Wake-word + mic + speaker runs on a Raspberry Pi or an ESP32-Box-3 and talks to HavenCore over the OpenAI-compat API. See [ThatMattCat/havencore-edge](https://github.com/ThatMattCat/havencore-edge).
+### The voice satellite is a separate repo
+Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over the OpenAI-compat API — on-device "Hey Selene" wake, touch-to-talk fallback, per-device `X-Device-Name` / `X-Session-Id` so the server can label rooms and keep room-scoped history. See [ThatMattCat/havencore-satellite-firmware](https://github.com/ThatMattCat/havencore-satellite-firmware).
 
 ---
 
@@ -229,7 +234,7 @@ Wake-word + mic + speaker runs on a Raspberry Pi or an ESP32-Box-3 and talks to 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Edge device (Pi / ESP32)  →  wake-word, mic, speaker            │
+│  Satellite (ESP32-S3-BOX-3) →  wake-word, mic, speaker           │
 │                    │                                             │
 │                    ▼   OpenAI-compatible HTTPS                   │
 │  ┌──────────────── nginx (80) ──────────────────┐                │
@@ -263,7 +268,8 @@ Everything below assumes a Linux box with NVIDIA GPUs, the container toolkit, an
 git clone https://github.com/ThatMattCat/havencore.git
 cd havencore
 cp .env.tmpl .env        # fill in HOST_IP_ADDRESS, HAOS_TOKEN, API keys
-docker compose up -d     # first build takes 60–90 min; model downloads on first run
+docker compose up -d     # first build: 60–90 min
+                         # first model load: 10–15 min (Qwen2.5-72B-AWQ, ~35 GB pull)
 open http://localhost    # SvelteKit dashboard
 ```
 
@@ -332,7 +338,7 @@ This is a real thing I use every day — not a weekend demo. It's also unapologe
 
 ## Companion projects
 
-- [**havencore-edge**](https://github.com/ThatMattCat/havencore-edge) — the wake-word + mic + speaker client.
+- [**havencore-satellite-firmware**](https://github.com/ThatMattCat/havencore-satellite-firmware) — ESP32-S3-BOX-3 voice satellite firmware (wake-word, mic, speaker, on-device "Hey Selene").
 
 ## License
 

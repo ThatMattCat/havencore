@@ -598,6 +598,137 @@ def my_custom_tool(param1: str, param2: int = 10) -> Dict[str, Any]:
 
 ---
 
+## Adding an MCP tool to HavenCore (in-tree)
+
+The fastest path to a new tool is to copy one of the existing in-tree MCP
+modules under `services/agent/selene_agent/modules/` and register it in
+`.env`. The agent spawns each module as a subprocess at startup and discovers
+its tools over stdio — no agent code changes needed.
+
+Every in-tree module has the same three-file layout:
+
+```
+services/agent/selene_agent/modules/mcp_<your_tool>/
+├── __init__.py          # empty is fine
+├── __main__.py          # entry point — runs mcp_server.main()
+└── mcp_server.py        # the server: tool list + handler
+```
+
+### 1. Scaffold the module
+
+```bash
+cd services/agent/selene_agent/modules
+cp -r mcp_general_tools mcp_hello          # pick any existing module as your template
+# prune the template's tools so you start empty
+```
+
+`__main__.py` is boilerplate — keep it identical:
+
+```python
+import asyncio
+
+if __name__ == "__main__":
+    from .mcp_server import main
+    asyncio.run(main())
+```
+
+### 2. Define your tools in `mcp_server.py`
+
+Minimal working server — one tool, no external deps:
+
+```python
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.server.models import InitializationOptions
+from mcp.types import Tool, TextContent
+
+server = Server("havencore-hello")
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="say_hello",
+            description="Greets the user by name.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name to greet"},
+                },
+                "required": ["name"],
+            },
+        ),
+    ]
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    if name == "say_hello":
+        return [TextContent(type="text", text=f"Hello, {arguments['name']}!")]
+    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+async def main():
+    async with stdio_server() as (read, write):
+        await server.run(
+            read,
+            write,
+            InitializationOptions(
+                server_name="havencore-hello",
+                server_version="0.1.0",
+                capabilities=server.get_capabilities(
+                    notification_options=None,
+                    experimental_capabilities={},
+                ),
+            ),
+        )
+```
+
+The agent reads `TextContent.text` back out and hands it to the LLM as the
+tool result. Return an error message the same way — the orchestrator will
+show it in the dashboard's tool-call card.
+
+### 3. Register the server in `.env`
+
+Append an entry to the `MCP_SERVERS` JSON array:
+
+```json
+{
+  "name": "hello",
+  "command": "python",
+  "args": ["-m", "selene_agent.modules.mcp_hello"],
+  "enabled": true
+}
+```
+
+All in-tree modules use the `python -m selene_agent.modules.<name>` form.
+Keep it consistent — relative script paths break when the agent's working
+directory changes.
+
+### 4. Restart and smoke-test
+
+```bash
+docker compose restart agent
+
+# From the host: confirm the server loaded and its tools are listed
+curl http://localhost:6002/api/mcp/status | jq '.servers_running, .tools_by_server'
+```
+
+Then run the stdio handshake from the **MCP server testing** section below
+to exercise your new tool without going through the LLM.
+
+### Tips
+
+- **Read the agent's logs, not stdout.** Subprocess stderr is captured by
+  `MCPClientManager`; write diagnostics with a logger rather than
+  `print()` so they land in `docker compose logs agent`.
+- **Wrap external calls in timeouts.** The orchestrator already caps
+  `call_tool()` at `MCP_TOOL_TIMEOUT_SECONDS` (default 120s), but a tool
+  that blocks on a hung socket burns that entire window.
+- **Return actionable errors.** The LLM recovers well from
+  `"Error: city 'Foo' not found — try one of: [Rome, Foothill, ...]"`
+  and poorly from `"Error: 404"`.
+
+---
+
 ## MCP Server Development
 
 ### What is MCP?

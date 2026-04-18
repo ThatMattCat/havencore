@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     iterations INTEGER NOT NULL,
     tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
 );
+ALTER TABLE turn_metrics ADD COLUMN IF NOT EXISTS device_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_created_at ON turn_metrics (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_session ON turn_metrics (session_id);
 """
@@ -35,7 +36,12 @@ class MetricsDB:
         async with pool.acquire() as conn:
             await conn.execute(ENSURE_TABLE_SQL)
 
-    async def record_turn(self, session_id: Optional[str], payload: Dict[str, Any]) -> None:
+    async def record_turn(
+        self,
+        session_id: Optional[str],
+        payload: Dict[str, Any],
+        device_name: Optional[str] = None,
+    ) -> None:
         pool = conversation_db.pool
         if not pool:
             return
@@ -44,8 +50,9 @@ class MetricsDB:
                 await conn.execute(
                     """
                     INSERT INTO turn_metrics
-                        (session_id, llm_ms, tool_ms_total, total_ms, iterations, tool_calls)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                        (session_id, llm_ms, tool_ms_total, total_ms, iterations,
+                         tool_calls, device_name)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
                     session_id,
                     int(payload.get("llm_ms", 0)),
@@ -53,6 +60,7 @@ class MetricsDB:
                     int(payload.get("total_ms", 0)),
                     int(payload.get("iterations", 0)),
                     json.dumps(payload.get("tool_calls", [])),
+                    device_name,
                 )
         except Exception as e:
             logger.error(f"Failed to record turn metric: {e}")
@@ -65,7 +73,7 @@ class MetricsDB:
             rows = await conn.fetch(
                 """
                 SELECT id, session_id, created_at, llm_ms, tool_ms_total,
-                       total_ms, iterations, tool_calls
+                       total_ms, iterations, tool_calls, device_name
                 FROM turn_metrics
                 ORDER BY created_at DESC
                 LIMIT $1
@@ -82,6 +90,7 @@ class MetricsDB:
                 "total_ms": r["total_ms"],
                 "iterations": r["iterations"],
                 "tool_calls": json.loads(r["tool_calls"]) if isinstance(r["tool_calls"], str) else r["tool_calls"],
+                "device_name": r["device_name"],
             }
             for r in rows
         ]

@@ -4,11 +4,23 @@
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
 	import { getStatus, getTools } from '$lib/api';
+	import { currentDeviceName, setDeviceName } from '$lib/stores/chat';
 
 	let status = $state(null);
 	let tools = $state(null);
 	let loading = $state(true);
 	let error = $state('');
+
+	let deviceNameDraft = $state($currentDeviceName ?? '');
+	let savedFlash = $state(false);
+	let savedFlashTimer = null;
+
+	function saveDeviceName() {
+		setDeviceName(deviceNameDraft || null);
+		savedFlash = true;
+		if (savedFlashTimer) clearTimeout(savedFlashTimer);
+		savedFlashTimer = setTimeout(() => (savedFlash = false), 1500);
+	}
 
 	onMount(async () => {
 		try {
@@ -88,6 +100,33 @@
 						</div>
 					</div>
 				{/if}
+			</Card>
+
+			<!-- This Browser (device-name attribution for chat turns) -->
+			<Card title="This Browser">
+				<div class="status-list">
+					<div class="status-row">
+						<span>Device name</span>
+						<span class="value">{$currentDeviceName ?? 'Not set'}</span>
+					</div>
+					<div class="device-edit">
+						<input
+							class="device-input"
+							type="text"
+							maxlength="64"
+							placeholder="e.g. Office Laptop"
+							bind:value={deviceNameDraft}
+							onkeydown={(e) => e.key === 'Enter' && saveDeviceName()}
+						/>
+						<button class="device-save" onclick={saveDeviceName}>
+							{savedFlash ? 'Saved' : 'Save'}
+						</button>
+					</div>
+					<p class="device-hint">
+						Identifies turns from this browser in History and Metrics.
+						Stored locally — leave blank to send unattributed.
+					</p>
+				</div>
 			</Card>
 
 			<!-- MCP Servers -->
@@ -291,5 +330,56 @@
 		font-size: 12px;
 		color: #6b7280;
 		line-height: 1.4;
+	}
+
+	.device-edit {
+		display: flex;
+		gap: 8px;
+		margin-top: 4px;
+	}
+
+	.device-input {
+		flex: 1;
+		min-width: 0;
+		background: #0f1117;
+		border: 1px solid #2d3148;
+		border-radius: 6px;
+		padding: 8px 10px;
+		color: #e1e4e8;
+		font-size: 13px;
+		font-family: inherit;
+		outline: none;
+		transition: border-color 0.15s;
+	}
+
+	.device-input:focus {
+		border-color: #6366f1;
+	}
+
+	.device-input::placeholder {
+		color: #4b5563;
+	}
+
+	.device-save {
+		padding: 6px 14px;
+		background: #252a3e;
+		border: 1px solid #2d3148;
+		border-radius: 6px;
+		color: #a5b4fc;
+		font-size: 12px;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.device-save:hover {
+		background: #2d3148;
+		border-color: #6366f1;
+	}
+
+	.device-hint {
+		font-size: 12px;
+		color: #6b7280;
+		line-height: 1.4;
+		margin-top: 4px;
 	}
 </style>

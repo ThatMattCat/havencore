@@ -44,12 +44,19 @@ CREATE TABLE turn_metrics (
     tool_ms_total INTEGER NOT NULL,
     total_ms INTEGER NOT NULL,
     iterations INTEGER NOT NULL,
-    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
+    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
+    device_name TEXT
 );
 ```
 
 `tool_calls` is a JSONB array of `{name, duration_ms, ok}` entries — one
-per tool call in the turn.
+per tool call in the turn. `device_name` denormalizes the satellite/client
+label set via `X-Device-Name` (or the WS `device_name` session field) so
+metrics views can group by device without joining `conversation_histories`;
+`NULL` for turns where the client didn't send a label or for the stateless
+`/v1/chat/completions` path. The column is added on existing deployments
+via an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` that runs at
+agent startup (`MetricsDB.ensure_schema`).
 
 ## Configuration
 
@@ -65,23 +72,47 @@ POSTGRES_PASSWORD="havencore_password"
 
 ### Conversation storage
 
-Triggered automatically when:
+The `SessionOrchestratorPool` flushes a session to Postgres on one of
+three triggers (see the agent's
+[Conversation history](../agent/conversation-history.md) doc for detail):
 
-- A new query is received after 3+ minutes of inactivity
-- The existing conversation has multiple messages
-- A session timeout occurs
+- **Idle sweep (summarize-and-continue)** — a 30s background task persists sessions whose
+  `last_query_time` is older than their effective idle window (per-session
+  override if set, else `CONVERSATION_TIMEOUT`, default 90s), then runs a
+  one-shot LLM summary and reinitializes `messages` to
+  `[system, summary, last N exchanges]` with the same `session_id`.
+  `reset_reason` = `idle_timeout_summarize`.
+- **LRU eviction** — when the pool hits `max_size` (64) and a new
+  session is admitted, the least-recently-used entry is flushed and
+  dropped. `reset_reason` = `lru_eviction`.
+- **Shutdown flush** — on agent restart/stop/SIGTERM every non-empty
+  session is persisted. `reset_reason` = `shutdown_flush`.
+
+Sessions with only the system prompt (`messages` length ≤ 1) are skipped.
 
 ### Metadata structure
 
 ```json
 {
-  "reset_reason": "timeout_3_minutes",
+  "reset_reason": "idle_timeout_summarize",
   "message_count": 5,
-  "last_query_timestamp": "2024-01-15T10:30:00Z",
+  "last_query_time": 1705315800.123,
   "agent_name": "Selene",
-  "trace_id": "abc123"
+  "idle_timeout_override": 45,
+  "device_name": "Kitchen Speaker",
+  "rolling_summary": "User asked about weather and turned on the bedroom lamp...",
+  "tail_exchanges_kept": 2,
+  "idle_seconds": 47,
+  "timeout_seconds": 45
 }
 ```
+
+`idle_timeout_override` and `device_name` are written on every flush
+regardless of trigger (`null` if the client never set them).
+`rolling_summary`, `tail_exchanges_kept`, `idle_seconds`, and
+`timeout_seconds` are written on `idle_timeout_summarize` rows only.
+`rolling_summary` may be `null` if the summary LLM call timed out or
+errored (the reset still happened, with the tail preserved).
 
 ## Database operations
 

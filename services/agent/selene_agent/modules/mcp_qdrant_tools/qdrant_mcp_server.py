@@ -200,6 +200,25 @@ class QdrantMCPServer:
                         },
                         "required": ["query"]
                     }
+                ),
+                Tool(
+                    name="delete_memory",
+                    description=(
+                        "Delete a stored memory by its id. Use this when the user asks "
+                        "you to forget, delete, remove, or correct a stored fact. First "
+                        "call `search_memories` to find the matching entry and read its "
+                        "`id`; then call this tool with that id. Deletion is permanent."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "memory_id": {
+                                "type": "string",
+                                "description": "The id of the memory to delete (from search_memories results)."
+                            }
+                        },
+                        "required": ["memory_id"]
+                    }
                 )
             ]
         
@@ -211,6 +230,8 @@ class QdrantMCPServer:
                     result = await self._create_memory(arguments)
                 elif name == "search_memories":
                     result = await self._search_memories(arguments)
+                elif name == "delete_memory":
+                    result = await self._delete_memory(arguments)
                 else:
                     result = {"error": f"Unknown tool: {name}"}
                 
@@ -402,6 +423,51 @@ class QdrantMCPServer:
                 "error": str(e)
             }
 
+
+
+    async def _delete_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a memory by id. Permanent; invalidates L4 cache when needed."""
+        from qdrant_client.models import PointIdsList
+
+        memory_id = args.get("memory_id")
+        if not memory_id:
+            return {"success": False, "error": "memory_id is required"}
+
+        try:
+            # Look up the memory first so we can report tier + invalidate L4 cache.
+            existing = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[memory_id],
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not existing:
+                return {
+                    "success": False,
+                    "error": f"no memory with id {memory_id}",
+                }
+            tier = (existing[0].payload or {}).get("tier", "L2")
+
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=PointIdsList(points=[memory_id]),
+            )
+
+            if tier == "L4":
+                try:
+                    from selene_agent.utils import l4_context
+                    l4_context.invalidate_cache()
+                except Exception as e:
+                    logger.warning(f"l4_context cache invalidate failed: {e}")
+
+            return {
+                "success": True,
+                "memory_id": memory_id,
+                "tier_deleted": tier,
+            }
+        except Exception as e:
+            logger.error(f"Failed to delete memory {memory_id}: {e}")
+            return {"success": False, "error": str(e)}
 
 
     async def run(self):

@@ -339,6 +339,7 @@ docker compose exec agent env | grep HAOS_TOKEN
 #### Entity Not Found
 ```
 FAILED: Light 'light.sitting_room_lamp' does not exist in Home Assistant.
+Did you mean: light.sitting_room_floor_lamp, light.living_room_lamp?
 No action was taken. Call ha_list_entities (with a `domain` or `area` filter)
 to look up the correct entity_id, then retry. Do not guess entity names.
 ```
@@ -350,8 +351,11 @@ there becomes the `FAILED: ...` message above, and the service POST is
 skipped entirely — nothing changes in HA.
 
 When the assistant reports this, it means the entity ID it tried doesn't
-exist. The message also nudges the LLM to list available entities via
-`ha_list_entities` before retrying.
+exist. The pre-flight also does a fuzzy match against the live entity
+registry in the same domain and surfaces up to a few near-matches in a
+`Did you mean: …?` line — the LLM usually retries with one of those in
+the next turn instead of stalling. If no good matches exist, the message
+falls back to nudging the LLM toward `ha_list_entities`.
 
 **If the entity *should* exist**:
 1. **Check the exact ID** in Home Assistant → **Developer Tools → States**.
@@ -412,9 +416,6 @@ HAOS_VERIFY_SSL=true
 
 # Optional: Connection timeouts (seconds)
 HAOS_TIMEOUT=30
-
-# Optional: Agent source IP (deprecated, for compatibility)
-SOURCE_IP="10.0.0.100"
 ```
 
 ### Home Assistant Configuration

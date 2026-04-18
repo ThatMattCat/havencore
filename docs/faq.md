@@ -104,7 +104,7 @@ The environment variables configure:
 **Only these are absolutely required**:
 ```bash
 HOST_IP_ADDRESS="your.ip.address"    # Your Docker host IP
-DEV_CUSTOM_API_KEY="your_api_key"    # Any value for API access
+LLM_API_KEY="your_api_key"    # Any value for API access
 ```
 
 **Everything else has sensible defaults** and can be configured later.
@@ -287,7 +287,7 @@ sudo netstat -tlnp | grep :6002  # Check agent port
 
 3. **Environment configuration**:
 ```bash
-grep -E "HOST_IP_ADDRESS|DEV_CUSTOM_API_KEY" .env  # Verify required vars
+grep -E "HOST_IP_ADDRESS|LLM_API_KEY" .env  # Verify required vars
 docker compose config --quiet  # Validate compose file
 ```
 
@@ -302,7 +302,7 @@ docker system df  # Check Docker space usage
 **Check API key configuration**:
 ```bash
 # Verify API key in environment
-grep DEV_CUSTOM_API_KEY .env
+grep LLM_API_KEY .env
 
 # Test with correct authorization header
 curl -H "Authorization: Bearer your_actual_api_key" http://localhost/health
@@ -490,13 +490,27 @@ response = client.chat.completions.create(
 **Default limits**:
 - **Active conversation**: No hard limit (in-memory, bounded by session length)
 - **Database storage**: Unlimited (bounded by disk space)
-- **Auto-flush**: a conversation is flushed to Postgres after
-  `CONVERSATION_TIMEOUT` seconds of inactivity (default `600` = 10 min).
+- **Auto-flush**: the `SessionOrchestratorPool` flushes a session to
+  Postgres on one of three triggers — idle timeout (default
+  `CONVERSATION_TIMEOUT=90` seconds, swept every 30s), LRU eviction when
+  the pool hits its 64-session cap, or shutdown flush on agent
+  restart/stop.
+- **Summarize and continue**: on idle expiration the agent does *not*
+  hard-wipe the conversation. It runs a one-shot summary LLM call,
+  persists the full prior history with a `rolling_summary` in metadata,
+  then resets `messages` to `[system prompt, summary, last 2 exchanges]`
+  — the `session_id` is preserved, so the thread continues with a
+  compact recap of what came before.
 
 **Configuration options**:
 ```bash
-# .env — tune how quickly idle conversations are persisted
-CONVERSATION_TIMEOUT=600
+# .env — default idle window (seconds) before summarize-and-reset
+CONVERSATION_TIMEOUT=90
+
+# Per-session override (clamped to [CONVERSATION_TIMEOUT_MIN=10,
+# CONVERSATION_TIMEOUT_MAX=3600]):
+#   REST:  POST /api/chat  -H "X-Idle-Timeout: 45"
+#   WS:    {"type":"session","session_id":"...","idle_timeout":45}
 ```
 
 ```sql

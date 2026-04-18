@@ -44,7 +44,11 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      # Agent's startup blocks on detecting the vLLM model (see selene_agent.py
+      # :_detect_model), which can take 10-15 min on a cold cache. Until the
+      # lifespan yields, /health isn't served — so keep the grace period wide
+      # enough that dependents (nginx) don't give up during a cold `compose up`.
+      start_period: 900s
     volumes:
       - ./services/agent/:/app
       # - ./shared:/app/shared:ro
@@ -84,7 +88,7 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6005/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6005/health').status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3

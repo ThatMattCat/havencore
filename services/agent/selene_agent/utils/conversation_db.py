@@ -86,39 +86,57 @@ class ConversationHistoryDB:
             return False
     
     async def get_conversation_history(
-        self, 
+        self,
         session_id: str,
-        limit: int = 100
+        limit: int = 100,
+        flush_id: Optional[int] = None,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Retrieve conversation history from database"""
+        """Retrieve conversation history from database.
+
+        When `flush_id` is provided, returns at most one row (the specific flush
+        with that primary key, scoped to the given session_id for safety).
+        Otherwise returns up to `limit` rows for the session, newest first.
+        """
         if not self.pool:
             logger.error("Database pool not initialized")
             return None
-        
+
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT conversation_data, created_at, metadata
-                    FROM conversation_histories 
-                    WHERE session_id = $1
-                    ORDER BY created_at DESC
-                    LIMIT $2
-                    """,
-                    session_id,
-                    limit
-                )
-            
+                if flush_id is not None:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, conversation_data, created_at, metadata
+                        FROM conversation_histories
+                        WHERE session_id = $1 AND id = $2
+                        """,
+                        session_id,
+                        flush_id,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, conversation_data, created_at, metadata
+                        FROM conversation_histories
+                        WHERE session_id = $1
+                        ORDER BY created_at DESC
+                        LIMIT $2
+                        """,
+                        session_id,
+                        limit,
+                    )
+
             histories = []
             for row in rows:
                 histories.append({
+                    'id': row['id'],
                     'messages': json.loads(row['conversation_data']),
                     'created_at': row['created_at'].isoformat(),
                     'metadata': json.loads(row['metadata']) if row['metadata'] else {}
                 })
-            
+
             return histories
-            
+
         except Exception as e:
             logger.error(f"Failed to retrieve conversation history: {e}")
             return None
@@ -137,7 +155,7 @@ class ConversationHistoryDB:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
-                    SELECT session_id, created_at, metadata
+                    SELECT id, session_id, created_at, metadata
                     FROM conversation_histories
                     ORDER BY created_at DESC
                     LIMIT $1 OFFSET $2
@@ -150,6 +168,7 @@ class ConversationHistoryDB:
             for row in rows:
                 metadata = json.loads(row['metadata']) if row['metadata'] else {}
                 conversations.append({
+                    'id': row['id'],
                     'session_id': row['session_id'],
                     'created_at': row['created_at'].isoformat(),
                     'message_count': metadata.get('message_count', 0),

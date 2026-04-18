@@ -145,6 +145,109 @@ huggingface-cli download --resume-download Qwen/Qwen2.5-72B-Instruct-AWQ
 curl -I https://huggingface.co
 ```
 
+### GPU and Model Loading Issues
+
+These are the most common first-run failures for the default
+Qwen2.5-72B-AWQ stack. All require `nvidia-smi` to work on the host
+before anything else — if it doesn't, fix the driver/container-toolkit
+install first.
+
+#### Symptom: vLLM exits during startup with CUDA OOM
+```
+torch.cuda.OutOfMemoryError: CUDA out of memory.
+Tried to allocate XXX MiB. GPU 0 has total capacity of 23.69 GiB
+```
+
+**Cause**: the 72B AWQ model does not fit on a single 24 GB card. It
+needs ~35 GB of VRAM for weights alone plus KV cache headroom — plan
+on ≥ 48 GB total split across two cards, or swap to a smaller model.
+
+**Solutions**:
+
+```bash
+# 1. Use both GPUs via tensor parallelism (edit compose.yaml vllm service):
+#    command: --model Qwen/Qwen2.5-72B-Instruct-AWQ --tensor-parallel-size 2 ...
+#    and make sure `deploy.resources.reservations.devices` grants both GPUs.
+
+# 2. Shrink the KV cache window rather than the model:
+#    --max-model-len 8192   (default is model-dependent; often 32k)
+
+# 3. Swap to a smaller model that fits on one card, e.g. Qwen2.5-7B-Instruct
+#    or Llama-3.1-8B-Instruct-AWQ — edit the --model arg and pull fresh weights.
+
+# 4. Confirm nothing else is holding VRAM:
+nvidia-smi
+# If text-to-speech / text-to-image / iav-to-text are pinning a GPU you
+# expected vLLM to use, check TTS_DEVICE / STT_DEVICE assignments in .env.
+```
+
+#### Symptom: vLLM startup hangs for more than 20 minutes
+```
+docker compose logs -f vllm
+# ... model loading progress bars stall, no change for a long time
+```
+
+**Cause**: the weights cache is still downloading — the first run pulls
+~35 GB of AWQ shards before loading. Subsequent starts hit the cached
+copy and load in 2–4 minutes.
+
+**Solutions**:
+
+```bash
+# Watch the HuggingFace cache to confirm progress
+du -sh ./volumes/hf-cache 2>/dev/null || docker compose exec vllm du -sh /root/.cache/huggingface
+
+# If du shows the cache growing, the download is working — wait it out.
+# If the size is stuck, the connection is dead. Kill vllm and resume:
+docker compose stop vllm
+docker compose up -d vllm
+
+# For corporate / flaky connections, pre-pull on the host (outside Docker)
+# and mount the cache, so Docker never needs to do the download itself.
+```
+
+#### Symptom: vLLM healthcheck never goes healthy
+```
+docker compose ps
+# NAME                STATUS
+# havencore-vllm-1    Up N minutes (health: starting)
+```
+
+**Cause**: the model loaded but the HTTP server hasn't bound yet, or the
+healthcheck's `start_period` is too short for your hardware.
+
+**Solutions**:
+
+```bash
+# 1. Confirm the API is actually responding
+curl http://localhost:8000/v1/models
+
+# 2. If the log shows "Application startup complete" but the probe still
+#    fails, extend the start_period in compose.yaml (default 600s for vllm).
+
+# 3. The agent waits for vllm to be healthy before accepting chat traffic.
+#    If agent's healthcheck is also failing, check `docker compose logs agent`
+#    for `openai.APIConnectionError` — vllm isn't reachable yet.
+```
+
+#### Symptom: iav-to-text / STT / TTS fail with CUDA OOM
+
+**Cause**: the non-LLM services share GPUs with vLLM by default. If
+vLLM is greedy about KV cache, there's no room left for the small
+models.
+
+**Solutions**:
+
+```bash
+# Pin specific GPUs in .env so services don't compete
+TTS_DEVICE="cuda:1"   # second card
+STT_DEVICE="1"        # Whisper uses raw index, not cuda: prefix
+# iav-to-text honors the same convention — see its README.
+
+# Then restart just the affected services
+docker compose up -d --force-recreate text-to-speech speech-to-text
+```
+
 ### Service Startup Issues
 
 #### Symptom: Services fail to start or crash immediately
@@ -168,7 +271,7 @@ sudo kill -9 <PID>
 2. **Missing environment variables**:
 ```bash
 # Validate .env file
-cat .env | grep -E "HOST_IP_ADDRESS|DEV_CUSTOM_API_KEY"
+cat .env | grep -E "HOST_IP_ADDRESS|LLM_API_KEY"
 
 # Check environment in container
 docker compose exec agent env | grep HOST_IP_ADDRESS
@@ -202,7 +305,7 @@ docker compose logs postgres
 **Solution**:
 ```bash
 # Check API key configuration
-grep DEV_CUSTOM_API_KEY .env
+grep LLM_API_KEY .env
 
 # Test with correct key
 curl -H "Authorization: Bearer your_api_key" http://localhost/health
@@ -839,7 +942,7 @@ docker compose exec agent env | sort
 # Validate specific configurations
 docker compose exec agent python -c "
 import os
-print('API Key:', os.getenv('DEV_CUSTOM_API_KEY'))
+print('API Key:', os.getenv('LLM_API_KEY'))
 print('Host IP:', os.getenv('HOST_IP_ADDRESS'))
 print('Debug:', os.getenv('DEBUG_LOGGING'))
 "

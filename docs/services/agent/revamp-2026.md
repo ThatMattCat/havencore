@@ -76,7 +76,7 @@ AgentOrchestrator.run(user_message) -> AsyncGenerator[AgentEvent]
   - Yields typed events as the agent loop progresses
   - Enables both streaming (SSE/WebSocket) and non-streaming consumption
   - Includes tool result truncation (max 8000 chars)
-  - Session timeout detection (configurable via CONVERSATION_TIMEOUT)
+  - Session timeout detection (configurable via `CONVERSATION_TIMEOUT`; since extended with a per-session override and a summarize-and-continue reset — see [`conversation-history.md`](conversation-history.md))
   - Max 8 tool iterations per request to prevent runaway loops
 ```
 
@@ -164,7 +164,7 @@ app.include_router(ha_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 ```
 
-Shared state is accessed via `request.app.state.orchestrator` and `request.app.state.mcp_manager`, set during the FastAPI lifespan.
+Shared state is accessed via `request.app.state.session_pool` and `request.app.state.mcp_manager`, set during the FastAPI lifespan. (At the time of the rewrite this was a singleton `request.app.state.orchestrator`; it was superseded by the per-session pool later — see [services/agent/README.md](../../../services/agent/README.md#session-pool).)
 
 ---
 

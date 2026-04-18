@@ -11,6 +11,7 @@ Welcome to the docs for **HavenCore** — a self-hosted AI smart home assistant 
 - [Development](development.md) — contributing and local development workflow
 - [Troubleshooting](troubleshooting.md) — common issues and fixes
 - [FAQ](faq.md)
+- [TODO](todo.md) — forward-looking items not yet scheduled
 
 ## Services
 

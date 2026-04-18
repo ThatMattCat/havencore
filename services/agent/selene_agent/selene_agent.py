@@ -25,6 +25,7 @@ from selene_agent.utils.mcp_client_manager import MCPClientManager, MCPServerCon
 from selene_agent.utils.conversation_db import conversation_db
 from selene_agent.utils import logger as custom_logger
 from selene_agent.orchestrator import AgentOrchestrator, EventType, collect_response
+from selene_agent.utils.session_pool import SessionOrchestratorPool
 
 # API routers
 from selene_agent.api.chat import router as chat_router, ws_router as chat_ws_router
@@ -39,6 +40,7 @@ from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
 from selene_agent.api.autonomy import router as autonomy_router, ws_router as autonomy_ws_router
 from selene_agent.api.memory import router as memory_router
+from selene_agent.api.agent import router as agent_router
 from selene_agent.api.logs import ws_router as logs_ws_router
 from selene_agent.utils import log_stream
 from selene_agent.utils.metrics_db import metrics_db
@@ -142,6 +144,8 @@ async def lifespan(app: FastAPI):
         await conversation_db.initialize()
         logger.info("Database connection initialized successfully")
         await metrics_db.ensure_schema()
+        from selene_agent.utils import agent_state
+        await agent_state.ensure_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
 
@@ -169,26 +173,33 @@ async def lifespan(app: FastAPI):
 
     client = AsyncOpenAI(base_url=api_base, api_key=api_key)
 
-    # Create orchestrator
-    orchestrator = AgentOrchestrator(
+    # Surface MCP failures via a system note prepended to each new session.
+    mcp_failure_note: Optional[str] = None
+    if mcp_manager.failed_servers:
+        failed_names = ", ".join(mcp_manager.failed_servers.keys())
+        logger.warning(f"MCP servers failed to connect: {failed_names}")
+        mcp_failure_note = (
+            f"Note: The following tool servers failed to connect: {failed_names}. "
+            "Some capabilities may be unavailable."
+        )
+
+    # Per-session orchestrator pool. Each client session gets its own
+    # AgentOrchestrator; singletons (client, mcp_manager, model, tools) shared.
+    session_pool = SessionOrchestratorPool(
         client=client,
         mcp_manager=mcp_manager,
         model_name=model_name,
         tools=tools,
+        max_size=64,
+        mcp_failure_note=mcp_failure_note,
     )
-    await orchestrator.initialize()
-
-    # Surface MCP failures in the system context
-    if mcp_manager.failed_servers:
-        failed_names = ", ".join(mcp_manager.failed_servers.keys())
-        logger.warning(f"MCP servers failed to connect: {failed_names}")
-        orchestrator.messages.append({
-            "role": "system",
-            "content": f"Note: The following tool servers failed to connect: {failed_names}. Some capabilities may be unavailable.",
-        })
+    await session_pool.start_idle_sweep(interval_sec=30)
 
     # Store shared state on app for routers to access via request.app.state
-    app.state.orchestrator = orchestrator
+    app.state.session_pool = session_pool
+    app.state.client = client
+    app.state.model_name = model_name
+    app.state.base_tools = tools
     app.state.mcp_manager = mcp_manager
 
     # Autonomy engine — proactive behaviors (briefings, anomaly sweeps).
@@ -216,6 +227,11 @@ async def lifespan(app: FastAPI):
         await autonomy_engine.stop()
     except Exception as e:
         logger.error(f"Error stopping AutonomyEngine: {e}")
+    try:
+        await session_pool.stop_idle_sweep()
+        await session_pool.flush_all()
+    except Exception as e:
+        logger.error(f"Error during session pool shutdown: {e}")
     if mcp_manager:
         await mcp_manager.cleanup()
     await conversation_db.close()
@@ -255,6 +271,7 @@ app.include_router(vision_router, prefix="/api")
 app.include_router(comfy_router, prefix="/api")
 app.include_router(autonomy_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
+app.include_router(agent_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")
 app.include_router(autonomy_ws_router, prefix="/ws")
@@ -312,13 +329,30 @@ async def _stream_sse(orchestrator: AgentOrchestrator, user_content: str, model:
             yield "data: [DONE]\n\n"
 
 
+async def _build_ephemeral_orchestrator() -> AgentOrchestrator:
+    """Build a single-use orchestrator for stateless /v1/chat/completions.
+
+    Never touches the session pool, never writes conversation_db/metrics_db.
+    The caller (OpenAI-compat client) keeps its own history.
+    """
+    orch = AgentOrchestrator(
+        client=app.state.client,
+        mcp_manager=app.state.mcp_manager,
+        model_name=app.state.model_name,
+        tools=app.state.base_tools,
+    )
+    # Stateless callers already manage their own context; per-turn retrieval
+    # injection would silently mutate what they sent.
+    orch.retrieval_enabled = False
+    await orch.initialize()
+    return orch
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
-    """OpenAI-compatible chat completions endpoint (supports stream=true)"""
-    orchestrator: AgentOrchestrator = app.state.orchestrator
-
+    """OpenAI-compatible chat completions endpoint (stateless; no pool, no persistence)."""
     try:
-        if not orchestrator:
+        if not getattr(app.state, "client", None):
             raise HTTPException(status_code=503, detail="Agent not initialized")
 
         user_content = None
@@ -331,6 +365,8 @@ async def chat_completions(request: ChatCompletionRequest):
             raise HTTPException(status_code=400, detail="No user message found in request")
 
         logger.info(f"API Query: {user_content}")
+
+        orchestrator = await _build_ephemeral_orchestrator()
 
         if request.stream:
             return StreamingResponse(

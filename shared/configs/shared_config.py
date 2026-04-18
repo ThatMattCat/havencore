@@ -16,7 +16,7 @@ MCP_PREFER_OVER_LEGACY = os.getenv('MCP_PREFER_OVER_LEGACY', 'false').lower() ==
 MCP_SERVERS = os.getenv('MCP_SERVERS', '[]')
 
 HOST_IP_ADDRESS = os.getenv('HOST_IP_ADDRESS', '127.0.0.1')
-LLM_API_BASE = f"http://{HOST_IP_ADDRESS}:8000/v1" # Can be changed if not using built-in LLM service
+LLM_API_BASE = os.getenv('LLM_API_BASE', 'http://10.0.0.1:8000/v1')
 
 DEBUG = os.getenv('DEBUG_LOGGING', 0)
 if DEBUG:
