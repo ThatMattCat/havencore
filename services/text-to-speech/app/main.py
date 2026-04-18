@@ -1,9 +1,11 @@
+import io
 import os
 import time
 import uuid
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+import numpy as np
 import torch
 from kokoro import KPipeline
 import soundfile as sf
@@ -54,6 +56,57 @@ AVAILABLE_VOICES = set(KOKORO_VOICES_BY_LANG.get(config.LANGUAGE, ['af_heart']))
 # hard-wired to OpenAI's voice names still produce speech.
 OPENAI_VOICE_ALIASES = {'alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'}
 DEFAULT_VOICE = config.VOICE if config.VOICE in AVAILABLE_VOICES else 'af_heart'
+
+SAMPLE_RATE = 24000
+
+# Formats libsndfile can encode directly from raw samples. mp3/aac/pcm are
+# handled separately (mp3/aac fall back to WAV since libsndfile can't
+# produce them without extra codec libs).
+_SF_ENCODERS = {
+    'wav':  ('WAV',  'PCM_16', 'audio/wav'),
+    'flac': ('FLAC', None,     'audio/flac'),
+    'ogg':  ('OGG',  'VORBIS', 'audio/ogg'),
+    'opus': ('OGG',  'OPUS',   'audio/ogg; codecs=opus'),
+}
+
+
+def encode_audio(samples: np.ndarray, fmt: str) -> tuple[bytes, str]:
+    """Encode float32 PCM ``samples`` to ``fmt``. Returns ``(bytes, content_type)``.
+
+    For formats libsndfile can't produce (mp3, aac), falls back to WAV with
+    an honest ``audio/wav`` content-type rather than mislabeling the bytes.
+    """
+    fmt = (fmt or 'wav').lower()
+
+    if fmt == 'pcm':
+        pcm16 = np.clip(samples, -1.0, 1.0)
+        pcm16 = (pcm16 * 32767.0).astype(np.int16).tobytes()
+        return pcm16, f'audio/L16; rate={SAMPLE_RATE}'
+
+    spec = _SF_ENCODERS.get(fmt)
+    if spec is None:
+        logger.warning(
+            f"Requested TTS format '{fmt}' is not supported by libsndfile; "
+            "returning WAV with Content-Type: audio/wav"
+        )
+        spec = _SF_ENCODERS['wav']
+
+    sf_format, subtype, content_type = spec
+    buf = io.BytesIO()
+    try:
+        if subtype:
+            sf.write(buf, samples, SAMPLE_RATE, format=sf_format, subtype=subtype)
+        else:
+            sf.write(buf, samples, SAMPLE_RATE, format=sf_format)
+    except Exception as e:
+        logger.warning(
+            f"soundfile failed to encode as {sf_format}/{subtype} ({e}); "
+            "falling back to WAV"
+        )
+        buf = io.BytesIO()
+        sf.write(buf, samples, SAMPLE_RATE, format='WAV', subtype='PCM_16')
+        content_type = 'audio/wav'
+    return buf.getvalue(), content_type
 
 
 class OpenAICompatibleHandler(BaseHTTPRequestHandler):
@@ -120,20 +173,12 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
                 speaker = DEFAULT_VOICE
 
             logger.info(f"OpenAI API: Generating speech for text: {input_text[:100]}...")
-            filepath, _ = generate_speech(text=input_text, speaker=speaker, speed=speed)
+            samples = generate_speech(text=input_text, speaker=speaker, speed=speed)
+            if samples is None:
+                self.send_error_response(500, "Speech synthesis failed")
+                return
 
-            with open(filepath, 'rb') as audio_file:
-                audio_data = audio_file.read()
-
-            content_type_map = {
-                'mp3': 'audio/mpeg',
-                'wav': 'audio/wav',
-                'opus': 'audio/opus',
-                'aac': 'audio/aac',
-                'flac': 'audio/flac',
-                'pcm': 'audio/pcm',
-            }
-            content_type = content_type_map.get(response_format, 'audio/wav')
+            audio_data, content_type = encode_audio(samples, response_format)
 
             self.send_response(200)
             self.send_header('Content-Type', content_type)
@@ -141,7 +186,10 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(audio_data)
 
-            logger.info("OpenAI API: Successfully served audio for request")
+            logger.info(
+                f"OpenAI API: served {len(audio_data)} bytes as {content_type} "
+                f"(requested response_format='{response_format}')"
+            )
 
         except Exception as e:
             logger.error(f"Error in OpenAI speech endpoint: {e}")
@@ -155,7 +203,12 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(error_response).encode())
 
 
-def generate_speech(text, speaker="af_heart", speed=1.0) -> tuple[str, str]:
+def generate_speech(text, speaker="af_heart", speed=1.0):
+    """Run Kokoro on ``text`` and return concatenated float PCM samples.
+
+    Returns ``None`` on failure. Also writes a WAV copy under ``AUDIO_DIR``
+    for offline inspection — not used by the response path.
+    """
     logger.info(f"Generating speech for text: {text}")
     unique_id = str(uuid.uuid4().int)[:4]
     filename = f"{int(time.time())}-{unique_id}.wav"
@@ -168,19 +221,30 @@ def generate_speech(text, speaker="af_heart", speed=1.0) -> tuple[str, str]:
         for _, _, audio in generator:
             audio_chunks.append(audio)
 
-        if len(audio_chunks) == 1:
-            sf.write(filepath, audio_chunks[0], 24000)
-        else:
-            import numpy as np
-            concatenated_audio = np.concatenate(audio_chunks)
-            sf.write(filepath, concatenated_audio, 24000)
+        if not audio_chunks:
+            logger.error("Kokoro produced no audio chunks")
+            return None
 
-        logger.info(f"Generated file: {filepath}")
-        return filepath, filename
+        # Kokoro may yield torch tensors; normalize to a float32 numpy array
+        # so downstream encode_audio can clip/scale without surprises.
+        as_np = [
+            a.detach().cpu().numpy() if isinstance(a, torch.Tensor) else np.asarray(a)
+            for a in audio_chunks
+        ]
+        samples = as_np[0] if len(as_np) == 1 else np.concatenate(as_np)
+        samples = np.asarray(samples, dtype=np.float32)
+
+        try:
+            sf.write(filepath, samples, SAMPLE_RATE)
+            logger.info(f"Generated file: {filepath}")
+        except Exception as e:
+            logger.warning(f"Debug WAV write failed ({filepath}): {e}")
+
+        return samples
 
     except Exception as e:
         logger.error(f"Error generating speech: {e}")
-        return None, None
+        return None
 
 
 def start_openai_server():

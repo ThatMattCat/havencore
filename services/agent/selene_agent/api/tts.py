@@ -57,8 +57,11 @@ async def speak(payload: SpeakRequest):
                 if resp.status >= 400:
                     detail = data.decode(errors="replace")[:500]
                     raise HTTPException(status_code=resp.status, detail=detail)
-                content_type = CONTENT_TYPES.get(
-                    payload.format or "mp3", resp.headers.get("Content-Type", "audio/mpeg")
+                # Trust the upstream's Content-Type — libsndfile may fall back
+                # to WAV when the requested format (e.g. mp3) isn't encodable,
+                # and the header is the source of truth for the actual bytes.
+                content_type = resp.headers.get("Content-Type") or CONTENT_TYPES.get(
+                    payload.format or "mp3", "audio/mpeg"
                 )
                 return Response(content=data, media_type=content_type)
     except aiohttp.ClientError as e:
