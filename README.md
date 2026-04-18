@@ -172,8 +172,8 @@ Port 6002 serves:
 
 One uvicorn, one network surface. Nginx in front just does TLS termination and path routing.
 
-### The voice edge is a separate repo
-Wake-word + mic + speaker runs on a Raspberry Pi or an ESP32-Box-3 and talks to HavenCore over the OpenAI-compat API. See [ThatMattCat/havencore-edge](https://github.com/ThatMattCat/havencore-edge).
+### The voice satellite is a separate repo
+Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over the OpenAI-compat API — on-device "Hey Selene" wake, touch-to-talk fallback, per-device `X-Device-Name` / `X-Session-Id` so the server can label rooms and keep room-scoped history. See [ThatMattCat/havencore-satellite-firmware](https://github.com/ThatMattCat/havencore-satellite-firmware).
 
 ---
 
@@ -234,7 +234,7 @@ Wake-word + mic + speaker runs on a Raspberry Pi or an ESP32-Box-3 and talks to 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Edge device (Pi / ESP32)  →  wake-word, mic, speaker            │
+│  Satellite (ESP32-S3-BOX-3) →  wake-word, mic, speaker           │
 │                    │                                             │
 │                    ▼   OpenAI-compatible HTTPS                   │
 │  ┌──────────────── nginx (80) ──────────────────┐                │
@@ -338,7 +338,7 @@ This is a real thing I use every day — not a weekend demo. It's also unapologe
 
 ## Companion projects
 
-- [**havencore-edge**](https://github.com/ThatMattCat/havencore-edge) — the wake-word + mic + speaker client.
+- [**havencore-satellite-firmware**](https://github.com/ThatMattCat/havencore-satellite-firmware) — ESP32-S3-BOX-3 voice satellite firmware (wake-word, mic, speaker, on-device "Hey Selene").
 
 ## License
 
