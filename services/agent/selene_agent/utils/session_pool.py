@@ -226,6 +226,7 @@ class SessionOrchestratorPool:
             candidates = [
                 (sid, orch) for sid, orch in self._sessions.items()
                 if orch.last_query_time
+                and orch._user_turn_since_reset
                 and (now - orch.last_query_time) > orch.effective_timeout()
             ]
 
@@ -242,6 +243,7 @@ class SessionOrchestratorPool:
                 # Re-check under the lock — a turn may have just started.
                 if (
                     orch.last_query_time
+                    and orch._user_turn_since_reset
                     and (time.time() - orch.last_query_time) > orch.effective_timeout()
                 ):
                     await orch._summarize_and_reset(reason="idle_timeout_summarize")

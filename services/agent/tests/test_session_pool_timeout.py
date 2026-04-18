@@ -37,6 +37,9 @@ def _build_orch(session_id: str, override: int | None = None, last_q: float | No
     ]
     orch.idle_timeout_override = override
     orch.last_query_time = last_q if last_q is not None else time.time()
+    # Simulate that a user turn has occurred since the last reset so the sweep
+    # gate opens. Tests for the "no-loop-after-reset" behavior can flip this off.
+    orch._user_turn_since_reset = True
     orch._summarize_and_reset = AsyncMock()  # type: ignore[assignment]
     return orch
 
@@ -70,6 +73,26 @@ async def test_sweep_skips_fresh_sessions():
 
     await pool.idle_sweep()
     fresh._summarize_and_reset.assert_not_called()
+
+
+async def test_sweep_does_not_repeat_after_reset_without_user_turn():
+    """Regression: sweep must not re-summarize a session that was already
+    summarize-reset until the user speaks again. The real `_summarize_and_reset`
+    flips `_user_turn_since_reset` to False; the sweep gate then skips it.
+    """
+    pool = _build_pool()
+    now = time.time()
+    quiet = _build_orch("quiet", override=30, last_q=now - 45)
+    # Simulate the post-reset state: last_query_time is now "recent" (the reset
+    # bumped it) *but* no user turn has occurred since.
+    quiet.last_query_time = now - 45  # still appears expired by timestamp alone
+    quiet._user_turn_since_reset = False
+
+    pool._sessions["quiet"] = quiet
+    pool._locks["quiet"] = __import__("asyncio").Lock()
+
+    await pool.idle_sweep()
+    quiet._summarize_and_reset.assert_not_called()
 
 
 async def test_flush_one_stores_override_in_metadata(monkeypatch):

@@ -91,6 +91,7 @@ class AgentOrchestrator:
         self._l4_pending = True
 
         self.idle_timeout_override: Optional[int] = None
+        self._user_turn_since_reset: bool = False
 
     def effective_timeout(self) -> int:
         """Idle window in seconds — per-session override or global default."""
@@ -132,6 +133,7 @@ class AgentOrchestrator:
         if msg_count <= 1:
             await self.initialize()
             self.last_query_time = time.time()
+            self._user_turn_since_reset = False
             return
 
         # Count real user/assistant exchanges excluding the leading system msg.
@@ -139,6 +141,7 @@ class AgentOrchestrator:
         if not real_turns:
             await self.initialize()
             self.last_query_time = time.time()
+            self._user_turn_since_reset = False
             return
 
         summary = await self._build_session_summary(msgs)
@@ -175,6 +178,7 @@ class AgentOrchestrator:
             })
         self.messages.extend(tail)
         self.last_query_time = time.time()
+        self._user_turn_since_reset = False
 
         logger.info(
             "session_summarize_reset",
@@ -329,6 +333,7 @@ class AgentOrchestrator:
 
         await self._check_session_timeout()
         self.last_query_time = time.time()
+        self._user_turn_since_reset = True
 
         turn_start = time.perf_counter()
         llm_ms_total = 0.0
