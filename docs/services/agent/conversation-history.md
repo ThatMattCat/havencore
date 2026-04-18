@@ -62,6 +62,8 @@ A session is flushed to PostgreSQL whenever its messages would be lost. Three tr
    - preserve the same `session_id` so the thread continues.
 
    The summary is a one-shot LLM call capped by `SESSION_SUMMARY_MAX_TOKENS` and `SESSION_SUMMARY_LLM_TIMEOUT_SEC`. On timeout or error the reset falls back to keep-tail-only (no summary injected) and logs a structured `session_summarize_reset` line with `summary_ok=false`. Busy sessions are skipped (non-blocking lock try-acquire), not blocked.
+
+   A session is only eligible for summarize-reset once per user-active period: the sweep gates on whether a user turn has happened since the last reset. Without that gate, the post-reset `last_query_time` would still appear expired on the very next sweep tick and the session would be re-summarized every interval forever.
 2. **LRU eviction** — when the pool hits `max_size` (default 64) and a new session is admitted, the least-recently-used entry is flushed and removed from memory. Its `session_id` persists in the DB and can be cold-resumed later.
 3. **Shutdown flush** — on agent shutdown (restart, stop, SIGTERM), the pool iterates every live session and flushes it before the process exits. Every non-empty session is guaranteed to be persisted across restarts.
 
