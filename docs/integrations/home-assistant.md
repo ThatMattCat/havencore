@@ -416,9 +416,6 @@ HAOS_VERIFY_SSL=true
 
 # Optional: Connection timeouts (seconds)
 HAOS_TIMEOUT=30
-
-# Optional: Agent source IP (deprecated, for compatibility)
-SOURCE_IP="10.0.0.100"
 ```
 
 ### Home Assistant Configuration
