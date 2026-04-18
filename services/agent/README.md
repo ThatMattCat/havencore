@@ -235,7 +235,7 @@ All configuration is via environment variables (loaded in `selene_agent/utils/co
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_API_BASE` | — | vLLM endpoint URL (e.g. `http://vllm:8000/v1`) |
+| `LLM_API_BASE` | — | LLM endpoint URL (e.g. `http://vllm:8000/v1`) |
 | `LLM_API_KEY` | — | API key for the LLM backend |
 | `AGENT_NAME` | `""` | Name of the assistant persona |
 | `MCP_SERVERS` | `{}` | JSON array of MCP server configs |

@@ -82,7 +82,7 @@ Agent-specific environment variables (full list in [Configuration](../../configu
 
 ```bash
 AGENT_NAME="Selene"
-DEV_CUSTOM_API_KEY="your_api_key"
+LLM_API_KEY="your_api_key"
 CURRENT_LOCATION="San Francisco, CA"
 CURRENT_TIMEZONE="America/Los_Angeles"
 ```

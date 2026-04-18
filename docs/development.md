@@ -73,7 +73,7 @@ cp .env.tmpl .env
 # Edit .env with development settings:
 DEBUG_LOGGING=1
 HOST_IP_ADDRESS="127.0.0.1"
-DEV_CUSTOM_API_KEY="dev123"
+LLM_API_KEY="dev123"
 ```
 
 #### 3. Development Build
@@ -642,7 +642,7 @@ pytest services/agent/tests/
 # .env.prod
 DEBUG_LOGGING=0
 HOST_IP_ADDRESS="your.production.ip"
-DEV_CUSTOM_API_KEY="secure_production_key"
+LLM_API_KEY="secure_production_key"
 ```
 
 #### Docker Image Management

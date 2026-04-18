@@ -7,10 +7,10 @@ HavenCore exposes two surfaces:
 
 ## Authentication
 
-The OpenAI-compatible endpoints forwarded to vLLM use the `DEV_CUSTOM_API_KEY` configured in `.env`:
+The OpenAI-compatible endpoints forwarded to vLLM use the `LLM_API_KEY` configured in `.env`:
 
 ```bash
-DEV_CUSTOM_API_KEY="your_secret_key"
+LLM_API_KEY="your_secret_key"
 curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/chat/completions ...
 ```
 

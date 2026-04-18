@@ -87,7 +87,7 @@ Edit `.env` file with these REQUIRED settings:
 HOST_IP_ADDRESS="192.168.1.100"
 
 # REQUIRED: Set to something for API access
-DEV_CUSTOM_API_KEY="1234"
+LLM_API_KEY="1234"
 
 # REQUIRED for Home Assistant integration
 HAOS_URL="https://homeassistant.local:8123/api"

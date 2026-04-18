@@ -61,7 +61,7 @@ Edit the `.env` file with these **required** settings:
 HOST_IP_ADDRESS="192.168.1.100"
 
 # API access key (set to anything)
-DEV_CUSTOM_API_KEY="your_secret_key_here"
+LLM_API_KEY="your_secret_key_here"
 
 # GPU configuration
 TTS_DEVICE="cuda:0"  # GPU for text-to-speech

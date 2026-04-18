@@ -271,7 +271,7 @@ sudo kill -9 <PID>
 2. **Missing environment variables**:
 ```bash
 # Validate .env file
-cat .env | grep -E "HOST_IP_ADDRESS|DEV_CUSTOM_API_KEY"
+cat .env | grep -E "HOST_IP_ADDRESS|LLM_API_KEY"
 
 # Check environment in container
 docker compose exec agent env | grep HOST_IP_ADDRESS
@@ -305,7 +305,7 @@ docker compose logs postgres
 **Solution**:
 ```bash
 # Check API key configuration
-grep DEV_CUSTOM_API_KEY .env
+grep LLM_API_KEY .env
 
 # Test with correct key
 curl -H "Authorization: Bearer your_api_key" http://localhost/health
@@ -942,7 +942,7 @@ docker compose exec agent env | sort
 # Validate specific configurations
 docker compose exec agent python -c "
 import os
-print('API Key:', os.getenv('DEV_CUSTOM_API_KEY'))
+print('API Key:', os.getenv('LLM_API_KEY'))
 print('Host IP:', os.getenv('HOST_IP_ADDRESS'))
 print('Debug:', os.getenv('DEBUG_LOGGING'))
 "

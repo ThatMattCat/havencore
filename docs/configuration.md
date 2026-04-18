@@ -20,7 +20,7 @@ HavenCore configuration is managed through:
 HOST_IP_ADDRESS="192.168.1.100"  # Find with: ip route get 1.1.1.1 | awk '{print $7}'
 
 # Required: API access key
-DEV_CUSTOM_API_KEY="your_secret_key"  # Set to any value for API access
+LLM_API_KEY="your_secret_key"  # Set to any value for API access
 
 # Debug and logging
 DEBUG_LOGGING=0  # 0 = INFO, 1 = DEBUG
@@ -251,8 +251,7 @@ command: [
   "--served-model-name", "gpt-3.5-turbo",
   "--gpu-memory-utilization", "0.9",
   "--max-model-len", "16384",
-  "--dtype", "auto",
-  "--api-key", "${DEV_CUSTOM_API_KEY}"
+  "--dtype", "auto"
 ]
 ```
 
@@ -394,7 +393,7 @@ volumes:
 # .env.dev
 DEBUG_LOGGING=1
 HOST_IP_ADDRESS="127.0.0.1"
-DEV_CUSTOM_API_KEY="dev123"
+LLM_API_KEY="dev123"
 POSTGRES_PASSWORD="dev_password"
 ```
 
@@ -403,7 +402,7 @@ POSTGRES_PASSWORD="dev_password"
 # .env.prod
 DEBUG_LOGGING=0
 HOST_IP_ADDRESS="your.production.ip"
-DEV_CUSTOM_API_KEY="secure_random_key"
+LLM_API_KEY="secure_random_key"
 POSTGRES_PASSWORD="secure_database_password"
 HAOS_TOKEN="production_ha_token"
 ```
@@ -431,7 +430,7 @@ docker compose exec postgres psql -U havencore -d havencore -c "SELECT 1;"
 docker compose exec agent nvidia-smi
 
 # Validate API keys
-curl -H "Authorization: Bearer ${DEV_CUSTOM_API_KEY}" http://localhost/health
+curl -H "Authorization: Bearer ${LLM_API_KEY}" http://localhost/health
 ```
 
 ### Common Configuration Issues
@@ -474,7 +473,7 @@ df -h
 ### API Security
 ```bash
 # Use strong API keys
-DEV_CUSTOM_API_KEY="$(openssl rand -base64 32)"
+LLM_API_KEY="$(openssl rand -base64 32)"
 
 # Enable rate limiting in nginx.conf
 limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;

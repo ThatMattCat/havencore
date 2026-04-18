@@ -25,7 +25,7 @@ Voice in, voice out. Your own LLM. Your own tools. Your data never leaves the bo
 
 Everything is one `docker compose up -d` away. Twelve containers, one GPU fleet, one dashboard.
 
-> The assistant's name is **Selene**. She lives on four RTX 3090s in my basement.
+> The assistant's name is **Selene**. She lives on four RTX 3090s in my shed.
 
 > **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default Qwen2.5-72B-AWQ stack wants **≥ 48 GB VRAM split across two cards**; a single 24 GB card works if you swap in a smaller model. Plan on ~60 GB of disk for images + model weights on first build.
 

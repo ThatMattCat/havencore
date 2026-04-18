@@ -16,8 +16,7 @@ Command-line flags live in `compose.yaml` under `services.vllm.command`:
 `--model`, `--served-model-name`, `--quantization`, `-tp` (tensor
 parallel), `--max-model-len`, `--gpu-memory-utilization`.
 
-The agent reads the endpoint from `LLM_API_BASE` in `.env`, built from
-`HOST_IP_ADDRESS:8000`.
+The agent reads the endpoint from `LLM_API_BASE` in `.env`.
 
 ## More
 

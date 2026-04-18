@@ -104,7 +104,7 @@ The environment variables configure:
 **Only these are absolutely required**:
 ```bash
 HOST_IP_ADDRESS="your.ip.address"    # Your Docker host IP
-DEV_CUSTOM_API_KEY="your_api_key"    # Any value for API access
+LLM_API_KEY="your_api_key"    # Any value for API access
 ```
 
 **Everything else has sensible defaults** and can be configured later.
@@ -287,7 +287,7 @@ sudo netstat -tlnp | grep :6002  # Check agent port
 
 3. **Environment configuration**:
 ```bash
-grep -E "HOST_IP_ADDRESS|DEV_CUSTOM_API_KEY" .env  # Verify required vars
+grep -E "HOST_IP_ADDRESS|LLM_API_KEY" .env  # Verify required vars
 docker compose config --quiet  # Validate compose file
 ```
 
@@ -302,7 +302,7 @@ docker system df  # Check Docker space usage
 **Check API key configuration**:
 ```bash
 # Verify API key in environment
-grep DEV_CUSTOM_API_KEY .env
+grep LLM_API_KEY .env
 
 # Test with correct authorization header
 curl -H "Authorization: Bearer your_actual_api_key" http://localhost/health
