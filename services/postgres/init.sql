@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     tool_ms_total INTEGER NOT NULL,
     total_ms INTEGER NOT NULL,
     iterations INTEGER NOT NULL,
-    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
+    tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
+    device_name TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_created_at ON turn_metrics (created_at DESC);

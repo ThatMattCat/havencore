@@ -18,6 +18,19 @@ Per-session idle timeout:
 - WS `/ws/chat` accepts an optional `idle_timeout` field on any
   `{"type": "session", ...}` frame (first frame or mid-stream) to apply or
   update the override.
+
+Device-name attribution:
+- REST `/api/chat` accepts an optional `X-Device-Name` header (e.g. "Kitchen
+  Speaker") that labels the satellite/client driving the session. The label
+  rides with every flush to `conversation_histories.metadata.device_name` and
+  is denormalized onto each `turn_metrics` row for the dashboard's history
+  and metrics views.
+- WS `/ws/chat` accepts an optional `device_name` field on any
+  `{"type": "session", ...}` frame (first frame or mid-stream) with the same
+  semantics. Empty/whitespace values are ignored so a frame omitting the field
+  doesn't clobber a previously set name.
+- Note: `/v1/chat/completions` is stateless and unattributed; device-name
+  attribution applies to `/api/chat` and `/ws/chat` only.
 """
 
 from typing import Any, List, Optional
@@ -66,6 +79,39 @@ def _apply_idle_timeout_override(orch: AgentOrchestrator, raw: Any) -> None:
     orch.idle_timeout_override = v
 
 
+DEVICE_NAME_MAX_LEN = 64
+
+
+def _apply_device_name(orch: AgentOrchestrator, raw: Any) -> None:
+    """Parse and apply a device_name onto the orchestrator.
+
+    None / empty / whitespace-only are no-ops (so a frame that omits the field
+    doesn't clobber a previously set name). Non-string values are log-and-ignored.
+    Strings are trimmed, ASCII control chars stripped, and truncated to
+    DEVICE_NAME_MAX_LEN with a warning. Unicode and emoji are allowed — this is
+    a UI label, not spoken output.
+    """
+    if raw is None:
+        return
+    if not isinstance(raw, str):
+        logger.warning(
+            f"Ignoring non-string device name (session={orch.session_id}): {raw!r}"
+        )
+        return
+    s = raw.strip()
+    if not s:
+        return
+    s = "".join(c for c in s if ord(c) >= 0x20 and c != "\x7f")
+    if not s:
+        return
+    if len(s) > DEVICE_NAME_MAX_LEN:
+        logger.warning(
+            f"Truncating device name to {DEVICE_NAME_MAX_LEN} chars (session={orch.session_id})"
+        )
+        s = s[:DEVICE_NAME_MAX_LEN]
+    orch.device_name = s
+
+
 class ChatRequest(BaseModel):
     message: str
 
@@ -83,6 +129,7 @@ async def chat(
     response: Response,
     x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
     x_idle_timeout: Optional[str] = Header(default=None, alias="X-Idle-Timeout"),
+    x_device_name: Optional[str] = Header(default=None, alias="X-Device-Name"),
 ):
     """Non-streaming chat endpoint that returns the full response plus tool events."""
     pool: SessionOrchestratorPool = req.app.state.session_pool
@@ -95,6 +142,7 @@ async def chat(
 
     orchestrator = await pool.get_or_create(x_session_id)
     _apply_idle_timeout_override(orchestrator, x_idle_timeout)
+    _apply_device_name(orchestrator, x_device_name)
     session_id = orchestrator.session_id
     response.headers["X-Session-Id"] = session_id
 
@@ -108,7 +156,11 @@ async def chat(
         async for event in orchestrator.run(request.message):
             events.append({"type": event.type.value, **event.data})
             if event.type == EventType.METRIC:
-                await metrics_db.record_turn(orchestrator.session_id, event.data)
+                await metrics_db.record_turn(
+                    orchestrator.session_id,
+                    event.data,
+                    device_name=orchestrator.device_name,
+                )
             elif event.type == EventType.DONE:
                 final_content = event.data.get("content", "")
             elif event.type == EventType.ERROR:
@@ -123,10 +175,12 @@ async def websocket_chat(websocket: WebSocket):
 
     Connect: ws://host:port/ws/chat
     Protocol:
-      Client → {"type": "session", "session_id": "...", "idle_timeout": 90}
-               (optional first frame; `session_id` and `idle_timeout` both optional.
-                A later `{"type": "session", "idle_timeout": N}` mid-stream also updates
-                the override on the active session.)
+      Client → {"type": "session", "session_id": "...", "idle_timeout": 90,
+                "device_name": "Kitchen Speaker"}
+               (optional first frame; all fields optional. A later
+                `{"type": "session", ...}` mid-stream may update `idle_timeout`
+                or `device_name` on the active session. `session_id` is honored
+                only on the first frame.)
       Server → {"type": "session", "session_id": "..."}  (always sent once, before first turn)
       Client → {"message": "your question"}
       Server → {"type": "thinking|tool_call|tool_result|metric|done|error", ...}
@@ -168,10 +222,12 @@ async def websocket_chat(websocket: WebSocket):
             # Session-bind frame: may be sent as the first frame or mid-stream.
             # `session_id` is honored only on the first frame (once the session is
             # announced, re-binding to a different session is not supported — open
-            # a new WS). `idle_timeout` applies both on first frame and mid-stream.
+            # a new WS). `idle_timeout` and `device_name` apply both on first
+            # frame and mid-stream.
             if data.get("type") == "session":
                 orch, _ = await _ensure_session(data.get("session_id"))
                 _apply_idle_timeout_override(orch, data.get("idle_timeout"))
+                _apply_device_name(orch, data.get("device_name"))
                 continue
 
             user_message = data.get("message", "")
@@ -189,7 +245,11 @@ async def websocket_chat(websocket: WebSocket):
                         **event.data,
                     })
                     if event.type == EventType.METRIC:
-                        await metrics_db.record_turn(orch.session_id, event.data)
+                        await metrics_db.record_turn(
+                            orch.session_id,
+                            event.data,
+                            device_name=orch.device_name,
+                        )
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected (session={session_id})")

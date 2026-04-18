@@ -197,3 +197,149 @@ async def test_hydrate_ignores_garbage_override(monkeypatch):
     orch = await pool._hydrate_from_db("s1")
     assert orch is not None
     assert orch.idle_timeout_override is None
+
+
+async def test_flush_one_stores_device_name_in_metadata(monkeypatch):
+    pool = _build_pool()
+    orch = _build_orch("s1")
+    orch.device_name = "Kitchen Speaker"
+
+    captured = {}
+
+    async def fake_store(messages, session_id=None, metadata=None):
+        captured["metadata"] = metadata
+        return True
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.store_conversation_history",
+        fake_store,
+    )
+
+    await pool._flush_one(orch, reason="unit_test")
+
+    assert captured["metadata"]["device_name"] == "Kitchen Speaker"
+
+
+async def test_flush_one_stores_null_device_name_when_unset(monkeypatch):
+    pool = _build_pool()
+    orch = _build_orch("s1")  # device_name defaults to None
+
+    captured = {}
+
+    async def fake_store(messages, session_id=None, metadata=None):
+        captured["metadata"] = metadata
+        return True
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.store_conversation_history",
+        fake_store,
+    )
+
+    await pool._flush_one(orch, reason="unit_test")
+
+    assert captured["metadata"]["device_name"] is None
+
+
+async def test_hydrate_from_db_restores_device_name(monkeypatch):
+    pool = _build_pool()
+
+    async def fake_get(session_id, limit=1):
+        return [{
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "prior"},
+                {"role": "assistant", "content": "reply"},
+            ],
+            "metadata": {"device_name": "Office"},
+        }]
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "selene_agent.orchestrator.AgentOrchestrator.prepare",
+        AsyncMock(),
+    )
+
+    orch = await pool._hydrate_from_db("s1")
+    assert orch is not None
+    assert orch.device_name == "Office"
+
+
+async def test_hydrate_truncates_oversized_device_name(monkeypatch):
+    pool = _build_pool()
+
+    async def fake_get(session_id, limit=1):
+        return [{
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "prior"},
+            ],
+            "metadata": {"device_name": "x" * 200},
+        }]
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "selene_agent.orchestrator.AgentOrchestrator.prepare",
+        AsyncMock(),
+    )
+
+    orch = await pool._hydrate_from_db("s1")
+    assert orch is not None
+    assert orch.device_name == "x" * 64
+
+
+async def test_hydrate_ignores_non_string_device_name(monkeypatch):
+    pool = _build_pool()
+
+    async def fake_get(session_id, limit=1):
+        return [{
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "prior"},
+            ],
+            "metadata": {"device_name": 12345},
+        }]
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "selene_agent.orchestrator.AgentOrchestrator.prepare",
+        AsyncMock(),
+    )
+
+    orch = await pool._hydrate_from_db("s1")
+    assert orch is not None
+    assert orch.device_name is None
+
+
+async def test_hydrate_ignores_whitespace_only_device_name(monkeypatch):
+    pool = _build_pool()
+
+    async def fake_get(session_id, limit=1):
+        return [{
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "prior"},
+            ],
+            "metadata": {"device_name": "   "},
+        }]
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "selene_agent.orchestrator.AgentOrchestrator.prepare",
+        AsyncMock(),
+    )
+
+    orch = await pool._hydrate_from_db("s1")
+    assert orch is not None
+    assert orch.device_name is None

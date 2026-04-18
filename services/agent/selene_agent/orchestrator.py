@@ -91,6 +91,7 @@ class AgentOrchestrator:
         self._l4_pending = True
 
         self.idle_timeout_override: Optional[int] = None
+        self.device_name: Optional[str] = None
         self._user_turn_since_reset: bool = False
 
     def effective_timeout(self) -> int:
@@ -156,6 +157,7 @@ class AgentOrchestrator:
                 "last_query_time": self.last_query_time,
                 "agent_name": self.agent_name,
                 "idle_timeout_override": self.idle_timeout_override,
+                "device_name": self.device_name,
                 "idle_seconds": idle,
                 "timeout_seconds": timeout,
                 "rolling_summary": summary,

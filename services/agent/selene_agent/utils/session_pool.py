@@ -106,6 +106,12 @@ class SessionOrchestratorPool:
             elif v > hi:
                 v = hi
             orch.idle_timeout_override = v
+        # Rehydrate device_name if it was persisted.
+        raw_name = metadata.get("device_name")
+        if isinstance(raw_name, str):
+            cleaned = raw_name.strip()
+            if cleaned:
+                orch.device_name = cleaned[:64]
         # prepare() will prepend the L4 block to the existing system message
         # (or be a no-op if the first message isn't system).
         try:
@@ -266,6 +272,7 @@ class SessionOrchestratorPool:
                 "last_query_time": orch.last_query_time,
                 "agent_name": orch.agent_name,
                 "idle_timeout_override": orch.idle_timeout_override,
+                "device_name": orch.device_name,
             }
             await conversation_db.store_conversation_history(
                 messages=msgs,
