@@ -27,8 +27,8 @@ Response ← JSON ← Agent Logic ← Tool Results ← API Responses
 ## Key components
 
 - `selene_agent/selene_agent.py` — FastAPI app with lifespan, serves the SvelteKit SPA + `/api/*` + `/ws/*` + OpenAI-compat endpoints; mounts routers from `selene_agent/api/`.
-- `selene_agent/orchestrator.py` — event-based agent loop (THINKING / TOOL_CALL / TOOL_RESULT / METRIC / DONE / ERROR) with per-turn LLM and tool-call timing instrumentation. Each conversation session owns its own `AgentOrchestrator` instance (messages, `session_id`, `last_query_time`); singletons (OpenAI client, MCP manager, model, tools) are shared across all sessions.
-- `selene_agent/utils/session_pool.py` — `SessionOrchestratorPool` keyed by `session_id`, with per-session `asyncio.Lock`, LRU cap (64), 30s background idle sweep, cold-resume from `conversation_db`, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` builds an ephemeral orchestrator per request and never touches the pool. The autonomy engine also bypasses the pool (it already builds its own ephemeral orchestrators per task in `autonomy/turn.py`).
+- `selene_agent/orchestrator.py` — event-based agent loop (THINKING / TOOL_CALL / TOOL_RESULT / METRIC / SUMMARY_RESET / DONE / ERROR) with per-turn LLM and tool-call timing instrumentation. Each conversation session owns its own `AgentOrchestrator` instance (messages, `session_id`, `last_query_time`); singletons (OpenAI client, MCP manager, model, tools) are shared across all sessions. `SUMMARY_RESET` is yielded at turn start when `_check_session_timeout` compacted the session just before the incoming turn — the client renders an inline "Conversation summarized" marker above the next assistant reply.
+- `selene_agent/utils/session_pool.py` — `SessionOrchestratorPool` keyed by `session_id`, with per-session `asyncio.Lock`, LRU cap (64), 30s background idle sweep, cold-resume from `conversation_db`, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` builds an ephemeral orchestrator per request and never touches the pool. The autonomy engine also bypasses the pool (it already builds its own ephemeral orchestrators per task in `autonomy/turn.py`). The pool also exposes a per-session pub/sub surface (`subscribe(sid) → asyncio.Queue`, `unsubscribe`, `publish`) so background tasks can reach connected WS clients out-of-band — the idle sweep uses it to push `summary_reset` frames when a session is compacted between turns.
 - `selene_agent/providers/` — pluggable LLM provider seam (`vllm`, `anthropic`, `openai` stub). Every agent call goes through `provider_getter() -> LLMProvider`, a closure over `app.state.provider` that resolves live on each turn so the dashboard System-page toggle takes effect without a session rebuild. `/v1/chat/completions` is pinned to vLLM regardless of the toggle. See [LLM provider toggle](#llm-provider-toggle) below.
 - `selene_agent/utils/mcp_client_manager.py` — MCP client that discovers and executes tools from MCP servers, with a `UnifiedTool` abstraction.
 - `selene_agent/utils/conversation_db.py` — PostgreSQL conversation persistence. See [Conversation history](conversation-history.md).
@@ -150,6 +150,15 @@ block (caches tools + system), and the last conversation message (caches
 the accumulated history). 5-minute TTL, refreshed on each hit. Cache
 hits and writes are logged at INFO, e.g.
 `[anthropic] cache read=12963 create=79 input=5 output=76`.
+
+The same counters are also plumbed through to `turn_metrics`: the
+`LLMProvider` protocol exposes `pop_last_cache_stats() -> {"read", "create"}`
+(stash-and-reset semantics — the Anthropic provider captures the usage
+fields on each call, vLLM and the OpenAI stub return zeros). The
+orchestrator sums these across a turn's LLM iterations and writes them
+to the new `cache_read_tokens` / `cache_creation_tokens` columns, which
+the Metrics dashboard renders as a "Cache hit rate (7d)" tile
+(`read / (read + create)`).
 
 ## Performance tuning
 

@@ -45,7 +45,9 @@ CREATE TABLE turn_metrics (
     total_ms INTEGER NOT NULL,
     iterations INTEGER NOT NULL,
     tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
-    device_name TEXT
+    device_name TEXT,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -54,9 +56,20 @@ per tool call in the turn. `device_name` denormalizes the satellite/client
 label set via `X-Device-Name` (or the WS `device_name` session field) so
 metrics views can group by device without joining `conversation_histories`;
 `NULL` for turns where the client didn't send a label or for the stateless
-`/v1/chat/completions` path. The column is added on existing deployments
-via an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` that runs at
-agent startup (`MetricsDB.ensure_schema`).
+`/v1/chat/completions` path.
+
+`cache_read_tokens` and `cache_creation_tokens` hold the Anthropic
+prompt-cache counters accumulated across every LLM call in the turn
+(summed across tool iterations). They are `0` for turns served by vLLM
+and for legacy rows that predate the columns — only the Anthropic
+provider populates non-zero values. The Metrics page derives a
+`cache_hit_rate = read / (read + create)` aggregate from these two
+columns.
+
+`device_name`, `cache_read_tokens`, and `cache_creation_tokens` are
+added on existing deployments via idempotent `ALTER TABLE ... ADD
+COLUMN IF NOT EXISTS` statements that run at agent startup
+(`MetricsDB.ensure_schema`).
 
 ## Configuration
 

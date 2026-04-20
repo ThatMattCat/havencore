@@ -361,8 +361,8 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/ha/entities/summary` | Entity counts per domain |
 | `GET`  | `/api/ha/automations` | HA automations |
 | `GET`  | `/api/ha/scenes` | HA scenes |
-| `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. |
-| `GET`  | `/api/metrics/summary` | Daily aggregates, p95 |
+| `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. Rows also carry `cache_read_tokens` and `cache_creation_tokens` (Anthropic prompt-cache counters summed across the turn's LLM calls; `0` for vLLM turns and legacy rows). |
+| `GET`  | `/api/metrics/summary` | Daily aggregates, p95. Also exposes `cache_read_total` / `cache_create_total` (sums of the per-turn cache counters over the window) and a derived `cache_hit_rate = read / (read + create)`, guarded against zero. |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
 | `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
 | `GET`  | `/api/tts/voices` | Voice alias list |
@@ -404,7 +404,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 
 | URL | Direction | Purpose |
 |-----|-----------|---------|
-| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error` events. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90,"device_name":"Kitchen Speaker"}` as the first frame to resume/bind a session, set a per-session idle window, and/or label the device; all fields optional. A later `{"type":"session", ...}` mid-stream may update `idle_timeout` or `device_name` on the active session (omitted fields are left untouched; `session_id` is honored only on the first frame). The server responds once with `{"type":"session","session_id":"..."}` before any turn events. |
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `metric`, `done`, `error`, and `summary_reset` events. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90,"device_name":"Kitchen Speaker"}` as the first frame to resume/bind a session, set a per-session idle window, and/or label the device; all fields optional. A later `{"type":"session", ...}` mid-stream may update `idle_timeout` or `device_name` on the active session (omitted fields are left untouched; `session_id` is honored only on the first frame). The server responds once with `{"type":"session","session_id":"..."}` before any turn events. `summary_reset` frames (`{"type":"summary_reset","reason":"idle_timeout_summarize","summary":"..."}`) may arrive in two flavors: inline at turn start when `run()` detects a pre-turn compaction, or pushed between turns when the background idle sweep compacts an otherwise-idle session (per-session pub/sub on the pool) — both carry the same shape and the Chat pane renders them as a "Conversation summarized" marker. |
 | `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling
