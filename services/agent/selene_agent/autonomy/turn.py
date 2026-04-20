@@ -10,12 +10,13 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from openai import AsyncOpenAI
 
 from selene_agent.autonomy import tool_gating
 from selene_agent.orchestrator import AgentOrchestrator, EventType
+from selene_agent.providers import LLMProvider
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.mcp_client_manager import MCPClientManager
 
@@ -45,6 +46,7 @@ class AutonomousTurn:
         temperature: float = 0.3,
         max_tokens: int = 800,
         tools_override: Optional[Iterable[str]] = None,
+        provider_getter: Optional[Callable[[], LLMProvider]] = None,
     ):
         self.client = client
         self.mcp_manager = mcp_manager
@@ -56,6 +58,7 @@ class AutonomousTurn:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.tools_override = list(tools_override) if tools_override is not None else None
+        self.provider_getter = provider_getter
         if autonomy_level not in ("observe", "notify", "speak", "act"):
             raise ValueError(
                 f"unknown autonomy tier {autonomy_level!r}; "
@@ -78,6 +81,7 @@ class AutonomousTurn:
             mcp_manager=self.mcp_manager,
             model_name=self.model_name,
             tools=tools,
+            provider_getter=self.provider_getter,
         )
         # Replace system prompt + override sampling for this one-shot run.
         from selene_agent.utils.l4_context import build_l4_block

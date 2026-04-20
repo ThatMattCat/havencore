@@ -397,6 +397,8 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `POST` | `/api/memory/runs/trigger` | Run the consolidation pipeline now (delegates to autonomy engine) |
 | `GET`  | `/api/agent/phase` | Current operational phase: `{phase: "learning"\|"operating", since: "<iso>"}` |
 | `POST` | `/api/agent/phase` | Set the phase (body `{phase}`); refreshes active sessions' system prompts on return |
+| `GET`  | `/api/system/llm-provider` | Active LLM provider: `{provider: "vllm"\|"anthropic"\|"openai", model, valid: [...], since}` |
+| `POST` | `/api/system/llm-provider` | Switch provider (body `{provider}`); hot-swaps `app.state.provider`. `/v1/chat/completions` stays pinned to vLLM regardless |
 
 ### WebSockets
 

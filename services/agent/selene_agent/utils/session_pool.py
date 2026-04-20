@@ -24,11 +24,12 @@ import asyncio
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
 from selene_agent.orchestrator import AgentOrchestrator
+from selene_agent.providers import LLMProvider
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
@@ -46,6 +47,7 @@ class SessionOrchestratorPool:
         tools: List[Dict[str, Any]],
         max_size: int = 64,
         mcp_failure_note: Optional[str] = None,
+        provider_getter: Optional[Callable[[], LLMProvider]] = None,
     ):
         self._client = client
         self._mcp_manager = mcp_manager
@@ -53,6 +55,7 @@ class SessionOrchestratorPool:
         self._tools = tools
         self._max_size = max_size
         self._mcp_failure_note = mcp_failure_note
+        self._provider_getter = provider_getter
 
         self._sessions: "OrderedDict[str, AgentOrchestrator]" = OrderedDict()
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -68,6 +71,7 @@ class SessionOrchestratorPool:
             model_name=self._model_name,
             tools=self._tools,
             session_id=session_id,
+            provider_getter=self._provider_getter,
         )
 
     def _maybe_append_mcp_note(self, orch: AgentOrchestrator) -> None:

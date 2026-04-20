@@ -12,6 +12,16 @@ LOG_LEVEL_OTHERS = logging.INFO
 LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
+# Pluggable agent-LLM provider. "vllm" routes to the local vLLM container
+# (same kwargs as today); "anthropic" routes to api.anthropic.com for
+# benchmarking the agent harness against a frontier model; "openai" is
+# stubbed for future use. The /v1/chat/completions compat endpoint stays
+# pinned to vLLM regardless of this setting. Persisted in agent_state;
+# this env var is just the seed/fallback for the very first read.
+LLM_PROVIDER_DEFAULT = os.getenv("LLM_PROVIDER", "vllm")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-7")
+
 MCP_SERVERS = os.getenv("MCP_SERVERS", "{}")
 
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "")

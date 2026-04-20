@@ -48,6 +48,27 @@ export function getTools(): Promise<ToolsResponse> {
 	return fetchJSON('/api/tools');
 }
 
+// --- LLM provider toggle ---
+
+export interface LLMProviderInfo {
+	provider: string;
+	model: string | null;
+	valid: string[];
+	since: string | null;
+}
+
+export function getLLMProvider(): Promise<LLMProviderInfo> {
+	return fetchJSON('/api/system/llm-provider');
+}
+
+export function setLLMProvider(provider: string): Promise<LLMProviderInfo> {
+	return fetchJSON('/api/system/llm-provider', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ provider }),
+	});
+}
+
 // --- Conversations ---
 
 export interface ConversationSummary {

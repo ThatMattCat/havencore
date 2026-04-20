@@ -142,6 +142,7 @@ async def handle(
     mcp_manager: MCPClientManager,
     model_name: str,
     base_tools: List[Dict[str, Any]],
+    provider_getter=None,
 ) -> Dict[str, Any]:
     cfg = item.get("config") or {}
     event = item.get("_trigger_event") or {}
@@ -166,6 +167,7 @@ async def handle(
             timeout_sec=int(cfg.get("timeout_sec") or config.AUTONOMY_TURN_TIMEOUT_SEC),
             temperature=0.2,
             max_tokens=400,
+            provider_getter=provider_getter,
         )
     except ValueError as e:
         return {

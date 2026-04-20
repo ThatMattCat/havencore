@@ -49,3 +49,73 @@ async def set_phase(body: PhasePayload):
         logger.warning(f"failed to nudge session pool after phase change: {e}")
 
     return {"phase": body.phase, "since": updated_at.isoformat()}
+
+
+# ---------- LLM provider ----------
+
+class LLMProviderPayload(BaseModel):
+    provider: str
+
+
+@router.get("/system/llm-provider")
+async def get_llm_provider():
+    """Return the current agent-LLM provider, its model, and the full set of
+    valid provider names for UI dropdowns."""
+    name = await agent_state.get_llm_provider_name()
+    row = await agent_state.get_state("llm_provider")
+    since: Optional[str] = None
+    if row:
+        _, updated_at = row
+        since = updated_at.isoformat() if updated_at else None
+
+    model: Optional[str] = None
+    try:
+        from selene_agent.selene_agent import app
+        provider = getattr(app.state, "provider", None)
+        if provider is not None:
+            model = getattr(provider, "model", None)
+    except Exception as e:
+        logger.debug(f"get_llm_provider: app.state lookup failed ({e})")
+
+    return {
+        "provider": name,
+        "model": model,
+        "valid": list(agent_state.VALID_LLM_PROVIDERS),
+        "since": since,
+    }
+
+
+@router.post("/system/llm-provider")
+async def set_llm_provider(body: LLMProviderPayload):
+    """Persist the selected provider and hot-swap ``app.state.provider``.
+
+    Existing sessions pick up the new provider on their next turn via the
+    provider-getter closure — no session rebuild needed.
+    """
+    if body.provider not in agent_state.VALID_LLM_PROVIDERS:
+        raise HTTPException(
+            400,
+            f"invalid provider: {body.provider!r} "
+            f"(expected {list(agent_state.VALID_LLM_PROVIDERS)})",
+        )
+
+    updated_at = await agent_state.set_llm_provider_name(body.provider)
+
+    model: Optional[str] = None
+    try:
+        from selene_agent.selene_agent import app
+        from selene_agent.providers import build_provider
+        vllm_model = getattr(app.state, "model_name", None) or "gpt-3.5-turbo"
+        provider = build_provider(body.provider, vllm_model=vllm_model)
+        app.state.provider = provider
+        model = getattr(provider, "model", None)
+        logger.info(f"LLM provider swapped to {provider.name} ({model})")
+    except Exception as e:
+        logger.error(f"failed to swap provider to {body.provider!r}: {e}")
+        raise HTTPException(500, f"failed to swap provider: {e}")
+
+    return {
+        "provider": body.provider,
+        "model": model,
+        "since": updated_at.isoformat(),
+    }

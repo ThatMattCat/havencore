@@ -14,13 +14,14 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function
 
+from selene_agent.providers import LLMProvider
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
@@ -73,11 +74,23 @@ class AgentOrchestrator:
         model_name: str,
         tools: List[Dict[str, Any]],
         session_id: Optional[str] = None,
+        provider_getter: Optional[Callable[[], LLMProvider]] = None,
     ):
         self.client = client
         self.mcp_manager = mcp_manager
         self.model_name = model_name
         self.tools = tools
+        # Every chat-completion call goes through ``provider_getter()`` so a
+        # mid-session provider flip (set via /api/system/llm-provider) lands on
+        # the next turn without a session rebuild. If no getter was supplied
+        # (stateless /v1 compat path, tests with a mock client), wrap the given
+        # ``client`` directly so the caller's AsyncOpenAI — real or mocked — is
+        # what actually receives the call.
+        if provider_getter is None:
+            from selene_agent.providers.vllm import VLLMProvider
+            _fallback = VLLMProvider.from_client(client=client, model=model_name)
+            provider_getter = lambda: _fallback
+        self.provider_getter: Callable[[], LLMProvider] = provider_getter
 
         self.messages: List[Dict[str, Any]] = []
         self.last_query_time: float = time.time()
@@ -244,8 +257,7 @@ class AgentOrchestrator:
 
         try:
             resp = await asyncio.wait_for(
-                self.client.chat.completions.create(
-                    model=self.model_name,
+                self.provider_getter().chat_completion(
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": transcript},
@@ -405,8 +417,7 @@ class AgentOrchestrator:
                 yield AgentEvent(type=EventType.THINKING, data={"iteration": iteration})
 
                 llm_start = time.perf_counter()
-                response = await self.client.chat.completions.create(
-                    model=self.model_name,
+                response = await self.provider_getter().chat_completion(
                     messages=self._messages_for_llm(retrieval_block),
                     tools=self.tools,
                     tool_choice="auto",

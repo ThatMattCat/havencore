@@ -18,6 +18,11 @@ MCP_SERVERS = os.getenv('MCP_SERVERS', '[]')
 HOST_IP_ADDRESS = os.getenv('HOST_IP_ADDRESS', '127.0.0.1')
 LLM_API_BASE = os.getenv('LLM_API_BASE', 'http://10.0.0.1:8000/v1')
 
+# Agent LLM provider — runtime-togglable via the System page; env is just the seed.
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'vllm')
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-7')
+
 DEBUG = os.getenv('DEBUG_LOGGING', 0)
 if DEBUG:
     LOG_LEVEL_APP = logging.DEBUG
