@@ -42,6 +42,7 @@ class EventType(str, Enum):
     METRIC = "metric"
     DONE = "done"
     ERROR = "error"
+    SUMMARY_RESET = "summary_reset"
 
 
 @dataclass
@@ -107,6 +108,11 @@ class AgentOrchestrator:
         self.device_name: Optional[str] = None
         self._user_turn_since_reset: bool = False
 
+        # Stash for a summary produced by _check_session_timeout at turn start;
+        # run() reads and clears this to yield a SUMMARY_RESET event before the
+        # first thinking frame so the client sees the compaction inline.
+        self._pending_summary_reset: Optional[str] = None
+
         # Per-turn retrieval injection. Session-pool sessions enable it; the
         # stateless /v1/chat/completions path overrides this to False.
         self.retrieval_enabled: bool = True
@@ -148,13 +154,19 @@ class AgentOrchestrator:
         """Route into summarize-and-reset if the session has been idle past its window."""
         timeout = self.effective_timeout()
         if self.last_query_time and time.time() - self.last_query_time > timeout:
-            await self._summarize_and_reset(reason="idle_timeout_summarize")
+            summary = await self._summarize_and_reset(reason="idle_timeout_summarize")
+            if summary:
+                self._pending_summary_reset = summary
 
-    async def _summarize_and_reset(self, reason: str) -> None:
+    async def _summarize_and_reset(self, reason: str) -> Optional[str]:
         """Persist full history, then reset `messages` to [system, summary, last N exchanges].
 
         Falls back to keep-tail-only if the summary LLM call fails or times out.
         Preserves `session_id` (pool orchestrators are always pinned).
+
+        Returns the rolling summary string when one was produced (i.e. a real
+        compaction happened), otherwise ``None``. Callers use the return value
+        to emit a user-visible summary_reset event.
         """
         msgs = list(self.messages or [])
         msg_count = len(msgs)
@@ -166,7 +178,7 @@ class AgentOrchestrator:
             await self.initialize()
             self.last_query_time = time.time()
             self._user_turn_since_reset = False
-            return
+            return None
 
         # Count real user/assistant exchanges excluding the leading system msg.
         real_turns = [m for m in msgs[1:] if m.get("role") in ("user", "assistant")]
@@ -174,7 +186,7 @@ class AgentOrchestrator:
             await self.initialize()
             self.last_query_time = time.time()
             self._user_turn_since_reset = False
-            return
+            return None
 
         summary = await self._build_session_summary(msgs)
         summary_ok = summary is not None
@@ -226,6 +238,7 @@ class AgentOrchestrator:
                 "tail_kept": len(tail),
             },
         )
+        return summary
 
     async def _build_session_summary(self, msgs: List[Dict[str, Any]]) -> Optional[str]:
         """One-shot LLM call that condenses `msgs` to a compact recap. Returns None on failure."""
@@ -391,12 +404,23 @@ class AgentOrchestrator:
         unique_id = f"query_{int(time.time())}"
 
         await self._check_session_timeout()
+        if self._pending_summary_reset:
+            yield AgentEvent(
+                type=EventType.SUMMARY_RESET,
+                data={
+                    "reason": "idle_timeout_summarize",
+                    "summary": self._pending_summary_reset,
+                },
+            )
+            self._pending_summary_reset = None
         self.last_query_time = time.time()
         self._user_turn_since_reset = True
 
         turn_start = time.perf_counter()
         llm_ms_total = 0.0
         tool_calls_timing: List[Dict[str, Any]] = []
+        cache_read_total = 0
+        cache_create_total = 0
 
         # Per-turn ephemeral retrieval block. Built once at turn start from the
         # raw user message; passed to the LLM on every iteration; never stored
@@ -417,7 +441,8 @@ class AgentOrchestrator:
                 yield AgentEvent(type=EventType.THINKING, data={"iteration": iteration})
 
                 llm_start = time.perf_counter()
-                response = await self.provider_getter().chat_completion(
+                provider = self.provider_getter()
+                response = await provider.chat_completion(
                     messages=self._messages_for_llm(retrieval_block),
                     tools=self.tools,
                     tool_choice="auto",
@@ -426,6 +451,13 @@ class AgentOrchestrator:
                     max_tokens=self.max_tokens,
                 )
                 llm_ms_total += (time.perf_counter() - llm_start) * 1000
+                try:
+                    cache_stats = provider.pop_last_cache_stats()
+                    cache_read_total += int(cache_stats.get("read", 0) or 0)
+                    cache_create_total += int(cache_stats.get("create", 0) or 0)
+                except AttributeError:
+                    # Provider predates the protocol extension — skip silently.
+                    pass
 
                 assistant_message = response.choices[0].message
                 logger.debug(f"Assistant response: {assistant_message}")
@@ -502,6 +534,8 @@ class AgentOrchestrator:
                         "total_ms": int(total_ms),
                         "iterations": iteration,
                         "tool_calls": tool_calls_timing,
+                        "cache_read_tokens": cache_read_total,
+                        "cache_creation_tokens": cache_create_total,
                     }
                     yield AgentEvent(type=EventType.METRIC, data=metric_payload)
                     yield AgentEvent(

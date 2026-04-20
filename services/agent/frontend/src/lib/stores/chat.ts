@@ -10,11 +10,12 @@ import { writable, get } from 'svelte/store';
 import type { ChatEvent, TurnMetric } from '$lib/api';
 
 export interface ChatMessage {
-	role: 'user' | 'assistant';
+	role: 'user' | 'assistant' | 'summary';
 	content: string;
 	events: ChatEvent[];
 	timestamp: number;
 	metric?: TurnMetric;
+	reason?: string;
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
@@ -147,6 +148,25 @@ export function connect() {
 		if (data.type === 'session') {
 			const sid = (data as any).session_id as string | undefined;
 			if (sid) setSessionId(sid);
+			return;
+		}
+
+		// Inline marker for server-side session summarization. Rendered as
+		// its own pane-level entry (not buffered into the current turn),
+		// and may arrive mid-turn or between turns via the pool's pub/sub.
+		if (data.type === 'summary_reset') {
+			const summary = (data as any).summary as string | undefined;
+			const reason = (data as any).reason as string | undefined;
+			messages.update((msgs) => [
+				...msgs,
+				{
+					role: 'summary',
+					content: summary || '',
+					events: [],
+					timestamp: Date.now(),
+					reason,
+				},
+			]);
 			return;
 		}
 

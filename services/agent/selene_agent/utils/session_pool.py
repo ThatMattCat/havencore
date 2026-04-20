@@ -24,7 +24,7 @@ import asyncio
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from openai import AsyncOpenAI
 
@@ -61,6 +61,12 @@ class SessionOrchestratorPool:
         self._locks: Dict[str, asyncio.Lock] = {}
         self._pool_lock = asyncio.Lock()
         self._sweep_task: Optional[asyncio.Task] = None
+
+        # Per-session subscriber queues for out-of-band server → client events
+        # (e.g. summary_reset fired by the background idle sweep). Bounded queue
+        # with drop-on-full semantics — these are UI notifications, not source
+        # of truth; the DB is authoritative.
+        self._subscribers: Dict[str, Set[asyncio.Queue]] = {}
 
     # ----- Construction helpers -------------------------------------------------
 
@@ -197,6 +203,36 @@ class SessionOrchestratorPool:
             "sweep_running": self._sweep_task is not None and not self._sweep_task.done(),
         }
 
+    # ----- Subscriber pub/sub ---------------------------------------------------
+
+    def subscribe(self, session_id: str) -> asyncio.Queue:
+        """Return a queue that receives out-of-band events for `session_id`.
+
+        Callers must call `unsubscribe(session_id, queue)` when done.
+        """
+        q: asyncio.Queue = asyncio.Queue(maxsize=16)
+        self._subscribers.setdefault(session_id, set()).add(q)
+        return q
+
+    def unsubscribe(self, session_id: str, queue: asyncio.Queue) -> None:
+        subs = self._subscribers.get(session_id)
+        if not subs:
+            return
+        subs.discard(queue)
+        if not subs:
+            self._subscribers.pop(session_id, None)
+
+    def publish(self, session_id: str, event: Dict[str, Any]) -> None:
+        """Fan out an event to every subscriber for `session_id`.
+
+        Non-blocking: drops the event for any subscriber whose queue is full.
+        """
+        for q in list(self._subscribers.get(session_id, ())):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning(f"Subscriber queue full for session {session_id}; dropping event")
+
     # ----- Background sweep -----------------------------------------------------
 
     async def start_idle_sweep(self, interval_sec: int = 30) -> None:
@@ -256,7 +292,13 @@ class SessionOrchestratorPool:
                     and orch._user_turn_since_reset
                     and (time.time() - orch.last_query_time) > orch.effective_timeout()
                 ):
-                    await orch._summarize_and_reset(reason="idle_timeout_summarize")
+                    summary = await orch._summarize_and_reset(reason="idle_timeout_summarize")
+                    if summary:
+                        self.publish(sid, {
+                            "type": "summary_reset",
+                            "reason": "idle_timeout_summarize",
+                            "summary": summary,
+                        })
             except Exception as e:
                 logger.error(f"Idle-sweep reset failed for session {sid}: {e}")
             finally:

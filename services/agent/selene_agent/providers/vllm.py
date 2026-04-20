@@ -54,3 +54,6 @@ class VLLMProvider:
         if top_p is not None:
             kwargs["top_p"] = top_p
         return await self._client.chat.completions.create(**kwargs)
+
+    def pop_last_cache_stats(self) -> Dict[str, int]:
+        return {"read": 0, "create": 0}

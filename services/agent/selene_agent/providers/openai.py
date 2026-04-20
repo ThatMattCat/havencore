@@ -6,6 +6,8 @@ the Anthropic path is validated in production.
 """
 from __future__ import annotations
 
+from typing import Dict
+
 
 class OpenAIProvider:
     name = "openai"
@@ -15,3 +17,6 @@ class OpenAIProvider:
             "OpenAI (api.openai.com) provider is not yet wired. "
             "Use 'vllm' or 'anthropic' via the System-page toggle for now."
         )
+
+    def pop_last_cache_stats(self) -> Dict[str, int]:
+        return {"read": 0, "create": 0}

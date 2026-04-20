@@ -32,3 +32,12 @@ class LLMProvider(Protocol):
         max_tokens: int = 1024,
     ) -> ChatCompletion:
         ...
+
+    def pop_last_cache_stats(self) -> Dict[str, int]:
+        """Return cache-token counts from the most recent chat_completion call
+        and reset internal state, so repeated calls don't double-count.
+
+        Shape: ``{"read": <int>, "create": <int>}``. Providers without prompt
+        caching (vLLM, OpenAI stub) return zeros.
+        """
+        ...

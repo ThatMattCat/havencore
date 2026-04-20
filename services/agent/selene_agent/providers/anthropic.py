@@ -353,6 +353,8 @@ class AnthropicProvider:
             )
         self._client = AsyncAnthropic(api_key=api_key)
         self.model = model
+        self._last_cache_read = 0
+        self._last_cache_create = 0
 
     async def chat_completion(
         self,
@@ -393,6 +395,8 @@ class AnthropicProvider:
         resp = await self._client.messages.create(**kwargs)
 
         usage = getattr(resp, "usage", None)
+        cache_read = 0
+        cache_create = 0
         if usage is not None:
             cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
             cache_create = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
@@ -404,5 +408,13 @@ class AnthropicProvider:
                     int(getattr(usage, "input_tokens", 0) or 0),
                     int(getattr(usage, "output_tokens", 0) or 0),
                 )
+        self._last_cache_read = cache_read
+        self._last_cache_create = cache_create
 
         return _to_openai_response(resp, self.model)
+
+    def pop_last_cache_stats(self) -> Dict[str, int]:
+        stats = {"read": self._last_cache_read, "create": self._last_cache_create}
+        self._last_cache_read = 0
+        self._last_cache_create = 0
+        return stats

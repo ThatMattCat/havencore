@@ -33,6 +33,7 @@ Device-name attribution:
   attribution applies to `/api/chat` and `/ws/chat` only.
 """
 
+import asyncio
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request, Response, Header
@@ -199,57 +200,87 @@ async def websocket_chat(websocket: WebSocket):
     session_id: Optional[str] = None
     orchestrator = None
     session_announced = False
+    notif_queue: Optional[asyncio.Queue] = None
 
     async def _ensure_session(requested_sid: Optional[str]):
         """Bind this WS connection to a session (hydrating or minting as needed).
 
         Returns (orchestrator, session_id). Announces the session_id to the
-        client exactly once via a `{"type": "session"}` frame.
+        client exactly once via a `{"type": "session"}` frame. Also subscribes
+        this connection to the pool's per-session notification channel on the
+        first bind, so out-of-band events (e.g. idle-sweep summary_reset) can
+        reach the client between turns.
         """
-        nonlocal orchestrator, session_id, session_announced
+        nonlocal orchestrator, session_id, session_announced, notif_queue
         if orchestrator is None:
             orchestrator = await pool.get_or_create(requested_sid)
             session_id = orchestrator.session_id
+            notif_queue = pool.subscribe(session_id)
         if not session_announced:
             await websocket.send_json({"type": "session", "session_id": session_id})
             session_announced = True
         return orchestrator, session_id
 
+    recv_task: Optional[asyncio.Task] = None
+    notif_task: Optional[asyncio.Task] = None
     try:
+        recv_task = asyncio.create_task(websocket.receive_json())
+
         while True:
-            data = await websocket.receive_json()
+            # Wait on either an inbound client frame or an out-of-band pool
+            # notification for our session. Notification queue is only
+            # subscribed once a session is bound, so race it in only then.
+            wait_set = {recv_task}
+            if notif_queue is not None:
+                if notif_task is None or notif_task.done():
+                    notif_task = asyncio.create_task(notif_queue.get())
+                wait_set.add(notif_task)
 
-            # Session-bind frame: may be sent as the first frame or mid-stream.
-            # `session_id` is honored only on the first frame (once the session is
-            # announced, re-binding to a different session is not supported — open
-            # a new WS). `idle_timeout` and `device_name` apply both on first
-            # frame and mid-stream.
-            if data.get("type") == "session":
-                orch, _ = await _ensure_session(data.get("session_id"))
-                _apply_idle_timeout_override(orch, data.get("idle_timeout"))
-                _apply_device_name(orch, data.get("device_name"))
-                continue
+            done, _ = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
 
-            user_message = data.get("message", "")
-            if not user_message:
-                await websocket.send_json({"type": "error", "error": "No message provided"})
-                continue
+            if notif_task is not None and notif_task in done:
+                event = notif_task.result()
+                try:
+                    await websocket.send_json(event)
+                except Exception as e:
+                    logger.warning(f"Failed to forward notif to WS: {e}")
+                notif_task = None
 
-            orch, sid = await _ensure_session(None)
+            if recv_task in done:
+                data = recv_task.result()
+                recv_task = asyncio.create_task(websocket.receive_json())
 
-            lock = pool.lock_for(sid)
-            async with lock:
-                async for event in orch.run(user_message):
-                    await websocket.send_json({
-                        "type": event.type.value,
-                        **event.data,
-                    })
-                    if event.type == EventType.METRIC:
-                        await metrics_db.record_turn(
-                            orch.session_id,
-                            event.data,
-                            device_name=orch.device_name,
-                        )
+                # Session-bind frame: may be sent as the first frame or mid-stream.
+                # `session_id` is honored only on the first frame (once the session is
+                # announced, re-binding to a different session is not supported — open
+                # a new WS). `idle_timeout` and `device_name` apply both on first
+                # frame and mid-stream.
+                if data.get("type") == "session":
+                    orch, _ = await _ensure_session(data.get("session_id"))
+                    _apply_idle_timeout_override(orch, data.get("idle_timeout"))
+                    _apply_device_name(orch, data.get("device_name"))
+                    continue
+
+                user_message = data.get("message", "")
+                if not user_message:
+                    await websocket.send_json({"type": "error", "error": "No message provided"})
+                    continue
+
+                orch, sid = await _ensure_session(None)
+
+                lock = pool.lock_for(sid)
+                async with lock:
+                    async for event in orch.run(user_message):
+                        await websocket.send_json({
+                            "type": event.type.value,
+                            **event.data,
+                        })
+                        if event.type == EventType.METRIC:
+                            await metrics_db.record_turn(
+                                orch.session_id,
+                                event.data,
+                                device_name=orch.device_name,
+                            )
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected (session={session_id})")
@@ -259,3 +290,9 @@ async def websocket_chat(websocket: WebSocket):
             await websocket.send_json({"type": "error", "error": str(e)})
         except Exception:
             pass
+    finally:
+        if session_id and notif_queue is not None:
+            pool.unsubscribe(session_id, notif_queue)
+        for t in (recv_task, notif_task):
+            if t is not None and not t.done():
+                t.cancel()

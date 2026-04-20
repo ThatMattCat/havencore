@@ -397,3 +397,47 @@ async def test_older_model_forwards_temperature(monkeypatch):
 
     assert captured["temperature"] == 0.4
     assert captured["top_p"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_pop_last_cache_stats_captures_and_resets(monkeypatch):
+    """Cache-token counts from the Anthropic usage block must be stashed on
+    the provider and returned by pop_last_cache_stats exactly once."""
+    from selene_agent.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(api_key="sk-ant-test", model="claude-opus-4-7")
+
+    # Fresh provider — nothing to report yet.
+    assert provider.pop_last_cache_stats() == {"read": 0, "create": 0}
+
+    async def _fake_create(**kwargs):
+        return SimpleNamespace(
+            id="msg_x",
+            content=[_mk_text_block("ok")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(
+                input_tokens=100,
+                output_tokens=50,
+                cache_read_input_tokens=4321,
+                cache_creation_input_tokens=77,
+            ),
+        )
+
+    provider._client.messages = SimpleNamespace(create=_fake_create)
+
+    await provider.chat_completion(
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.7,
+        max_tokens=100,
+    )
+
+    assert provider.pop_last_cache_stats() == {"read": 4321, "create": 77}
+    # Second pop is zeroed — no double-count.
+    assert provider.pop_last_cache_stats() == {"read": 0, "create": 0}
+
+
+def test_vllm_and_openai_pop_last_cache_stats_returns_zeros():
+    from selene_agent.providers.vllm import VLLMProvider
+
+    vllm = VLLMProvider(base_url="http://x", api_key="", model="gpt-3.5-turbo")
+    assert vllm.pop_last_cache_stats() == {"read": 0, "create": 0}

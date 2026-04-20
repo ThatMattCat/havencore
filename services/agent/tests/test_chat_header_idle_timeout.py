@@ -34,6 +34,13 @@ class _FakePool:
         import asyncio
         return asyncio.Lock()
 
+    def subscribe(self, sid):
+        import asyncio
+        return asyncio.Queue(maxsize=16)
+
+    def unsubscribe(self, sid, q):
+        pass
+
 
 @pytest.fixture
 def app_and_pool(monkeypatch):
