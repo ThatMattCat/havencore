@@ -109,6 +109,7 @@ async def handle(
     mcp_manager: MCPClientManager,
     model_name: str,
     base_tools: List[Dict[str, Any]],
+    provider_getter=None,
 ) -> Dict[str, Any]:
     cfg = item.get("config") or {}
     event = item.get("_trigger_event") or {}

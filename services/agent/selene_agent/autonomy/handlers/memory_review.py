@@ -391,6 +391,7 @@ async def handle(
     mcp_manager,
     model_name: str,
     base_tools,
+    provider_getter=None,
 ) -> Dict[str, Any]:
     start = time.perf_counter()
     qc = _qdrant_client()

@@ -76,6 +76,7 @@ async def handle(
     mcp_manager: MCPClientManager,
     model_name: str,
     base_tools: List[Dict[str, Any]],
+    provider_getter=None,
 ) -> Dict[str, Any]:
     cfg = item.get("config") or {}
     prompt = str(cfg.get("prompt") or "").strip()
@@ -106,6 +107,7 @@ async def handle(
             temperature=float(cfg.get("temperature", 0.4)),
             max_tokens=int(cfg.get("max_tokens", 800)),
             tools_override=tools_override,
+            provider_getter=provider_getter,
         )
     except ValueError as e:
         return {

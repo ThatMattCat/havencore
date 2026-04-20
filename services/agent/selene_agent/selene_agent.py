@@ -25,6 +25,8 @@ from selene_agent.utils.mcp_client_manager import MCPClientManager, MCPServerCon
 from selene_agent.utils.conversation_db import conversation_db
 from selene_agent.utils import logger as custom_logger
 from selene_agent.orchestrator import AgentOrchestrator, EventType, collect_response
+from selene_agent.providers import build_provider
+from selene_agent.providers.vllm import VLLMProvider
 from selene_agent.utils.session_pool import SessionOrchestratorPool
 
 # API routers
@@ -173,6 +175,29 @@ async def lifespan(app: FastAPI):
 
     client = AsyncOpenAI(base_url=api_base, api_key=api_key)
 
+    # Pluggable agent-LLM provider. Default seeds from LLM_PROVIDER env; the
+    # persisted value in `agent_state` takes precedence once the DB is up.
+    # Build a dedicated vLLM provider for the stateless /v1 compat endpoint so
+    # it stays pinned to the local backend regardless of the runtime toggle.
+    try:
+        from selene_agent.utils.agent_state import get_llm_provider_name
+        provider_name = await get_llm_provider_name()
+    except Exception as e:
+        logger.warning(
+            f"get_llm_provider_name failed ({e}); seeding from LLM_PROVIDER env"
+        )
+        provider_name = getattr(config, "LLM_PROVIDER_DEFAULT", "vllm")
+    app.state.provider = build_provider(provider_name, vllm_model=model_name)
+    app.state.vllm_provider = VLLMProvider(
+        base_url=api_base, api_key=api_key, model=model_name
+    )
+    logger.info(
+        f"Agent LLM provider: {app.state.provider.name} ({app.state.provider.model})"
+    )
+
+    def _get_provider():
+        return app.state.provider
+
     # Surface MCP failures via a system note prepended to each new session.
     mcp_failure_note: Optional[str] = None
     if mcp_manager.failed_servers:
@@ -192,6 +217,7 @@ async def lifespan(app: FastAPI):
         tools=tools,
         max_size=64,
         mcp_failure_note=mcp_failure_note,
+        provider_getter=_get_provider,
     )
     await session_pool.start_idle_sweep(interval_sec=30)
 
@@ -208,6 +234,7 @@ async def lifespan(app: FastAPI):
         mcp_manager=mcp_manager,
         model_name=model_name,
         base_tools=tools,
+        provider_getter=_get_provider,
     )
     app.state.autonomy_engine = autonomy_engine
     if config.AUTONOMY_ENABLED:
@@ -334,12 +361,19 @@ async def _build_ephemeral_orchestrator() -> AgentOrchestrator:
 
     Never touches the session pool, never writes conversation_db/metrics_db.
     The caller (OpenAI-compat client) keeps its own history.
+
+    Pinned to the local vLLM provider regardless of the runtime
+    ``LLM_PROVIDER`` toggle — /v1/chat/completions is an external OpenAI-compat
+    surface, so swapping its backend would change what third-party clients get
+    without their knowledge.
     """
+    vllm_provider = app.state.vllm_provider
     orch = AgentOrchestrator(
         client=app.state.client,
         mcp_manager=app.state.mcp_manager,
         model_name=app.state.model_name,
         tools=app.state.base_tools,
+        provider_getter=lambda: vllm_provider,
     )
     # Stateless callers already manage their own context; per-turn retrieval
     # injection would silently mutate what they sent.

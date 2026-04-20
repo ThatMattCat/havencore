@@ -7,6 +7,7 @@ name = "selene-agent"
 version = "0.1.0"
 dependencies = [
     "openai",
+    "anthropic>=0.40",
     "HomeAssistant-API",
     "wolframalpha",
     "nltk",

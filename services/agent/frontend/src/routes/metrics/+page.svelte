@@ -33,6 +33,18 @@
 		return `${(n / 1000).toFixed(2)} s`;
 	}
 
+	function formatTokens(n) {
+		if (n == null) return '–';
+		if (n < 1000) return `${n}`;
+		if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+		return `${(n / 1_000_000).toFixed(2)}M`;
+	}
+
+	function formatHitRate(rate) {
+		if (rate == null) return '–';
+		return `${(rate * 100).toFixed(1)}%`;
+	}
+
 	function chartDays(perDay) {
 		// Fill in missing days for the last 14 days so the chart has continuity
 		const result = [];
@@ -96,6 +108,14 @@
 		</Card>
 		<Card title="p95 turn (7d)">
 			<div class="stat">{summary ? formatMs(summary.p95_total_ms) : '–'}</div>
+		</Card>
+		<Card title="Cache hit rate (7d)">
+			<div class="stat">{summary ? formatHitRate(summary.cache_hit_rate) : '–'}</div>
+			{#if summary && (summary.cache_read_total || summary.cache_create_total)}
+				<div class="stat-sub">
+					{formatTokens(summary.cache_read_total)} read / {formatTokens(summary.cache_create_total)} write
+				</div>
+			{/if}
 		</Card>
 	</div>
 
@@ -226,6 +246,11 @@
 		font-size: 28px;
 		font-weight: 700;
 		color: #a78bfa;
+	}
+	.stat-sub {
+		margin-top: 4px;
+		font-size: 11px;
+		color: #94a3b8;
 	}
 	.row {
 		display: grid;

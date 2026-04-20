@@ -3,7 +3,7 @@
 	import Card from '$lib/components/Card.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
-	import { getStatus, getTools } from '$lib/api';
+	import { getStatus, getTools, getLLMProvider, setLLMProvider } from '$lib/api';
 	import { currentDeviceName, setDeviceName } from '$lib/stores/chat';
 
 	let status = $state(null);
@@ -15,6 +15,13 @@
 	let savedFlash = $state(false);
 	let savedFlashTimer = null;
 
+	// Agent-LLM provider toggle (vllm | anthropic | openai).
+	let llmProvider = $state(null); // { provider, model, valid, since } | null
+	let llmSaving = $state(false);
+	let llmSavedFlash = $state(false);
+	let llmSavedFlashTimer = null;
+	let llmError = $state('');
+
 	function saveDeviceName() {
 		setDeviceName(deviceNameDraft || null);
 		savedFlash = true;
@@ -22,11 +29,30 @@
 		savedFlashTimer = setTimeout(() => (savedFlash = false), 1500);
 	}
 
+	async function selectProvider(name) {
+		if (llmSaving) return;
+		if (llmProvider && llmProvider.provider === name) return;
+		llmSaving = true;
+		llmError = '';
+		try {
+			const updated = await setLLMProvider(name);
+			llmProvider = { ...llmProvider, ...updated };
+			llmSavedFlash = true;
+			if (llmSavedFlashTimer) clearTimeout(llmSavedFlashTimer);
+			llmSavedFlashTimer = setTimeout(() => (llmSavedFlash = false), 1500);
+		} catch (e) {
+			llmError = e?.message ?? String(e);
+		} finally {
+			llmSaving = false;
+		}
+	}
+
 	onMount(async () => {
 		try {
-			const [s, t] = await Promise.all([getStatus(), getTools()]);
+			const [s, t, p] = await Promise.all([getStatus(), getTools(), getLLMProvider()]);
 			status = s;
 			tools = t;
+			llmProvider = p;
 		} catch (e) {
 			error = e.message;
 		}
@@ -87,6 +113,50 @@
 							<div class="error-detail">{status.llm.error}</div>
 						{/if}
 					</div>
+				{/if}
+			</Card>
+
+			<!-- Agent LLM Provider (runtime toggle) -->
+			<Card title="Agent LLM Provider">
+				{#if llmProvider}
+					<div class="status-list">
+						<div class="provider-options">
+							<button
+								class="btn {llmProvider.provider === 'vllm' ? 'primary' : 'ghost'}"
+								disabled={llmSaving}
+								onclick={() => selectProvider('vllm')}
+							>
+								vLLM (local)
+							</button>
+							<button
+								class="btn {llmProvider.provider === 'anthropic' ? 'primary' : 'ghost'}"
+								disabled={llmSaving}
+								onclick={() => selectProvider('anthropic')}
+							>
+								Anthropic
+							</button>
+							<button
+								class="btn ghost"
+								disabled
+								title="OpenAI provider not wired yet"
+							>
+								OpenAI (soon)
+							</button>
+						</div>
+						<div class="status-row">
+							<span>Active</span>
+							<span class="value mono">{llmProvider.provider}{llmProvider.model ? ` · ${llmProvider.model}` : ''}</span>
+						</div>
+						<p class="provider-hint">
+							Routes chat + autonomy calls. The <span class="mono">/v1/chat/completions</span> compat endpoint stays pinned to vLLM.
+							{#if llmSavedFlash}<span class="saved-flash">· saved</span>{/if}
+						</p>
+						{#if llmError}
+							<div class="error-detail">{llmError}</div>
+						{/if}
+					</div>
+				{:else}
+					<p class="muted">Loading provider...</p>
 				{/if}
 			</Card>
 
@@ -381,5 +451,58 @@
 		color: #6b7280;
 		line-height: 1.4;
 		margin-top: 4px;
+	}
+
+	.provider-options {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.btn {
+		padding: 8px 14px;
+		border-radius: 8px;
+		font-size: 13px;
+		font-weight: 500;
+		border: 1px solid transparent;
+		cursor: pointer;
+		transition: all 0.15s;
+		font-family: inherit;
+	}
+
+	.btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.btn.primary {
+		background: linear-gradient(135deg, #6366f1, #8b5cf6);
+		color: white;
+	}
+
+	.btn.primary:hover:not(:disabled) {
+		filter: brightness(1.1);
+	}
+
+	.btn.ghost {
+		background: #1e2235;
+		border-color: #2d3148;
+		color: #c9cdd5;
+	}
+
+	.btn.ghost:hover:not(:disabled) {
+		background: #252a3e;
+	}
+
+	.provider-hint {
+		font-size: 12px;
+		color: #6b7280;
+		line-height: 1.4;
+		margin-top: 4px;
+	}
+
+	.saved-flash {
+		color: #4ade80;
+		font-weight: 500;
 	}
 </style>

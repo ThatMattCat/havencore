@@ -39,6 +39,11 @@ CURRENT_ZIPCODE="94102"
 
 # Language settings
 SRC_LAN="en"  # Source language code
+
+# Agent LLM provider (seed value — dashboard toggle wins at runtime)
+LLM_PROVIDER="vllm"                # vllm | anthropic
+ANTHROPIC_API_KEY=""               # required when LLM_PROVIDER=anthropic
+ANTHROPIC_MODEL="claude-opus-4-7"  # default Anthropic model
 ```
 
 ### AI Model Configuration
@@ -316,6 +321,30 @@ command: [
 Commented out in `compose.yaml`. Uncomment the `llamacpp` service block to
 swap it in for vLLM. It uses `ghcr.io/ggml-org/llama.cpp:server-cuda` and
 reads a GGUF model mounted at `/models/`.
+
+#### Hosted Anthropic Claude (Alternative)
+The agent can route its text-to-text LLM calls to Anthropic Claude instead
+of the local vLLM, for benchmarking the agent harness against a frontier
+model. STT/TTS stay local; the external OpenAI-compat endpoint
+(`/v1/chat/completions`) is pinned to vLLM regardless of this setting.
+
+Set:
+```bash
+LLM_PROVIDER=anthropic                # seed only; dashboard toggle wins at runtime
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-opus-4-7       # default
+```
+
+Then flip providers live from **Dashboard → System → Agent LLM Provider**
+(`vLLM` ↔ `Anthropic`). The swap takes effect on the next turn — no
+session rebuild, no restart. The selected provider is persisted in the
+`agent_state` table, so it survives container restarts. The env var is
+only used as the first-boot seed; after that the DB value wins.
+
+Server-side prompt caching is applied automatically when the Anthropic
+provider is active (system block, tools array, and last conversation
+message get `cache_control: ephemeral` breakpoints). Cache hits/writes
+are logged at INFO: `[anthropic] cache read=N create=N input=N output=N`.
 
 ### Nginx Gateway Configuration
 

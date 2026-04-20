@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS agent_state (
 
 
 VALID_PHASES = ("learning", "operating")
+VALID_LLM_PROVIDERS = ("vllm", "anthropic", "openai")
 
 
 async def ensure_schema() -> None:
@@ -97,3 +98,37 @@ async def set_agent_phase(phase: str) -> datetime:
     if phase not in VALID_PHASES:
         raise ValueError(f"invalid phase: {phase!r} (expected one of {VALID_PHASES})")
     return await set_state(_AGENT_PHASE_KEY, phase)
+
+
+# ---------- LLM provider helpers ----------
+
+_LLM_PROVIDER_KEY = "llm_provider"
+
+
+async def get_llm_provider_name() -> str:
+    """Return the current agent-LLM provider name. Falls back to
+    ``config.LLM_PROVIDER_DEFAULT`` when the row is absent or the DB pool is
+    unavailable (pre-startup, migrations, tests)."""
+    default = getattr(config, "LLM_PROVIDER_DEFAULT", "vllm")
+    try:
+        row = await get_state(_LLM_PROVIDER_KEY)
+    except Exception as e:
+        logger.debug(f"get_llm_provider_name: DB read failed ({e}); using default")
+        return default
+    if not row:
+        return default
+    value, _ = row
+    if value not in VALID_LLM_PROVIDERS:
+        logger.warning(
+            f"get_llm_provider_name: invalid stored value {value!r}; using default"
+        )
+        return default
+    return value
+
+
+async def set_llm_provider_name(provider: str) -> datetime:
+    if provider not in VALID_LLM_PROVIDERS:
+        raise ValueError(
+            f"invalid provider: {provider!r} (expected one of {VALID_LLM_PROVIDERS})"
+        )
+    return await set_state(_LLM_PROVIDER_KEY, provider)

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from openai import AsyncOpenAI
+
+from selene_agent.providers import LLMProvider
 
 from selene_agent.autonomy import db as autonomy_db
 from selene_agent.autonomy import quiet_hours as quiet_hours_mod
@@ -65,11 +67,13 @@ class AutonomyEngine:
         mcp_manager: MCPClientManager,
         model_name: str,
         base_tools: List[Dict[str, Any]],
+        provider_getter: Optional[Callable[[], LLMProvider]] = None,
     ):
         self.client = client
         self.mcp_manager = mcp_manager
         self.model_name = model_name
         self.base_tools = base_tools
+        self.provider_getter = provider_getter
 
         self._task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
@@ -390,6 +394,7 @@ class AutonomyEngine:
                 mcp_manager=self.mcp_manager,
                 model_name=self.model_name,
                 base_tools=self.base_tools,
+                provider_getter=self.provider_getter,
             )
 
             # Act-tier parked run: persist + notify user, don't advance schedule.

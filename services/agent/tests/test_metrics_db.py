@@ -57,9 +57,12 @@ async def test_record_turn_writes_device_name(fake_conn):
     fake_conn.execute.assert_awaited_once()
     args = fake_conn.execute.call_args.args
     # Positional args after the SQL: session_id, llm_ms, tool_ms_total,
-    # total_ms, iterations, tool_calls(json), device_name.
+    # total_ms, iterations, tool_calls(json), device_name,
+    # cache_read_tokens, cache_creation_tokens.
     assert args[1] == "sess-1"
-    assert args[-1] == "Kitchen Speaker"
+    assert args[7] == "Kitchen Speaker"
+    assert args[8] == 0
+    assert args[9] == 0
 
 
 async def test_record_turn_default_device_name_is_null(fake_conn):
@@ -75,7 +78,25 @@ async def test_record_turn_default_device_name_is_null(fake_conn):
 
     fake_conn.execute.assert_awaited_once()
     args = fake_conn.execute.call_args.args
-    assert args[-1] is None
+    assert args[7] is None
+
+
+async def test_record_turn_writes_cache_tokens(fake_conn):
+    db = MetricsDB()
+    payload = {
+        "llm_ms": 100,
+        "tool_ms_total": 0,
+        "total_ms": 150,
+        "iterations": 1,
+        "tool_calls": [],
+        "cache_read_tokens": 12345,
+        "cache_creation_tokens": 678,
+    }
+    await db.record_turn("sess-3", payload)
+
+    args = fake_conn.execute.call_args.args
+    assert args[8] == 12345
+    assert args[9] == 678
 
 
 async def test_fetch_recent_turns_includes_device_name(fake_conn):
@@ -90,6 +111,8 @@ async def test_fetch_recent_turns_includes_device_name(fake_conn):
             "iterations": 1,
             "tool_calls": [],
             "device_name": "Kitchen Speaker",
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
         },
         {
             "id": 2,
@@ -101,6 +124,8 @@ async def test_fetch_recent_turns_includes_device_name(fake_conn):
             "iterations": 1,
             "tool_calls": [],
             "device_name": None,
+            "cache_read_tokens": 1000,
+            "cache_creation_tokens": 200,
         },
     ]
     db = MetricsDB()
@@ -109,3 +134,6 @@ async def test_fetch_recent_turns_includes_device_name(fake_conn):
     assert len(rows) == 2
     assert rows[0]["device_name"] == "Kitchen Speaker"
     assert rows[1]["device_name"] is None
+    assert rows[0]["cache_read_tokens"] == 0
+    assert rows[1]["cache_read_tokens"] == 1000
+    assert rows[1]["cache_creation_tokens"] == 200

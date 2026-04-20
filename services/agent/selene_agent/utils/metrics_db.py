@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 ALTER TABLE turn_metrics ADD COLUMN IF NOT EXISTS device_name TEXT;
+ALTER TABLE turn_metrics ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE turn_metrics ADD COLUMN IF NOT EXISTS cache_creation_tokens INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_created_at ON turn_metrics (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_session ON turn_metrics (session_id);
 """
@@ -51,8 +53,8 @@ class MetricsDB:
                     """
                     INSERT INTO turn_metrics
                         (session_id, llm_ms, tool_ms_total, total_ms, iterations,
-                         tool_calls, device_name)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                         tool_calls, device_name, cache_read_tokens, cache_creation_tokens)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
                     session_id,
                     int(payload.get("llm_ms", 0)),
@@ -61,6 +63,8 @@ class MetricsDB:
                     int(payload.get("iterations", 0)),
                     json.dumps(payload.get("tool_calls", [])),
                     device_name,
+                    int(payload.get("cache_read_tokens", 0)),
+                    int(payload.get("cache_creation_tokens", 0)),
                 )
         except Exception as e:
             logger.error(f"Failed to record turn metric: {e}")
@@ -73,7 +77,8 @@ class MetricsDB:
             rows = await conn.fetch(
                 """
                 SELECT id, session_id, created_at, llm_ms, tool_ms_total,
-                       total_ms, iterations, tool_calls, device_name
+                       total_ms, iterations, tool_calls, device_name,
+                       cache_read_tokens, cache_creation_tokens
                 FROM turn_metrics
                 ORDER BY created_at DESC
                 LIMIT $1
@@ -91,6 +96,8 @@ class MetricsDB:
                 "iterations": r["iterations"],
                 "tool_calls": json.loads(r["tool_calls"]) if isinstance(r["tool_calls"], str) else r["tool_calls"],
                 "device_name": r["device_name"],
+                "cache_read_tokens": r["cache_read_tokens"],
+                "cache_creation_tokens": r["cache_creation_tokens"],
             }
             for r in rows
         ]
@@ -106,7 +113,9 @@ class MetricsDB:
                     COUNT(*)::int AS turns,
                     COALESCE(AVG(llm_ms), 0)::int AS avg_llm_ms,
                     COALESCE(AVG(total_ms), 0)::int AS avg_total_ms,
-                    COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_ms), 0)::int AS p95_total_ms
+                    COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY total_ms), 0)::int AS p95_total_ms,
+                    COALESCE(SUM(cache_read_tokens), 0)::bigint AS cache_read_total,
+                    COALESCE(SUM(cache_creation_tokens), 0)::bigint AS cache_create_total
                 FROM turn_metrics
                 WHERE created_at >= NOW() - ($1 || ' days')::interval
                 """,
@@ -128,12 +137,19 @@ class MetricsDB:
                 """,
                 str(days * 2),
             )
+        cache_read = int(agg["cache_read_total"]) if agg else 0
+        cache_create = int(agg["cache_create_total"]) if agg else 0
+        denom = cache_read + cache_create
+        cache_hit_rate = (cache_read / denom) if denom > 0 else None
         return {
             "turns": agg["turns"] if agg else 0,
             "avg_llm_ms": agg["avg_llm_ms"] if agg else 0,
             "avg_total_ms": agg["avg_total_ms"] if agg else 0,
             "p95_total_ms": agg["p95_total_ms"] if agg else 0,
             "turns_today": turns_today or 0,
+            "cache_read_total": cache_read,
+            "cache_create_total": cache_create,
+            "cache_hit_rate": cache_hit_rate,
             "per_day": [
                 {"day": r["day"].isoformat(), "turns": r["turns"]}
                 for r in per_day_rows

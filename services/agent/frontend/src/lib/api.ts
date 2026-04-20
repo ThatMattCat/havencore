@@ -48,6 +48,27 @@ export function getTools(): Promise<ToolsResponse> {
 	return fetchJSON('/api/tools');
 }
 
+// --- LLM provider toggle ---
+
+export interface LLMProviderInfo {
+	provider: string;
+	model: string | null;
+	valid: string[];
+	since: string | null;
+}
+
+export function getLLMProvider(): Promise<LLMProviderInfo> {
+	return fetchJSON('/api/system/llm-provider');
+}
+
+export function setLLMProvider(provider: string): Promise<LLMProviderInfo> {
+	return fetchJSON('/api/system/llm-provider', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ provider }),
+	});
+}
+
 // --- Conversations ---
 
 export interface ConversationSummary {
@@ -103,7 +124,7 @@ export interface ChatResponse {
 }
 
 export interface ChatEvent {
-	type: 'thinking' | 'tool_call' | 'tool_result' | 'metric' | 'done' | 'error';
+	type: 'thinking' | 'tool_call' | 'tool_result' | 'metric' | 'done' | 'error' | 'summary_reset' | 'session';
 	[key: string]: any;
 }
 
@@ -113,6 +134,8 @@ export interface TurnMetric {
 	total_ms: number;
 	iterations: number;
 	tool_calls: { name: string; ms: number }[];
+	cache_read_tokens?: number;
+	cache_creation_tokens?: number;
 }
 
 export function chatSync(message: string): Promise<ChatResponse> {
@@ -279,6 +302,8 @@ export interface TurnRow {
 	total_ms: number;
 	iterations: number;
 	tool_calls: { name: string; ms: number }[];
+	cache_read_tokens?: number;
+	cache_creation_tokens?: number;
 }
 
 export interface MetricsSummary {
@@ -288,6 +313,9 @@ export interface MetricsSummary {
 	p95_total_ms: number;
 	turns_today: number;
 	per_day: { day: string; turns: number }[];
+	cache_read_total?: number;
+	cache_create_total?: number;
+	cache_hit_rate?: number | null;
 }
 
 export interface TopTool {

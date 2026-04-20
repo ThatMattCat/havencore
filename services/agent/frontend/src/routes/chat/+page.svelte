@@ -336,59 +336,72 @@
 		{/if}
 
 		{#each $messages as msg, i}
-			<div class="message" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'}>
-				<div class="message-avatar">
-					{#if msg.role === 'user'}
-						<span class="avatar user-avatar">U</span>
-					{:else}
-						<span class="avatar assistant-avatar">S</span>
-					{/if}
-				</div>
-				<div class="message-body">
-					{#if msg.role === 'assistant'}
-						<!-- Show tool events -->
-						{#each msg.events.filter(e => e.type === 'tool_call' || e.type === 'tool_result') as event}
-							<ToolCallCard {event} />
-						{/each}
+			{#if msg.role === 'summary'}
+				<details class="summary-card">
+					<summary class="summary-card-header">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+						<span class="summary-card-label">Conversation summarized</span>
+						<span class="summary-card-hint">click to view</span>
+					</summary>
+					<div class="summary-card-body">
+						{msg.content || '(summary unavailable)'}
+					</div>
+				</details>
+			{:else}
+				<div class="message" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'}>
+					<div class="message-avatar">
+						{#if msg.role === 'user'}
+							<span class="avatar user-avatar">U</span>
+						{:else}
+							<span class="avatar assistant-avatar">S</span>
+						{/if}
+					</div>
+					<div class="message-body">
+						{#if msg.role === 'assistant'}
+							<!-- Show tool events -->
+							{#each msg.events.filter(e => e.type === 'tool_call' || e.type === 'tool_result') as event}
+								<ToolCallCard {event} />
+							{/each}
 
-						<!-- Show thinking indicator -->
-						{#if !msg.content && msg.events.length > 0 && !msg.events.some(e => e.type === 'done' || e.type === 'error')}
-							<div class="thinking">
-								<span class="thinking-dot"></span>
-								<span class="thinking-dot"></span>
-								<span class="thinking-dot"></span>
+							<!-- Show thinking indicator -->
+							{#if !msg.content && msg.events.length > 0 && !msg.events.some(e => e.type === 'done' || e.type === 'error')}
+								<div class="thinking">
+									<span class="thinking-dot"></span>
+									<span class="thinking-dot"></span>
+									<span class="thinking-dot"></span>
+								</div>
+							{/if}
+						{/if}
+
+						{#if msg.role === 'assistant' && getErrorEvent(msg.events)}
+							<div class="error-card">
+								<div class="error-card-header">
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+									<span>Turn failed</span>
+								</div>
+								<div class="error-card-body">{getErrorEvent(msg.events).error || msg.content || 'An error occurred.'}</div>
+							</div>
+						{:else if msg.content}
+							<div class="message-content">
+								{#if msg.role === 'assistant'}
+									{@html renderMarkdown(msg.content)}
+								{:else}
+									{msg.content}
+								{/if}
 							</div>
 						{/if}
-					{/if}
 
-					{#if msg.role === 'assistant' && getErrorEvent(msg.events)}
-						<div class="error-card">
-							<div class="error-card-header">
-								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-								<span>Turn failed</span>
+						{#if msg.role === 'assistant' && msg.metric}
+							<div class="metric-badges" title="Turn timings">
+								<span class="badge">LLM {fmtMs(msg.metric.llm_ms)}</span>
+								<span class="badge">Tools {fmtMs(msg.metric.tool_ms_total)}</span>
+								<span class="badge">Total {fmtMs(msg.metric.total_ms)}</span>
+								<span class="badge">{msg.metric.iterations} iter</span>
 							</div>
-							<div class="error-card-body">{getErrorEvent(msg.events).error || msg.content || 'An error occurred.'}</div>
-						</div>
-					{:else if msg.content}
-						<div class="message-content">
-							{#if msg.role === 'assistant'}
-								{@html renderMarkdown(msg.content)}
-							{:else}
-								{msg.content}
-							{/if}
-						</div>
-					{/if}
-
-					{#if msg.role === 'assistant' && msg.metric}
-						<div class="metric-badges" title="Turn timings">
-							<span class="badge">LLM {fmtMs(msg.metric.llm_ms)}</span>
-							<span class="badge">Tools {fmtMs(msg.metric.tool_ms_total)}</span>
-							<span class="badge">Total {fmtMs(msg.metric.total_ms)}</span>
-							<span class="badge">{msg.metric.iterations} iter</span>
-						</div>
-					{/if}
+						{/if}
+					</div>
 				</div>
-			</div>
+			{/if}
 		{/each}
 	</div>
 
@@ -883,6 +896,58 @@
 		color: #fca5a5;
 		font-size: 13px;
 		line-height: 1.5;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+
+	.summary-card {
+		background: #1a1d2e;
+		border: 1px solid #2d3148;
+		border-left: 3px solid #a5b4fc;
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin: 6px 0;
+		font-size: 13px;
+	}
+
+	.summary-card-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		cursor: pointer;
+		color: #a5b4fc;
+		font-weight: 600;
+		list-style: none;
+		user-select: none;
+	}
+
+	.summary-card-header::-webkit-details-marker {
+		display: none;
+	}
+
+	.summary-card-label {
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		font-size: 11px;
+	}
+
+	.summary-card-hint {
+		margin-left: auto;
+		color: #6b7280;
+		font-weight: 400;
+		font-size: 11px;
+		font-style: italic;
+	}
+
+	.summary-card[open] .summary-card-hint {
+		display: none;
+	}
+
+	.summary-card-body {
+		color: #c9cdd5;
+		font-style: italic;
+		line-height: 1.5;
+		margin-top: 8px;
 		white-space: pre-wrap;
 		word-break: break-word;
 	}

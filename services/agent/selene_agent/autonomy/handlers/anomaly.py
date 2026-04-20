@@ -149,6 +149,7 @@ async def handle(
     mcp_manager: MCPClientManager,
     model_name: str,
     base_tools: List[Dict[str, Any]],
+    provider_getter=None,
 ) -> Dict[str, Any]:
     item_config = item.get("config") or {}
     state = await _gather(mcp_manager, item_config)
@@ -164,6 +165,7 @@ async def handle(
         timeout_sec=config.AUTONOMY_TURN_TIMEOUT_SEC,
         temperature=0.2,
         max_tokens=400,
+        provider_getter=provider_getter,
     )
     result = await turn.run(user_prompt)
 
