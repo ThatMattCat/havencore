@@ -106,16 +106,20 @@ class SessionOrchestratorPool:
         orch = self._build_orchestrator(session_id)
         orch.messages = list(messages)
         # Rehydrate per-session idle-timeout override if it was persisted.
+        # The -1 sentinel ("never auto-summarize") round-trips as-is.
         metadata = histories[0].get("metadata") or {}
         raw_override = metadata.get("idle_timeout_override")
         if isinstance(raw_override, (int, float)):
             v = int(raw_override)
-            lo, hi = config.CONVERSATION_TIMEOUT_MIN, config.CONVERSATION_TIMEOUT_MAX
-            if v < lo:
-                v = lo
-            elif v > hi:
-                v = hi
-            orch.idle_timeout_override = v
+            if v == -1:
+                orch.idle_timeout_override = -1
+            else:
+                lo, hi = config.CONVERSATION_TIMEOUT_MIN, config.CONVERSATION_TIMEOUT_MAX
+                if v < lo:
+                    v = lo
+                elif v > hi:
+                    v = hi
+                orch.idle_timeout_override = v
         # Rehydrate device_name if it was persisted.
         raw_name = metadata.get("device_name")
         if isinstance(raw_name, str):
@@ -268,11 +272,13 @@ class SessionOrchestratorPool:
         """
         now = time.time()
         # Snapshot under pool lock to avoid mutation during iteration.
+        # A non-positive effective_timeout() is the "never" sentinel — skip.
         async with self._pool_lock:
             candidates = [
                 (sid, orch) for sid, orch in self._sessions.items()
                 if orch.last_query_time
                 and orch._user_turn_since_reset
+                and orch.effective_timeout() > 0
                 and (now - orch.last_query_time) > orch.effective_timeout()
             ]
 
@@ -290,6 +296,7 @@ class SessionOrchestratorPool:
                 if (
                     orch.last_query_time
                     and orch._user_turn_since_reset
+                    and orch.effective_timeout() > 0
                     and (time.time() - orch.last_query_time) > orch.effective_timeout()
                 ):
                     summary = await orch._summarize_and_reset(reason="idle_timeout_summarize")

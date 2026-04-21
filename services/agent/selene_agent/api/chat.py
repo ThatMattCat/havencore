@@ -54,8 +54,9 @@ ws_router = APIRouter()
 def _apply_idle_timeout_override(orch: AgentOrchestrator, raw: Any) -> None:
     """Parse and apply an idle-timeout override onto the orchestrator.
 
-    Bad inputs (None, empty, non-numeric) are ignored. Out-of-range values are
-    clamped to [CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX].
+    Bad inputs (None, empty, non-numeric) are ignored. The sentinel value -1
+    means "never auto-summarize" and is stored as-is. Other out-of-range
+    values are clamped to [CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX].
     """
     if raw is None or raw == "":
         return
@@ -65,6 +66,9 @@ def _apply_idle_timeout_override(orch: AgentOrchestrator, raw: Any) -> None:
         logger.warning(
             f"Ignoring invalid idle-timeout override (session={orch.session_id}): {raw!r}"
         )
+        return
+    if v == -1:
+        orch.idle_timeout_override = -1
         return
     lo, hi = config.CONVERSATION_TIMEOUT_MIN, config.CONVERSATION_TIMEOUT_MAX
     if v < lo:

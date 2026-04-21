@@ -118,7 +118,12 @@ class AgentOrchestrator:
         self.retrieval_enabled: bool = True
 
     def effective_timeout(self) -> int:
-        """Idle window in seconds — per-session override or global default."""
+        """Idle window in seconds — per-session override or global default.
+
+        Returns -1 as a sentinel meaning "never auto-summarize". Callers that
+        schedule off this value (e.g. SessionOrchestratorPool.idle_sweep) must
+        guard on `> 0` before comparing against elapsed time.
+        """
         return int(self.idle_timeout_override or config.CONVERSATION_TIMEOUT)
 
     async def initialize(self):
@@ -151,8 +156,13 @@ class AgentOrchestrator:
             self.session_id = str(uuid.uuid4())
 
     async def _check_session_timeout(self):
-        """Route into summarize-and-reset if the session has been idle past its window."""
+        """Route into summarize-and-reset if the session has been idle past its window.
+
+        A non-positive timeout is the "never auto-summarize" sentinel — skip.
+        """
         timeout = self.effective_timeout()
+        if timeout <= 0:
+            return
         if self.last_query_time and time.time() - self.last_query_time > timeout:
             summary = await self._summarize_and_reset(reason="idle_timeout_summarize")
             if summary:

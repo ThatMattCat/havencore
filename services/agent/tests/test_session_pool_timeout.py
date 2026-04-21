@@ -64,6 +64,21 @@ async def test_sweep_uses_per_session_timeout():
     default._summarize_and_reset.assert_not_called()
 
 
+async def test_sweep_skips_never_sentinel_sessions():
+    """Sessions with idle_timeout_override=-1 ("never") must not be swept,
+    no matter how stale last_query_time is.
+    """
+    pool = _build_pool()
+    now = time.time()
+    # Override=-1, last query 10 minutes ago — would be very expired under default.
+    never = _build_orch("never", override=-1, last_q=now - 600)
+    pool._sessions["never"] = never
+    pool._locks["never"] = __import__("asyncio").Lock()
+
+    await pool.idle_sweep()
+    never._summarize_and_reset.assert_not_called()
+
+
 async def test_sweep_skips_fresh_sessions():
     pool = _build_pool()
     now = time.time()
@@ -171,6 +186,33 @@ async def test_hydrate_clamps_out_of_range_override(monkeypatch):
     orch = await pool._hydrate_from_db("s1")
     assert orch is not None
     assert orch.idle_timeout_override == config.CONVERSATION_TIMEOUT_MAX
+
+
+async def test_hydrate_preserves_never_sentinel(monkeypatch):
+    """The -1 sentinel must round-trip through cold-resume without being clamped."""
+    pool = _build_pool()
+
+    async def fake_get(session_id, limit=1):
+        return [{
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "prior"},
+            ],
+            "metadata": {"idle_timeout_override": -1},
+        }]
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "selene_agent.orchestrator.AgentOrchestrator.prepare",
+        AsyncMock(),
+    )
+
+    orch = await pool._hydrate_from_db("s1")
+    assert orch is not None
+    assert orch.idle_timeout_override == -1
 
 
 async def test_hydrate_ignores_garbage_override(monkeypatch):

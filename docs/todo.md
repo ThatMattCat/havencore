@@ -2,17 +2,13 @@
 
 Forward-looking items that aren't in-flight. Each bullet is a seed for a later pass; details to be fleshed out when the work is picked up.
 
-## Chat / session lifecycle
-
-- **Disable (or vastly raise) idle-summarize for dashboard chat sessions.** Today every session inherits `CONVERSATION_TIMEOUT` (default ~90s) unless the client passes `X-Idle-Timeout` / `idle_timeout`; after that window the idle sweep runs `_summarize_and_reset` and the thread is silently compressed. For an interactive dashboard tab this is the wrong default — the user expects a conversation to last until they hit "New Chat." Options: (a) dashboard sends a very large `idle_timeout` on every WS open frame, (b) add a sentinel value (`0` / `-1` / `null`) meaning "never auto-reset" and wire it through `effective_timeout()` and the sweep. Keep pucks/satellites on the current short window — they want summarization.
-
 ## Resume-from-history UX
 
 - **Resume should repopulate `/chat` with the orchestrator's actual `messages`, not an empty pane.** Today the Resume button hydrates the session server-side and navigates to `/chat`, but the chat transcript doesn't visually reflect what the LLM will see on the next turn. After resume, the Chat pane should clear any stale transcript and render exactly the post-hydrate `messages` — i.e. `[system prompt + L4] + [Prior conversation summary] + tail exchanges`, with the base system prompt hidden and the summary shown in the same distinct styling we use on `/history`. The user should see what the model sees.
 
-## Dashboard session timeout isn't respected
+## Context-size-triggered summarization
 
-- **Investigate why the dashboard's "idle timeout" setting seems shorter than configured.** At least one session hit `session_summarize_reset` well before the UI's configured timeout should have fired. Candidates: (a) the UI value isn't being sent on the WS open frame or gets overwritten by a later message without `idle_timeout`, (b) `effective_timeout()` falls back to `CONVERSATION_TIMEOUT` when the field is null/0, (c) the sweep runs against a stale orchestrator snapshot. Repro: set a long timeout in the UI, leave a session idle just under it, confirm no reset fires. This overlaps with the first TODO but deserves its own diagnosis pass first.
+- **Auto-summarize any session when its context size crosses a threshold.** With the dashboard's `idle_timeout=-1` sentinel, dashboard sessions now never auto-reset on idle — they live until "New Chat" or LRU eviction, and their message list grows unbounded. Pucks/satellites also risk this if a single exchange balloons (long tool outputs, big multimodal payloads). Add a size-based trigger parallel to the idle one: when total token/char count of `messages` exceeds some limit (TBD — probably a fraction of the model's context window, e.g. 75%), fire `_summarize_and_reset(reason="context_size_summarize")`. Hook points: likely in `AgentOrchestrator.run()` alongside the existing `_check_session_timeout()` call (`orchestrator.py:411`), and/or as a second gate in the pool sweep. Needs: (a) a cheap token-count estimator (reuse whatever the metrics path uses, or a char/4 approximation), (b) a new config var `CONVERSATION_CONTEXT_LIMIT_TOKENS` or similar, (c) a way to bypass/override for dashboard sessions if the user wants truly unbounded, or to set a higher ceiling there. Keep the `idle_timeout=-1` sentinel path unaffected — this is a separate axis.
 
 ## History detail parity with what the LLM received
 

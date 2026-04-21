@@ -85,6 +85,8 @@ Clients can widen or tighten the idle window for a single session without touchi
 
 The value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` (defaults 10 and 3600). Bad values are logged and ignored. The override is stored on the live orchestrator and persisted into `metadata.idle_timeout_override` so that cold-resume via `POST /api/conversations/{session_id}/resume` rehydrates the same window.
 
+The sentinel value `-1` means "never auto-summarize" — it bypasses the clamp and causes both the pool's idle sweep and `AgentOrchestrator._check_session_timeout()` (the turn-start check) to skip this session. The dashboard sends `-1` on every WS open so an interactive tab lives until the user hits "New Chat" or the pool LRU-evicts it; satellites/pucks omit the field and get the global default. A `-1` session still flushes to Postgres via LRU eviction or shutdown, just without a `rolling_summary` — `reset_reason` will be `lru_eviction` or `shutdown_flush`, not `idle_timeout_summarize`.
+
 ### Device attribution
 
 Clients can label which satellite/tab/puck is driving the session so the dashboard can render "Kitchen Speaker asked X" instead of an opaque session id:

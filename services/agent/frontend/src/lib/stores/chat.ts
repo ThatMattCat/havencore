@@ -123,7 +123,11 @@ export function connect() {
 		// will either honor it, cold-resume from DB, or mint a new one.
 		const sid = get(currentSessionId);
 		const dname = get(currentDeviceName);
-		const frame: Record<string, unknown> = { type: 'session', session_id: sid };
+		const frame: Record<string, unknown> = {
+			type: 'session',
+			session_id: sid,
+			idle_timeout: -1,
+		};
 		if (dname) frame.device_name = dname;
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			ws.send(JSON.stringify(frame));

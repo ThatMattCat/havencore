@@ -188,7 +188,11 @@ Per-session override: clients can pass `X-Idle-Timeout: <seconds>` on
 `{"type":"session", ...}` WebSocket frame (first frame or mid-stream), to
 widen or tighten the idle window for that session. The value sticks for
 the session's life (or until another turn sends a new value) and is
-persisted alongside the conversation for cold resume. The same surfaces
+persisted alongside the conversation for cold resume. Passing `-1` is a
+sentinel meaning "never auto-summarize" — the idle sweep and the
+turn-start check both skip the session. The dashboard sends `-1` on every
+WS open so interactive tabs live until the user hits "New Chat"; pucks
+and satellites omit the field and inherit the global default. The same surfaces
 also accept an optional `X-Device-Name` header (REST) or `device_name`
 field (WS) carrying a human-readable satellite/client label (e.g.
 `"Kitchen Speaker"`); see

@@ -1,7 +1,8 @@
 """Tests for per-session idle_timeout_override and _apply_idle_timeout_override helper."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -76,3 +77,35 @@ def test_apply_override_negative_clamps_to_min():
     orch = _make_orch()
     _apply_idle_timeout_override(orch, -10)
     assert orch.idle_timeout_override == config.CONVERSATION_TIMEOUT_MIN
+
+
+def test_apply_override_negative_one_is_never_sentinel():
+    """-1 means "never auto-summarize" and bypasses the MIN clamp."""
+    orch = _make_orch()
+    _apply_idle_timeout_override(orch, -1)
+    assert orch.idle_timeout_override == -1
+
+
+def test_apply_override_negative_one_string():
+    orch = _make_orch()
+    _apply_idle_timeout_override(orch, "-1")
+    assert orch.idle_timeout_override == -1
+
+
+def test_effective_timeout_returns_negative_one_for_never_sentinel():
+    orch = _make_orch(override=-1)
+    assert orch.effective_timeout() == -1
+
+
+async def test_check_session_timeout_skips_never_sentinel():
+    """Regression: _check_session_timeout runs at the start of every turn.
+    With override=-1 and any elapsed time, it must NOT call _summarize_and_reset.
+    Prior to the fix, `elapsed > -1` was always True and every new turn triggered
+    a summary.
+    """
+    orch = _make_orch(override=-1)
+    orch.last_query_time = time.time() - 600  # 10 minutes "idle"
+    orch._summarize_and_reset = AsyncMock()  # type: ignore[assignment]
+
+    await orch._check_session_timeout()
+    orch._summarize_and_reset.assert_not_called()

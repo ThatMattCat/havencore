@@ -143,3 +143,32 @@ def test_ws_bad_idle_timeout_in_frame_ignored(app_and_pool):
         ws.send_json({"type": "session", "session_id": "pinned-sid", "idle_timeout": "nope"})
         ws.receive_json()
         assert pool.orch.idle_timeout_override is None
+
+
+def test_rest_x_idle_timeout_negative_one_sentinel(app_and_pool):
+    """REST X-Idle-Timeout: -1 applies the "never" sentinel unclamped."""
+    app, pool = app_and_pool
+    client = TestClient(app)
+
+    r = client.post(
+        "/api/chat",
+        headers={"X-Idle-Timeout": "-1"},
+        json={"message": "hi"},
+    )
+    assert r.status_code == 200
+    assert pool.orch.idle_timeout_override == -1
+
+
+def test_ws_first_frame_idle_timeout_negative_one_sentinel(app_and_pool):
+    """WS first-frame idle_timeout=-1 applies the "never" sentinel unclamped.
+
+    This is the wire shape the dashboard client sends on every WS open.
+    """
+    app, pool = app_and_pool
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.send_json({"type": "session", "session_id": "pinned-sid", "idle_timeout": -1})
+        announcement = ws.receive_json()
+        assert announcement["type"] == "session"
+        assert pool.orch.idle_timeout_override == -1

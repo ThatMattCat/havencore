@@ -511,6 +511,7 @@ CONVERSATION_TIMEOUT=90
 # CONVERSATION_TIMEOUT_MAX=3600]):
 #   REST:  POST /api/chat  -H "X-Idle-Timeout: 45"
 #   WS:    {"type":"session","session_id":"...","idle_timeout":45}
+# Sentinel -1 = "never auto-summarize" (bypasses clamp; dashboard uses this).
 ```
 
 ```sql
