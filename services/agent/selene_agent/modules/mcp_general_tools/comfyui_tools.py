@@ -151,7 +151,7 @@ class ComfyUIClient:
             
             downloaded.append({
                 "path": str(output_path),
-                "url": f"http://{os.getenv('HOST_IP_ADDRESS')}:6006/outputs/{img['filename']}",
+                "url": f"http://{os.getenv('HOST_IP_ADDRESS')}:6002/outputs/{img['filename']}",
                 "filename": img['filename']
             })
         
