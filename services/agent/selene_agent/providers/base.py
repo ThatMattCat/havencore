@@ -41,3 +41,13 @@ class LLMProvider(Protocol):
         caching (vLLM, OpenAI stub) return zeros.
         """
         ...
+
+    def pop_last_reasoning(self) -> Optional[str]:
+        """Return any chain-of-thought the backend surfaced on the most recent
+        chat_completion call and clear internal state. ``None`` if absent.
+
+        Providers wrap vendor-specific fields (vLLM's ``reasoning_content``,
+        future OpenAI o-series ``reasoning`` field) behind this single hook so
+        the orchestrator can ship a uniform REASONING event.
+        """
+        ...

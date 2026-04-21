@@ -159,6 +159,11 @@ async def chat(
     lock = pool.lock_for(session_id)
     async with lock:
         async for event in orchestrator.run(request.message):
+            # REASONING events are dashboard-only chain-of-thought surfaced on
+            # /ws/chat. Drop them from the REST response so satellites and
+            # other REST callers never see the CoT text.
+            if event.type == EventType.REASONING:
+                continue
             events.append({"type": event.type.value, **event.data})
             if event.type == EventType.METRIC:
                 await metrics_db.record_turn(

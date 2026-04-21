@@ -124,7 +124,7 @@ export interface ChatResponse {
 }
 
 export interface ChatEvent {
-	type: 'thinking' | 'tool_call' | 'tool_result' | 'metric' | 'done' | 'error' | 'summary_reset' | 'session';
+	type: 'thinking' | 'tool_call' | 'tool_result' | 'reasoning' | 'metric' | 'done' | 'error' | 'summary_reset' | 'session';
 	[key: string]: any;
 }
 
