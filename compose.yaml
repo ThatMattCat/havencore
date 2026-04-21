@@ -160,6 +160,7 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
+### Re-enable IAV in nginx as well, when turning this back on
   # iav-to-text:
   #     build:
   #       context: ./services/iav-to-text
