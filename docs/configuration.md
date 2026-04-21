@@ -300,18 +300,30 @@ Per-server reference docs live under
 ### LLM Backend Configuration
 
 #### vLLM Configuration (Default)
-Defined in `compose.yaml` (Qwen2.5-72B-Instruct-AWQ, served under the
-OpenAI-compat name `gpt-3.5-turbo` for client convenience):
+Defined in `compose.yaml` (GLM-4.5-Air-AWQ-FP16Mix, a MoE reasoning
+model served under the OpenAI-compat name `gpt-3.5-turbo` for client
+convenience):
 
 ```yaml
-command: [
-  "--model", "Qwen/Qwen2.5-72B-Instruct-AWQ",
-  "--served-model-name", "gpt-3.5-turbo",
-  "--gpu-memory-utilization", "0.9",
-  "--max-model-len", "16384",
-  "--dtype", "auto"
-]
+command: >
+  --model QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+  --served-model-name gpt-3.5-turbo
+  --tensor-parallel-size 4
+  --enable-expert-parallel
+  --max-model-len 32768
+  --max-num-seqs 2
+  --gpu-memory-utilization 0.77
+  --tool-call-parser glm45
+  --reasoning-parser glm45
+  --enable-auto-tool-choice
+  --trust-remote-code
 ```
+
+`--reasoning-parser glm45` splits the model's `<think>…</think>`
+chain-of-thought into a separate `reasoning` field on the response,
+keeping `message.content` clean for voice satellites. The agent surfaces
+the CoT as a dashboard-only `REASONING` event on `/ws/chat` — see
+[Agent → WebSocket event schema](api-reference.md#websockets).
 
 **Key Parameters**:
 - `--model`: HuggingFace model path
@@ -544,7 +556,7 @@ docker compose exec agent curl https://api.weatherapi.com
 echo $HF_HUB_TOKEN
 
 # Pre-download models
-huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
+huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
 
 # Check disk space
 df -h

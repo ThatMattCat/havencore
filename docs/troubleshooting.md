@@ -122,7 +122,7 @@ export HF_HUB_TOKEN="your_token_here"
 
 # Pre-download models manually
 huggingface-cli login
-huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
+huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
 
 # Check token in container
 docker compose exec agent env | grep HF_HUB_TOKEN
@@ -139,7 +139,7 @@ Downloading... (very slow or hanging)
 export HF_ENDPOINT="https://hf-mirror.com"
 
 # Download with resume capability
-huggingface-cli download --resume-download Qwen/Qwen2.5-72B-Instruct-AWQ
+huggingface-cli download --resume-download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
 
 # Check network connectivity
 curl -I https://huggingface.co
@@ -148,9 +148,10 @@ curl -I https://huggingface.co
 ### GPU and Model Loading Issues
 
 These are the most common first-run failures for the default
-Qwen2.5-72B-AWQ stack. All require `nvidia-smi` to work on the host
-before anything else — if it doesn't, fix the driver/container-toolkit
-install first.
+GLM-4.5-Air-AWQ-FP16Mix stack (MoE, `-tp 4 --enable-expert-parallel` on
+4× 24 GB cards). All require `nvidia-smi` to work on the host before
+anything else — if it doesn't, fix the driver/container-toolkit install
+first.
 
 #### Symptom: vLLM exits during startup with CUDA OOM
 ```
@@ -158,27 +159,34 @@ torch.cuda.OutOfMemoryError: CUDA out of memory.
 Tried to allocate XXX MiB. GPU 0 has total capacity of 23.69 GiB
 ```
 
-**Cause**: the 72B AWQ model does not fit on a single 24 GB card. It
-needs ~35 GB of VRAM for weights alone plus KV cache headroom — plan
-on ≥ 48 GB total split across two cards, or swap to a smaller model.
+**Cause**: the MoE model's per-shard working set plus KV cache is
+exceeding available VRAM on one of the GPUs — typically because an aux
+service (TTS/STT/iav-to-text/embeddings) is co-pinned on that card and
+holding VRAM vLLM wanted. With `-tp 4` vLLM occupies *all four* cards
+simultaneously, so every aux service shares with it.
 
 **Solutions**:
 
 ```bash
-# 1. Use both GPUs via tensor parallelism (edit compose.yaml vllm service):
-#    command: --model Qwen/Qwen2.5-72B-Instruct-AWQ --tensor-parallel-size 2 ...
-#    and make sure `deploy.resources.reservations.devices` grants both GPUs.
+# 1. Lower vLLM's per-GPU allowance so aux services have more headroom:
+#    --gpu-memory-utilization 0.72   (default in compose is 0.77)
 
-# 2. Shrink the KV cache window rather than the model:
-#    --max-model-len 8192   (default is model-dependent; often 32k)
+# 2. Shrink the KV cache window:
+#    --max-model-len 16384           (default in compose is 32768)
 
-# 3. Swap to a smaller model that fits on one card, e.g. Qwen2.5-7B-Instruct
-#    or Llama-3.1-8B-Instruct-AWQ — edit the --model arg and pull fresh weights.
+# 3. Move aux services to GPUs that don't spike at the same time:
+#    - iav-to-text: compose.yaml `CUDA_VISIBLE_DEVICES=2`
+#    - embeddings:  compose.yaml `CUDA_VISIBLE_DEVICES=3`
+#    - TTS/STT:     .env `TTS_DEVICE` / `STT_DEVICE`
+#    STT/TTS run sequentially with the LLM turn, so co-pinning is OK.
 
-# 4. Confirm nothing else is holding VRAM:
+# 4. Swap to a smaller non-MoE model that fits on fewer GPUs, e.g.
+#    Qwen2.5-72B-Instruct-AWQ (2× 24 GB via -tp 2) or Qwen2.5-14B-AWQ
+#    (single 24 GB card). Drop --tool-call-parser/--reasoning-parser glm45
+#    and --enable-expert-parallel when swapping away from GLM.
+
+# 5. Confirm nothing else is holding VRAM:
 nvidia-smi
-# If text-to-speech / text-to-image / iav-to-text are pinning a GPU you
-# expected vLLM to use, check TTS_DEVICE / STT_DEVICE assignments in .env.
 ```
 
 #### Symptom: vLLM startup hangs for more than 20 minutes
@@ -434,9 +442,9 @@ nvidia-smi
 # Reduce GPU memory utilization
 # Edit compose.yaml:
 command: [
-  "--model", "Qwen/Qwen2.5-72B-Instruct-AWQ",
-  "--gpu-memory-utilization", "0.7",  # Reduced from 0.9
-  "--max-model-len", "16384"          # Reduced context length
+  "--model", "QuantTrio/GLM-4.5-Air-AWQ-FP16Mix",
+  "--gpu-memory-utilization", "0.7",  # Reduced from 0.77
+  "--max-model-len", "16384"          # Reduced from 32768
 ]
 
 # Check model exists
@@ -990,7 +998,7 @@ docker compose exec postgres psql -U havencore -d havencore -f /docker-entrypoin
 #### Model Recovery
 ```bash
 # Re-download models
-docker compose exec agent huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
+docker compose exec agent huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
 
 # Clear model cache and restart
 docker compose exec vllm rm -rf /root/.cache/huggingface/

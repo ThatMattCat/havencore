@@ -8,9 +8,12 @@ Before starting, ensure you have:
 
 ### Hardware Requirements
 - **NVIDIA GPU(s)**: Required for AI model inference. The default vLLM
-  model (Qwen2.5-72B-Instruct-AWQ) needs roughly 48GB of VRAM on its own.
-  STT, TTS, vision, and image-gen each want additional GPU space — a
-  multi-GPU host is recommended.
+  model (GLM-4.5-Air-AWQ-FP16Mix, MoE ~106B total / ~12B active) needs
+  roughly 72 GB of VRAM sharded across 4× 24 GB cards via
+  `-tp 4 --enable-expert-parallel`. STT, TTS, vision, and image-gen
+  contend for leftover VRAM on whichever card you pin them to — a
+  4-GPU host is the target. Fewer-GPU configurations work if you swap
+  in a smaller/non-MoE model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB).
 - **RAM**: Minimum 32GB, recommended 64GB+
 - **Storage**: At least 150GB free space for model weights, container
   images, and Docker volumes.
@@ -156,7 +159,7 @@ docker compose build --no-cache --progress=plain
 #### Model Download Issues
 ```bash
 # Pre-download models manually
-huggingface-cli download Qwen/Qwen2.5-72B-Instruct-AWQ
+huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
 
 # Check network connectivity
 curl -I https://huggingface.co

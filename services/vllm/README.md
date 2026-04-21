@@ -8,7 +8,7 @@ talks to as `gpt-3.5-turbo`.
 | **Port** | `8000` (HTTP, `/v1/*`) |
 | **Health** | `curl http://localhost:8000/v1/models` |
 | **Image** | `vllm/vllm-openai` pinned to v0.19.0 digest in `compose.yaml` |
-| **Model** | `Qwen/Qwen2.5-72B-Instruct-AWQ` by default (~35 GB, needs ≥48 GB VRAM across 2 cards) |
+| **Model** | `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` by default — MoE (~106B total / ~12B active), sharded across 4× 24 GB GPUs with `-tp 4 --enable-expert-parallel`. `--reasoning-parser glm45` splits CoT into a separate `reasoning` field so `message.content` stays clean for voice satellites. |
 
 ## Key env / config
 

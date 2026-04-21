@@ -21,14 +21,30 @@ work without reconfiguration.
 vllm:
   image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
   command: >
-    --model Qwen/Qwen2.5-72B-Instruct-AWQ
+    --model QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
     --served-model-name gpt-3.5-turbo
-    --quantization awq_marlin
-    --max-num-seqs 1
-    --enforce-eager
-    -tp 2
-    --max-model-len 16384
+    --tensor-parallel-size 4
+    --enable-expert-parallel
+    --max-model-len 32768
+    --max-num-seqs 2
+    --gpu-memory-utilization 0.77
+    --tool-call-parser glm45
+    --reasoning-parser glm45
+    --enable-auto-tool-choice
+    --trust-remote-code
+    --host 0.0.0.0
+    --port 8000
 ```
+
+GLM-4.5-Air is a MoE model (~106B total / ~12B active parameters) that
+needs `--enable-expert-parallel` when sharded, and `--trust-remote-code`
+for the HuggingFace modeling files. `--reasoning-parser glm45` splits the
+model's `<think>…</think>` chain-of-thought into a separate `reasoning`
+field on the response so `message.content` stays clean for voice
+satellites; the agent surfaces that reasoning as a dashboard-only
+`REASONING` event on `/ws/chat` (filtered out of `/api/chat` and
+`/v1/chat/completions`). `--tool-call-parser glm45` wires native
+function-calling on the same model.
 
 ## Command-line options
 
@@ -50,10 +66,12 @@ vllm:
 Popular model options:
 
 ```yaml
-# Default — high quality, fits on a pair of 24GB GPUs with AWQ-Marlin
-"Qwen/Qwen2.5-72B-Instruct-AWQ"
+# Default — MoE reasoning model (~106B total / ~12B active), served across
+# 4× 24 GB GPUs via tensor parallelism + expert parallelism
+"QuantTrio/GLM-4.5-Air-AWQ-FP16Mix"
 
-# Smaller alternatives
+# Smaller non-reasoning alternatives (drop --reasoning-parser / --tool-call-parser glm45)
+"Qwen/Qwen2.5-72B-Instruct-AWQ"        # prior default, 2× 24 GB via -tp 2
 "Qwen/Qwen2.5-14B-Instruct-AWQ"
 "microsoft/Phi-3-medium-4k-instruct"
 ```
