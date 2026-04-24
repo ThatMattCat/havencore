@@ -51,6 +51,7 @@ services:
       start_period: 900s
     volumes:
       - ./services/agent/:/app
+      - github_repo_clone:/var/cache/havencore/repo_clone
       # - ./shared:/app/shared:ro
     ports:
       - "6002:6002" # FastAPI: UI, API, and OpenAI-compat endpoints
@@ -356,3 +357,4 @@ services:
 
 volumes:
   postgres_data:
+  github_repo_clone:

@@ -12,6 +12,7 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 | General Tools | `mcp_general_tools` | Up to 7 (credential-gated) — weather, Brave, Wolfram, Wikipedia, ComfyUI, Signal messaging, multimodal vision | [general.md](general.md) |
 | Qdrant | `mcp_qdrant_tools` | 2 — semantic memory store/search on Qdrant + bge embeddings | [qdrant.md](qdrant.md) |
 | MQTT / Cameras | `mcp_mqtt_tools` | 1 — camera snapshot trigger via HA + MQTT round-trip | [mqtt.md](mqtt.md) |
+| GitHub | `mcp_github_tools` | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues | [github.md](github.md) |
 
 ## Writing new tools
 

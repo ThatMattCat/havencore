@@ -270,8 +270,8 @@ Notes:
 ### MCP (Model Context Protocol) Configuration
 
 The agent's tool surface is delivered by MCP servers bundled in the agent
-image (Home Assistant, Plex, Music Assistant, general, Qdrant, MQTT).
-They are spawned as subprocesses and advertise tools over stdio — no
+image (Home Assistant, Plex, Music Assistant, general, Qdrant, MQTT,
+GitHub). They are spawned as subprocesses and advertise tools over stdio — no
 separate container.
 
 ```bash
@@ -288,9 +288,44 @@ MCP_SERVERS='[
   {"name": "music_assistant",  "command": "python", "args": ["-m", "selene_agent.modules.mcp_music_assistant_tools"],  "enabled": true},
   {"name": "general",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],          "enabled": true},
   {"name": "qdrant",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],           "enabled": true},
-  {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true}
+  {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true},
+  {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true}
 ]'
 ```
+
+### GitHub (self-inspection + issue filing)
+
+Grants the agent read-only access to its own source (via a
+container-managed local clone) and the ability to list / read / file
+GitHub Issues. Full reference:
+[services/agent/tools/github.md](services/agent/tools/github.md).
+
+```bash
+# Fine-grained PAT scoped to the target repo. Scopes required:
+#   Contents: Read       (for git clone / fetch)
+#   Issues:   Read&write  (for list / get / create)
+GITHUB_TOKEN=""
+
+# owner/name of the repo Selene reads and files issues against
+GITHUB_REPO="thatmattcat/havencore"
+
+# Container path where the local clone lives. Backed by the named
+# volume github_repo_clone declared in compose.yaml.
+GITHUB_CLONE_PATH="/var/cache/havencore/repo_clone"
+
+# Sliding-window per-hour cap on github_create_issue calls. Guards
+# against runaway loops. Deliberately low — raise only after observing
+# responsible behavior.
+GITHUB_MAX_ISSUES_PER_HOUR=5
+```
+
+Issue bodies and comments returned by `github_list_issues` /
+`github_get_issue` are wrapped in `<UNTRUSTED_USER_TEXT author="...">`
+markers — the system prompt tells the model to treat text inside those
+blocks as data rather than instructions. Do not strip the markers.
+
+`git` and `ripgrep` are installed into the agent image for this
+module's code-search path.
 
 Per-server reference docs live under
 [`services/agent/tools/`](services/agent/tools/README.md).
