@@ -43,6 +43,12 @@ class EventType(str, Enum):
     DONE = "done"
     ERROR = "error"
     SUMMARY_RESET = "summary_reset"
+    # Dashboard-only chain-of-thought surfaced from reasoning-capable models
+    # (e.g. GLM-4.5 via vLLM's --reasoning-parser). Deliberately not consumed
+    # by /api/chat, /v1/chat/completions, satellites, conversation_db, or
+    # turn_metrics — see api/chat.py REST filter and orchestrator.run() where
+    # this event is yielded but never appended to self.messages.
+    REASONING = "reasoning"
 
 
 @dataclass
@@ -58,6 +64,26 @@ def truncate_tool_result(result: str, max_chars: int = TOOL_RESULT_MAX_CHARS) ->
         return result
     omitted = len(result) - max_chars
     return result[:max_chars] + f"\n[...truncated, {omitted} chars omitted]"
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think_blocks(text: str) -> tuple[str, Optional[str]]:
+    """Pull ``<think>…</think>`` blocks out of raw model content.
+
+    Returns ``(clean_text, extracted_reasoning)``. ``extracted_reasoning`` is
+    ``None`` when no blocks were present. Multiple blocks are concatenated
+    with a blank line between them. Belt-and-suspenders for when vLLM's
+    reasoning parser is unavailable or misses an edge case.
+    """
+    if not text or "<think>" not in text.lower():
+        return text, None
+    captured = [m.group(1).strip() for m in _THINK_BLOCK_RE.finditer(text)]
+    captured = [c for c in captured if c]
+    cleaned = _THINK_BLOCK_RE.sub("", text).strip()
+    reasoning = "\n\n".join(captured) if captured else None
+    return cleaned, reasoning
 
 
 class AgentOrchestrator:
@@ -472,6 +498,35 @@ class AgentOrchestrator:
                 assistant_message = response.choices[0].message
                 logger.debug(f"Assistant response: {assistant_message}")
 
+                # Reasoning capture (dashboard-only). Pulls from two sources:
+                #   1. Provider's reasoning_content hook — populated when vLLM's
+                #      --reasoning-parser split <think>…</think> server-side.
+                #   2. Defensive strip of the raw content — catches cases where
+                #      the parser missed or isn't available (wrong vLLM version,
+                #      different model). Both sources are combined so no CoT is
+                #      lost. Neither is appended to self.messages — after this
+                #      block, assistant_message.content is the cleaned answer.
+                try:
+                    provider_reasoning = provider.pop_last_reasoning()
+                except AttributeError:
+                    provider_reasoning = None
+                stripped_reasoning: Optional[str] = None
+                if assistant_message.content:
+                    cleaned, stripped_reasoning = strip_think_blocks(
+                        assistant_message.content
+                    )
+                    if stripped_reasoning is not None:
+                        assistant_message.content = cleaned
+                reasoning_parts = [r for r in (provider_reasoning, stripped_reasoning) if r]
+                if reasoning_parts:
+                    yield AgentEvent(
+                        type=EventType.REASONING,
+                        data={
+                            "content": "\n\n".join(reasoning_parts),
+                            "iteration": iteration,
+                        },
+                    )
+
                 # Handle models that embed tool calls in content tags
                 if assistant_message.content and not assistant_message.tool_calls:
                     tool_calls_extracted = self._extract_tool_calls_from_content(
@@ -495,7 +550,15 @@ class AgentOrchestrator:
 
                 if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls == []:
                     assistant_message.tool_calls = None
-                self.messages.append(assistant_message.model_dump())
+                dumped_message = assistant_message.model_dump()
+                # Pydantic's model_extra is included in model_dump() by default,
+                # so a reasoning field would otherwise ride along into history and
+                # get re-sent to the LLM on every subsequent turn. vLLM's glm45
+                # parser uses ``reasoning``; other parsers/docs use
+                # ``reasoning_content``. Strip both defensively.
+                dumped_message.pop("reasoning", None)
+                dumped_message.pop("reasoning_content", None)
+                self.messages.append(dumped_message)
 
                 # Execute tool calls
                 if assistant_message.tool_calls:

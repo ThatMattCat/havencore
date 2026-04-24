@@ -11,7 +11,7 @@ v1 shipped an event-driven AutonomyEngine with two agenda kinds (`briefing`, `an
 
 v2 turns that groundwork into a working tiered-memory system modeled on hippocampal consolidation: raw episodic entries (L2) are periodically clustered and summarized into consolidated memories (L3), and the most stable high-importance L3 entries get promoted (with user approval) into a small persistent context set (L4) that is injected into every system prompt.
 
-The user has explicitly rejected LoRA / fine-tuning as a long-term-memory mechanism. Rationale (preserved from the auto-memory record): fine-tuning learns style/patterns not facts, 72B AWQ has a painful fine-tune feedback loop, catastrophic forgetting is real, and retrieval modeling maps cleanly to plasticity-via-importance-weighting. Only revisit fine-tuning if retrieval provably can't solve a specific behavior.
+The user has explicitly rejected LoRA / fine-tuning as a long-term-memory mechanism. Rationale (preserved from the auto-memory record): fine-tuning learns style/patterns not facts, large AWQ models (e.g. GLM-4.5-Air-AWQ-FP16Mix) have a painful fine-tune feedback loop, catastrophic forgetting is real, and retrieval modeling maps cleanly to plasticity-via-importance-weighting. Only revisit fine-tuning if retrieval provably can't solve a specific behavior.
 
 ## Scope
 

@@ -293,7 +293,7 @@ no behavior change in v1.
   signature requires explicit confirmation; confirmed actions join an
   allow-list.
 - Smaller / cheaper gate model for quick triage sweeps that only escalate to
-  the full 72B LLM when interesting.
+  the full chat LLM (GLM-4.5-Air-AWQ-FP16Mix) when interesting.
 - LLM-judged watches (beyond the current deterministic template + optional
   HA state condition).
 - Declarative routine DSL (routines today construct an `AutonomousTurn` with

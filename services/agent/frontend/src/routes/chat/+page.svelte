@@ -363,6 +363,18 @@
 								<ToolCallCard {event} />
 							{/each}
 
+							<!-- Show reasoning (dashboard-only chain-of-thought) -->
+							{#each msg.events.filter(e => e.type === 'reasoning') as event, i (i)}
+								<details class="reasoning-card">
+									<summary class="reasoning-card-header">
+										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+										<span class="reasoning-card-label">Reasoning</span>
+										<span class="reasoning-card-hint">click to view</span>
+									</summary>
+									<div class="reasoning-card-body">{event.content || ''}</div>
+								</details>
+							{/each}
+
 							<!-- Show thinking indicator -->
 							{#if !msg.content && msg.events.length > 0 && !msg.events.some(e => e.type === 'done' || e.type === 'error')}
 								<div class="thinking">
@@ -950,5 +962,58 @@
 		margin-top: 8px;
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+
+	.reasoning-card {
+		background: #1a1d2e;
+		border: 1px solid #2d3148;
+		border-left: 3px solid #c4b5fd;
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin: 6px 0;
+		font-size: 13px;
+	}
+
+	.reasoning-card-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		cursor: pointer;
+		color: #c4b5fd;
+		font-weight: 600;
+		list-style: none;
+		user-select: none;
+	}
+
+	.reasoning-card-header::-webkit-details-marker {
+		display: none;
+	}
+
+	.reasoning-card-label {
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		font-size: 11px;
+	}
+
+	.reasoning-card-hint {
+		margin-left: auto;
+		color: #6b7280;
+		font-weight: 400;
+		font-size: 11px;
+		font-style: italic;
+	}
+
+	.reasoning-card[open] .reasoning-card-hint {
+		display: none;
+	}
+
+	.reasoning-card-body {
+		color: #c9cdd5;
+		line-height: 1.5;
+		margin-top: 8px;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		font-size: 12px;
 	}
 </style>

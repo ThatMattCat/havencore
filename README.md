@@ -27,7 +27,7 @@ Everything is one `docker compose up -d` away. Twelve containers, one GPU fleet,
 
 > The assistant's name is **Selene**. She lives on four RTX 3090s in my shed.
 
-> **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default Qwen2.5-72B-AWQ stack wants **≥ 48 GB VRAM split across two cards**; a single 24 GB card works if you swap in a smaller model. Plan on ~60 GB of disk for images + model weights on first build.
+> **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default GLM-4.5-Air-AWQ-FP16Mix stack wants **~72 GB VRAM sharded across 4× 24 GB cards** (MoE, `-tp 4 --enable-expert-parallel`); fewer/smaller GPUs work if you swap in a smaller model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB, or Qwen2.5-14B on a single card). Plan on ~60 GB of disk for images + model weights on first build.
 
 ---
 
@@ -184,7 +184,7 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 <td>
 
 **AI / ML**
-- vLLM (Qwen2.5-72B-AWQ, 2× tensor-parallel)
+- vLLM (GLM-4.5-Air-AWQ-FP16Mix, 4× tensor-parallel + expert-parallel)
 - Faster-Whisper (STT)
 - Kokoro TTS
 - Qwen2.5-Omni (vision)
@@ -269,11 +269,11 @@ git clone https://github.com/ThatMattCat/havencore.git
 cd havencore
 cp .env.tmpl .env        # fill in HOST_IP_ADDRESS, HAOS_TOKEN, API keys
 docker compose up -d     # first build: 60–90 min
-                         # first model load: 10–15 min (Qwen2.5-72B-AWQ, ~35 GB pull)
+                         # first model load: 10–15 min (GLM-4.5-Air-AWQ-FP16Mix, ~70 GB pull)
 open http://localhost    # SvelteKit dashboard
 ```
 
-Full walkthrough, hardware requirements (TL;DR: one 24 GB GPU works with a smaller model; the default 72B AWQ wants ≥48 GB split across two), NVIDIA driver pinning, and troubleshooting: [**docs/getting-started.md**](docs/getting-started.md).
+Full walkthrough, hardware requirements (TL;DR: one 24 GB GPU works with a smaller model; the default GLM-4.5-Air-AWQ wants ~72 GB sharded across 4× 24 GB cards), NVIDIA driver pinning, and troubleshooting: [**docs/getting-started.md**](docs/getting-started.md).
 
 ### Things worth knowing
 - **Hot reload for Python:** services mount their source; `docker compose restart agent` picks up edits.

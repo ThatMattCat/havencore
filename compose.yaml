@@ -51,6 +51,7 @@ services:
       start_period: 900s
     volumes:
       - ./services/agent/:/app
+      - github_repo_clone:/var/cache/havencore/repo_clone
       # - ./shared:/app/shared:ro
     ports:
       - "6002:6002" # FastAPI: UI, API, and OpenAI-compat endpoints
@@ -120,24 +121,38 @@ services:
       - ./services/vllm/app:/app
     ipc: host
     # command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ --served-model-name gpt-3.5-turbo -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .74
+      # --model Qwen/Qwen2.5-72B-Instruct-AWQ
+      # --served-model-name gpt-3.5-turbo
+      # --quantization awq_marlin
+      # --max-num-seqs 1
+      # --enforce-eager
+      # -tp 2
+      # --max-model-len 16384
+      # --port 8000
+      # --enable-auto-tool-choice
+      # --tool-call-parser hermes
+      # --gpu-memory-utilization .95
     command: >
-      --model Qwen/Qwen2.5-72B-Instruct-AWQ
+      --model QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
       --served-model-name gpt-3.5-turbo
-      --quantization awq_marlin
-      --max-num-seqs 1
-      --enforce-eager
-      -tp 2
-      --max-model-len 16384
-      --port 8000
+      --tensor-parallel-size 4
+      --enable-expert-parallel
+      --max-model-len 32768
+      --max-num-seqs 2
+      --gpu-memory-utilization 0.77
+      --tool-call-parser glm45
+      --reasoning-parser glm45
       --enable-auto-tool-choice
-      --tool-call-parser hermes
-      --gpu-memory-utilization .95
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 300s
+      start_period: 2000s
     deploy:
       resources:
         reservations:
@@ -146,34 +161,35 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-  iav-to-text:
-      build:
-        context: ./services/iav-to-text
-        dockerfile: Dockerfile
-      runtime: nvidia
-      environment:
-        - CUDA_VISIBLE_DEVICES=2
-      ports:
-        - "8100:8100"  # vLLM API port
-        - "8110:8110"  # Gradio UI port
-      volumes:
-        - ~/.cache/huggingface:/root/.cache/huggingface
-        - ./services/iav-to-text/app:/app
-      ipc: host
-      healthcheck:
-        test: ["CMD", "curl", "-f", "http://localhost:8100/v1/models"]
-        interval: 15s
-        timeout: 5s
-        retries: 5
-        start_period: 300s
-      deploy:
-        resources:
-          reservations:
-            devices:
-              - driver: nvidia
-                count: all
-                capabilities: [gpu]
-      restart: unless-stopped
+### Re-enable IAV in nginx as well, when turning this back on
+  # iav-to-text:
+  #     build:
+  #       context: ./services/iav-to-text
+  #       dockerfile: Dockerfile
+  #     runtime: nvidia
+  #     environment:
+  #       - CUDA_VISIBLE_DEVICES=2
+  #     ports:
+  #       - "8100:8100"  # vLLM API port
+  #       - "8110:8110"  # Gradio UI port
+  #     volumes:
+  #       - ~/.cache/huggingface:/root/.cache/huggingface
+  #       - ./services/iav-to-text/app:/app
+  #     ipc: host
+  #     healthcheck:
+  #       test: ["CMD", "curl", "-f", "http://localhost:8100/v1/models"]
+  #       interval: 15s
+  #       timeout: 5s
+  #       retries: 5
+  #       start_period: 300s
+  #     deploy:
+  #       resources:
+  #         reservations:
+  #           devices:
+  #             - driver: nvidia
+  #               count: all
+  #               capabilities: [gpu]
+  #     restart: unless-stopped
   mosquitto:
     # Rollback digest (known-good 2026-04-12):
     #   eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
@@ -298,7 +314,7 @@ services:
       - QDRANT__LOG_LEVEL=INFO
       - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -329,7 +345,7 @@ services:
     environment:
       - MODEL_ID=BAAI/bge-large-en-v1.5
       - PORT=3000
-      - CUDA_VISIBLE_DEVICES=3  # Set to the GPU index you want to use (e.g., 3)
+      - CUDA_VISIBLE_DEVICES=2  # Set to the GPU index you want to use (e.g., 3)
     deploy:
       resources:
         reservations: # GPU Device to use is configured in shared_config.py
@@ -341,3 +357,4 @@ services:
 
 volumes:
   postgres_data:
+  github_repo_clone:
