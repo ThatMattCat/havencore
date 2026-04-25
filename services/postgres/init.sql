@@ -34,3 +34,46 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
 
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_created_at ON turn_metrics (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_turn_metrics_session ON turn_metrics (session_id);
+
+-- Face recognition: identities, enrolled images, and detection history.
+-- The face-recognition service runs the same DDL as an idempotent migration
+-- on startup, so existing deployments don't need a DB rebuild — both paths
+-- must stay in sync.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS people (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL UNIQUE,
+    access_level TEXT NOT NULL DEFAULT 'unknown',
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS face_images (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    person_id UUID NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    qdrant_point_id UUID NOT NULL,
+    is_primary BOOLEAN DEFAULT false,
+    source TEXT NOT NULL,
+    quality_score REAL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_face_images_person ON face_images(person_id);
+
+CREATE TABLE IF NOT EXISTS face_detections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL,
+    camera TEXT NOT NULL,
+    captured_at TIMESTAMPTZ DEFAULT now(),
+    person_id UUID REFERENCES people(id) ON DELETE SET NULL,
+    confidence REAL,
+    quality_score REAL,
+    snapshot_path TEXT NOT NULL,
+    review_state TEXT NOT NULL DEFAULT 'auto',
+    embedding_contributed BOOLEAN DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_face_detections_captured ON face_detections(captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_face_detections_unknown
+    ON face_detections(review_state) WHERE person_id IS NULL;
