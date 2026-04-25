@@ -1,9 +1,10 @@
 """FastAPI entrypoint for the face-recognition service.
 
-Step 2 scope: model loads on GPU, Postgres pool initializes + migrations
-run, Qdrant `faces` collection is bootstrapped. /health reports each.
-HA snapshot capture, MQTT bridge, and the detection pipeline arrive in
-later steps.
+Lifespan ordering:
+  embedder.prepare()  →  db.initialize() + migrate()  →  qdrant ensure
+  →  mqtt bridge.start()
+The MQTT bridge starts last because it's the first component that can
+actually trigger pipeline work; everything it depends on must be ready.
 """
 
 import logging
@@ -12,11 +13,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 import config
+from api import cameras as cameras_api
 from api import detections as detections_api
 from api import people as people_api
 from db import db
 from embedder import embedder
 from face_qdrant import vector_store
+from mqtt_bridge import bridge as mqtt_bridge
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,17 +43,25 @@ async def lifespan(_: FastAPI):
 
     vector_store.ensure_collection()
 
+    if config.MQTT_ENABLED:
+        await mqtt_bridge.start()
+    else:
+        logger.warning("FACE_REC_MQTT_ENABLED=false — skipping MQTT bridge")
+
     logger.info("Service ready on port %d", config.PORT)
     try:
         yield
     finally:
         logger.info("Shutting down face-recognition service")
+        if config.MQTT_ENABLED:
+            await mqtt_bridge.stop()
         await db.close()
 
 
 app = FastAPI(title="HavenCore Face Recognition", lifespan=lifespan)
 app.include_router(people_api.router)
 app.include_router(detections_api.router)
+app.include_router(cameras_api.router)
 
 
 @app.get("/health")
@@ -58,6 +69,7 @@ async def health():
     info = embedder.info
     db_ok = await db.health() if config.ENABLED else False
     qdrant_ok = vector_store.health() if config.ENABLED else False
+    mqtt_connected = mqtt_bridge.is_connected() if config.ENABLED and config.MQTT_ENABLED else False
     return {
         "ready": embedder.ready and db_ok and qdrant_ok,
         "enabled": config.ENABLED,
@@ -74,5 +86,11 @@ async def health():
             "status": "ok" if qdrant_ok else ("disabled" if not config.ENABLED else "error"),
             "collection": vector_store.collection_name,
             "dim": vector_store.dim,
+        },
+        "mqtt": {
+            "enabled": config.MQTT_ENABLED,
+            "connected": mqtt_connected,
+            "broker": f"{config.MQTT_BROKER}:{config.MQTT_PORT}",
+            "subscribed_topics": mqtt_bridge.subscribed_topics() if config.MQTT_ENABLED else [],
         },
     }

@@ -11,3 +11,4 @@ asyncpg==0.29.0
 qdrant-client==1.12.1
 python-multipart==0.0.12
 aiohttp==3.10.10
+paho-mqtt>=2.1.0,<3.0.0

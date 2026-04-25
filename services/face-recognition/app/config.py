@@ -56,3 +56,12 @@ BURST_INTERVAL_MS = _int(os.getenv("FACE_REC_BURST_INTERVAL_MS"), 500)
 SNAPSHOT_DIR = os.getenv("FACE_REC_SNAPSHOT_DIR", "/data/snapshots")
 RETENTION_UNKNOWN_DAYS = _int(os.getenv("FACE_SNAPSHOT_RETENTION_UNKNOWN_DAYS"), 30)
 RETENTION_KNOWN_DAYS = _int(os.getenv("FACE_SNAPSHOT_RETENTION_KNOWN_DAYS"), 7)
+
+# --- MQTT bridge (used in step 5+) ---
+# Default broker host matches the docker compose service name; the agent's
+# autonomy listener and mcp_mqtt_tools both use the same env vars.
+MQTT_ENABLED = _bool(os.getenv("FACE_REC_MQTT_ENABLED"), True)
+MQTT_BROKER = os.getenv("MQTT_BROKER", "mosquitto")
+MQTT_PORT = _int(os.getenv("MQTT_PORT"), 1883)
+MQTT_CLIENT_ID = os.getenv("FACE_REC_MQTT_CLIENT_ID", "havencore-face-recognition")
+MQTT_RECONNECT_MAX_SEC = _int(os.getenv("FACE_REC_MQTT_RECONNECT_MAX_SEC"), 60)
