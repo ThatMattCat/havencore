@@ -18,6 +18,11 @@ class PersonCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class PersonUpdate(BaseModel):
+    access_level: Optional[str] = Field(None, pattern=ACCESS_LEVEL_PATTERN)
+    notes: Optional[str] = None
+
+
 class PersonOut(BaseModel):
     id: UUID
     name: str
@@ -46,6 +51,33 @@ class EnrollmentResult(BaseModel):
     qdrant_point_id: UUID
     quality_score: float
     faces_detected: int
+
+
+class EnrollFromCameraRequest(BaseModel):
+    camera: str = Field(..., min_length=1, description="HA camera entity_id")
+    is_primary: bool = False
+
+
+class CameraEnrollmentResult(BaseModel):
+    id: UUID
+    qdrant_point_id: UUID
+    quality_score: float
+    frames_processed: int
+    faces_kept: int
+
+
+class DetectionOut(BaseModel):
+    id: UUID
+    event_id: UUID
+    camera: str
+    captured_at: datetime
+    person_id: Optional[UUID] = None
+    person_name: Optional[str] = None
+    confidence: Optional[float] = None
+    quality_score: Optional[float] = None
+    snapshot_path: str
+    review_state: str
+    embedding_contributed: bool
 
 
 class PipelineResult(BaseModel):

@@ -220,6 +220,38 @@ class Database:
                 "SELECT name FROM people WHERE id = $1", person_id
             )
 
+    async def update_person(
+        self,
+        person_id: UUID,
+        access_level: Optional[str],
+        notes: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        """Partial update. Returns None if person doesn't exist.
+
+        COALESCE preserves existing column values for omitted fields. Caller
+        should prevalidate `access_level` against ACCESS_LEVEL_PATTERN.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE people
+                SET access_level = COALESCE($2, access_level),
+                    notes = COALESCE($3, notes),
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING id, name, access_level, notes, created_at, updated_at
+                """,
+                person_id, access_level, notes,
+            )
+        if row is None:
+            return None
+        async with self.pool.acquire() as conn:
+            count = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM face_images WHERE person_id = $1", person_id,
+            ))
+        return dict(row) | {"image_count": count}
+
     # --- detections ----------------------------------------------------
 
     async def insert_face_detection(
@@ -248,6 +280,39 @@ class Database:
                 quality_score, snapshot_path,
             )
         return dict(row)
+
+    async def list_detections(
+        self,
+        camera: Optional[str],
+        since_seconds_ago: Optional[int],
+        person_id: Optional[UUID],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Filtered detection history, newest first.
+
+        `since_seconds_ago` is converted to an absolute timestamp here rather
+        than passed through SQL so the query plan stays parameterized cleanly.
+        LEFT JOIN people surfaces person_name (NULL for unknown rows).
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT d.id, d.event_id, d.camera, d.captured_at,
+                       d.person_id, p.name AS person_name,
+                       d.confidence, d.quality_score, d.snapshot_path,
+                       d.review_state, d.embedding_contributed
+                FROM face_detections d
+                LEFT JOIN people p ON d.person_id = p.id
+                WHERE ($1::text IS NULL OR d.camera = $1)
+                  AND ($2::int IS NULL OR d.captured_at >= now() - make_interval(secs => $2))
+                  AND ($3::uuid IS NULL OR d.person_id = $3)
+                ORDER BY d.captured_at DESC
+                LIMIT $4
+                """,
+                camera, since_seconds_ago, person_id, limit,
+            )
+        return [dict(r) for r in rows]
 
     # --- continuous improvement ---------------------------------------
 
