@@ -9,6 +9,7 @@ must stay in sync.
 import asyncio
 import logging
 import os
+from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
@@ -209,6 +210,117 @@ class Database:
                     """,
                     face_image_id, person_id, path, qdrant_point_id, source,
                     quality_score, is_primary,
+                )
+        return dict(row)
+
+    async def get_person_name(self, person_id: UUID) -> Optional[str]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT name FROM people WHERE id = $1", person_id
+            )
+
+    # --- detections ----------------------------------------------------
+
+    async def insert_face_detection(
+        self,
+        event_id: UUID,
+        camera: str,
+        captured_at: datetime,
+        person_id: Optional[UUID],
+        confidence: Optional[float],
+        quality_score: float,
+        snapshot_path: str,
+    ) -> dict[str, Any]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO face_detections
+                    (event_id, camera, captured_at, person_id, confidence,
+                     quality_score, snapshot_path)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id, event_id, camera, captured_at, person_id,
+                          confidence, quality_score, snapshot_path,
+                          review_state, embedding_contributed
+                """,
+                event_id, camera, captured_at, person_id, confidence,
+                quality_score, snapshot_path,
+            )
+        return dict(row)
+
+    # --- continuous improvement ---------------------------------------
+
+    async def count_face_images_for_person(self, person_id: UUID) -> int:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            return int(
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM face_images WHERE person_id = $1",
+                    person_id,
+                )
+            )
+
+    async def evict_oldest_non_primary_face_image(
+        self, person_id: UUID
+    ) -> Optional[dict[str, Any]]:
+        """Delete the oldest non-primary face_images row for `person_id`.
+
+        Returns the deleted row's `path` and `qdrant_point_id` so the caller
+        can clean up the file and Qdrant point. Returns None when every
+        face_image for this person is marked primary (caller should skip
+        improvement in that case).
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                DELETE FROM face_images
+                WHERE id = (
+                    SELECT id FROM face_images
+                    WHERE person_id = $1 AND is_primary = false
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                )
+                RETURNING id, path, qdrant_point_id
+                """,
+                person_id,
+            )
+        return dict(row) if row else None
+
+    async def insert_face_image_for_detection(
+        self,
+        face_image_id: UUID,
+        person_id: UUID,
+        path: str,
+        qdrant_point_id: UUID,
+        source: str,
+        quality_score: float,
+        detection_id: UUID,
+    ) -> dict[str, Any]:
+        """Insert auto-improvement face_images row + flag the detection.
+
+        Both writes happen in one transaction so a detection is never
+        marked `embedding_contributed=true` without a corresponding
+        face_images row landing.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO face_images
+                        (id, person_id, path, qdrant_point_id, source,
+                         quality_score, is_primary)
+                    VALUES ($1, $2, $3, $4, $5, $6, false)
+                    RETURNING id, path, is_primary, source, quality_score, created_at
+                    """,
+                    face_image_id, person_id, path, qdrant_point_id,
+                    source, quality_score,
+                )
+                await conn.execute(
+                    "UPDATE face_detections SET embedding_contributed = true WHERE id = $1",
+                    detection_id,
                 )
         return dict(row)
 

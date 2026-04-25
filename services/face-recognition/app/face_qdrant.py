@@ -12,7 +12,7 @@ import os
 from typing import Iterable
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, PointIdsList, PointStruct, VectorParams
 
 
 logger = logging.getLogger("face-recognition.qdrant")
@@ -62,6 +62,27 @@ class FaceVectorStore:
         self.client.upsert(
             collection_name=self.collection_name,
             points=[PointStruct(id=str(point_id), vector=list(vector), payload=payload)],
+        )
+
+    def query(self, vector: Iterable[float], limit: int = 3) -> list:
+        """Return up to `limit` nearest points (with payload) by cosine similarity.
+
+        Each hit exposes `.id`, `.score` (cosine similarity in [-1, 1] for
+        unit vectors; effectively [0, 1] for ArcFace embeddings), and
+        `.payload` (the dict stored at upsert time).
+        """
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            query=list(vector),
+            limit=limit,
+            with_payload=True,
+        )
+        return list(response.points)
+
+    def delete_point(self, point_id: str) -> None:
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=PointIdsList(points=[str(point_id)]),
         )
 
 

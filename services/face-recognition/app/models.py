@@ -46,3 +46,29 @@ class EnrollmentResult(BaseModel):
     qdrant_point_id: UUID
     quality_score: float
     faces_detected: int
+
+
+class PipelineResult(BaseModel):
+    """Result of a single trigger event through the detection pipeline.
+
+    `outcome` enumerates every terminal state so the caller can branch on a
+    string instead of inferring from null fields:
+      identified  — top-1 cosine similarity > MATCH_THRESHOLD
+      unknown     — face(s) found, top-1 below threshold
+      no_face     — frames captured, but nothing cleared QUALITY_FLOOR
+      no_frames   — burst returned zero decoded frames
+    """
+
+    outcome: str
+    event_id: UUID
+    captured_at: datetime
+    camera: str
+    detection_id: Optional[UUID] = None
+    person_id: Optional[UUID] = None
+    person_name: Optional[str] = None
+    confidence: Optional[float] = None
+    quality_score: Optional[float] = None
+    snapshot_path: Optional[str] = None
+    frames_processed: int = 0
+    faces_kept: int = 0
+    embedding_contributed: bool = False
