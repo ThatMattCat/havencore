@@ -21,7 +21,7 @@ Voice in, voice out. Your own LLM. Your own tools. Your data never leaves the bo
 
 ## What this is
 
-**HavenCore** is a production-grade personal AI assistant I built to run entirely on my own hardware — no cloud inference, no data phoned home. It hears you through a wake-word device, transcribes with Whisper, reasons with a local 72B LLM (vLLM), calls tools over MCP (Home Assistant, Plex, web search, image gen, etc.), speaks back with Kokoro TTS, and runs proactively on its own schedule when you're not looking.
+**HavenCore** is a production-grade personal AI assistant I built to run entirely on my own hardware — no cloud inference, no data phoned home. It hears you through a wake-word device, transcribes with Whisper, reasons with a local MoE LLM (GLM-4.5-Air-AWQ-FP16Mix on vLLM), calls tools over MCP (Home Assistant, Plex, web search, image gen, etc.), speaks back with Kokoro TTS, and runs proactively on its own schedule when you're not looking.
 
 Everything is one `docker compose up -d` away. Twelve containers, one GPU fleet, one dashboard.
 
@@ -140,7 +140,7 @@ Concurrent users don't share state. A [`SessionOrchestratorPool`](services/agent
 ### MCP all the way down
 Tools aren't a hardcoded registry — they're discovered at startup by a [`MCPClientManager`](services/agent/selene_agent/utils/mcp_client_manager.py) that spawns each tool server as a subprocess and speaks stdio JSON-RPC to it. A `UnifiedTool` abstraction converts MCP tool schemas to OpenAI function-calling format on the fly. Adding a tool server is a new folder with a `__main__.py`.
 
-**7 MCP servers, 41 tools** live today: Home Assistant (18), Plex (5), Music Assistant (7), Qdrant memory (2), web/Wolfram/Wikipedia/Brave/weather/image-gen/Signal (7), MQTT cameras (1), HTTP fetch (1).
+**7 MCP servers, 48 tools** live today: Home Assistant (18), Plex (5), Music Assistant (7), General — web/Wolfram/Wikipedia/Brave/weather/image-gen/Signal/vision (7), GitHub self-inspection — code search/read + Issues (7), Qdrant memory (3), MQTT cameras (1).
 
 ### Autonomy engine with actual guardrails
 Selene runs an asyncio dispatcher in the same process that fires `briefing`, `anomaly_sweep`, user-defined `reminder` / `watch` / `routine` / `memory_review` kinds. Each run:
@@ -291,7 +291,7 @@ havencore/
 ├── services/
 │   ├── agent/                # FastAPI + SvelteKit + MCP servers
 │   │   ├── selene_agent/     #   Python package: orchestrator, autonomy, api routers
-│   │   │   ├── modules/      #     MCP tool servers (general, homeassistant, qdrant, mqtt, plex, mass)
+│   │   │   ├── modules/      #     MCP tool servers (general, homeassistant, plex, mass, qdrant, mqtt, github)
 │   │   │   └── autonomy/     #     background engine (schedule, turn, tool gating, notifiers)
 │   │   └── frontend/         #   SvelteKit dashboard (static adapter)
 │   ├── speech-to-text/       # Faster-Whisper
@@ -329,7 +329,7 @@ havencore/
 
 This is a real thing I use every day — not a weekend demo. It's also unapologetically bespoke: it runs on *my* hardware, against *my* Home Assistant, with *my* Signal account as the notification channel. The repo is public and the code is readable, but config portability is an ongoing effort and there are rough edges you'd hit trying to run it cold.
 
-**What I'd point employers at:**
+**Tour the interesting bits:**
 - [`services/agent/selene_agent/orchestrator.py`](services/agent/selene_agent/orchestrator.py) — event-driven agent loop with per-turn metrics, safety limits, and session timeout handling.
 - [`services/agent/selene_agent/autonomy/`](services/agent/selene_agent/autonomy/) — autonomy engine: tier-gated tools, per-signature cooldowns, fresh-session invariant, full audit trail.
 - [`services/agent/selene_agent/utils/mcp_client_manager.py`](services/agent/selene_agent/utils/mcp_client_manager.py) — subprocess lifecycle + schema translation for MCP tool servers.
@@ -351,6 +351,5 @@ Standing on the shoulders of [vLLM](https://github.com/vllm-project/vllm), [Koko
 <div align="center">
 
 **Built by [Matt](https://github.com/ThatMattCat).**
-If you're hiring and this looks like work you'd want someone to do for you, [let's talk](https://github.com/ThatMattCat).
 
 </div>

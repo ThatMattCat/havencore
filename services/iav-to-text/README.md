@@ -2,7 +2,7 @@
 
 Image / audio / video → text service. A second vLLM instance with a
 multimodal model, plus a Gradio UI for manual testing. Surfaced to the
-agent via the `query_multimodal_ai` MCP tool — used, for example, to
+agent via the `query_multimodal_api` MCP tool — used, for example, to
 describe camera snapshots returned by Home Assistant.
 
 | | |
@@ -19,7 +19,7 @@ describe camera snapshots returned by Home Assistant.
 ## More
 
 - Deep dive: [../../docs/services/iav-to-text/README.md](../../docs/services/iav-to-text/README.md)
-- Tool usage (`query_multimodal_ai`, camera snapshot flow):
+- Tool usage (`query_multimodal_api`, camera snapshot flow):
   [../../docs/services/agent/tools/general.md](../../docs/services/agent/tools/general.md)
 - GPU contention troubleshooting:
   [../../docs/troubleshooting.md](../../docs/troubleshooting.md#gpu-and-model-loading-issues)

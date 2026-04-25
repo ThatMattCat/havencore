@@ -4,7 +4,7 @@ The core AI agent — Python + FastAPI + a built-in SvelteKit dashboard, all ser
 
 ## Subtopics
 
-- [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, general, Qdrant, MQTT, plus a tool-development guide.
+- [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, Music Assistant, general, Qdrant, MQTT, GitHub, plus a tool-development guide.
 - [Conversation history](conversation-history.md) — how timed-out conversations get persisted to Postgres.
 - [Autonomy engine (v1)](autonomy/README.md) — proactive background behaviors (morning briefing, ambient anomaly sweep) that wake on a schedule, run a tier-filtered autonomous turn, and notify via Signal message or HA push.
 - [Revamp 2026](revamp-2026.md) — architectural notes on the April 2026 rewrite (Gradio removal, async FastAPI, dashboard, streaming).
@@ -96,12 +96,13 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 
 | MCP server | Tools | Doc |
 |------------|-------|-----|
-| Home Assistant | 19 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
+| Home Assistant | 18 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
-| Music Assistant | Audio-only playback router for speakers, Chromecasts, and Google Homes (queue / play / pause / transport). | [tools/music-assistant.md](tools/music-assistant.md) |
+| Music Assistant | 7 — audio-only playback router for speakers, Chromecasts, and Google Homes (search / players / queue / play / announcement / transport). | [tools/music-assistant.md](tools/music-assistant.md) |
 | General Tools | Up to 7 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
 | Qdrant | 3 — `create_memory`, `search_memories`, `delete_memory` | [tools/qdrant.md](tools/qdrant.md) |
 | MQTT / Cameras | 1 (when MQTT is connected) — `get_camera_snapshots` | [tools/mqtt.md](tools/mqtt.md) |
+| GitHub | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues (untrusted issue text is wrapped in `<UNTRUSTED_USER_TEXT>` blocks) | [tools/github.md](tools/github.md) |
 
 See [Media Control](../../integrations/media-control.md) for the split between Plex and Home Assistant on TV playback, required TV setup, and the optional wake/launch mapping.
 

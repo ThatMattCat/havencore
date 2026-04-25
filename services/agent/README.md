@@ -25,12 +25,12 @@ The core AI agent service for HavenCore. Selene receives natural language input,
      │orchestrators)│ │           │ │ (PostgreSQL)│
      └──────┬───────┘ └─────┬─────┘ └─────────────┘
             │               │
-            │      ┌────────┼────────┬──────────┐
-            │      │        │        │          │
-            ▼      ▼        ▼        ▼          ▼
-         vLLM  general   home      qdrant     mqtt
-        (8000) _tools  assistant  _tools     _tools
-                        _tools
+            │      ┌────────┼────────┬──────────┬──────────┬──────────┬──────────┐
+            │      │        │        │          │          │          │          │
+            ▼      ▼        ▼        ▼          ▼          ▼          ▼          ▼
+         vLLM  general   home      plex      music     qdrant     mqtt      github
+        (8000) _tools  assistant  _tools   assistant   _tools    _tools     _tools
+                        _tools                _tools
 ```
 
 Everything runs on a single port (6002). There is no Gradio — the UI is a custom SvelteKit dashboard built into the Docker image and served as static files by FastAPI.
@@ -209,25 +209,64 @@ Tools are provided by MCP (Model Context Protocol) servers, each running as a su
 | `ha_list_entities` | List HA entities filtered by domain and/or area. Service-only domains (notify, tts, script) return a hint pointing at `ha_list_services`. |
 | `ha_list_services` | List callable services for an HA domain (use for notify/tts/script). |
 | `ha_execute_service` | Execute any HA service (turn on lights, lock doors, etc.) |
+| `ha_control_light` | Opinionated light control (on/off, brightness, color) |
+| `ha_control_climate` | Opinionated climate / thermostat control |
+| `ha_activate_scene` | Activate a Home Assistant scene |
+| `ha_trigger_script` | Run an HA script |
+| `ha_trigger_automation` | Trigger an HA automation by id |
+| `ha_toggle_automation` | Enable / disable an HA automation |
+| `ha_send_notification` | Send a Home Assistant notification |
+| `ha_list_areas` | List defined HA areas |
+| `ha_get_presence` | Read presence (`person`/`device_tracker`) state |
+| `ha_set_timer` | Create / arm a Home Assistant timer |
+| `ha_cancel_timer` | Cancel a running HA timer |
+| `ha_evaluate_template` | Render a Jinja2 template against HA state |
+| `ha_get_entity_history` | Retrieve recent state history for an entity |
+| `ha_get_calendar_events` | Pull events from an HA calendar |
 | `ha_control_media_player` | Play, pause, skip, volume, etc. on media players |
-| `ha_stream_media` | Stream media URLs to HA media players |
-| `ha_find_media_items` | Search for media content |
 
-### `mcp_server_qdrant` (Semantic Memory)
+### `plex`
+| Tool | Description |
+|------|-------------|
+| `plex_search` | Search the Plex library for movies, shows, music, etc. |
+| `plex_list_recent` | Recently added items |
+| `plex_list_on_deck` | "On Deck" / continue-watching list |
+| `plex_list_clients` | Reachable Plex clients |
+| `plex_play` | Play media on a Plex client (cloud-relay path) |
+
+### `music_assistant`
+| Tool | Description |
+|------|-------------|
+| `mass_search` | Search Music Assistant providers (audio only) |
+| `mass_list_players` | Enumerate Music Assistant players (speakers / Chromecasts / Google Homes) |
+| `mass_play_media` | Queue and play a media item on a player |
+| `mass_get_queue` | Inspect a player's current queue |
+| `mass_queue_clear` | Clear the queue on a player |
+| `mass_play_announcement` | Play a TTS announcement on one or more players |
+| `mass_playback_control` | Transport: play / pause / stop / next / previous / seek / volume |
+
+### `qdrant` (Semantic Memory)
 | Tool | Description |
 |------|-------------|
 | `create_memory` | Store a memory with embeddings in Qdrant |
 | `search_memories` | Semantic search across stored memories |
+| `delete_memory` | Delete a stored memory by id |
 
 ### `mqtt`
 | Tool | Description |
 |------|-------------|
 | `get_camera_snapshots` | Capture snapshots from MQTT-connected cameras |
 
-### `mcp_server_fetch` (built-in)
+### `github` (Self-inspection)
 | Tool | Description |
 |------|-------------|
-| `fetch` | Fetch a URL and extract content as markdown |
+| `github_search_code` | Search the local HavenCore source clone |
+| `github_read_file` | Read a file from the local HavenCore source clone |
+| `github_list_dir` | List a directory in the local HavenCore source clone |
+| `github_pull_latest` | Refresh the container-managed local clone from `origin` |
+| `github_list_issues` | List GitHub Issues on the HavenCore repo |
+| `github_get_issue` | Fetch a single issue (untrusted text wrapped in `<UNTRUSTED_USER_TEXT>`) |
+| `github_create_issue` | File a new issue on the HavenCore repo |
 
 ## Configuration
 
@@ -312,8 +351,11 @@ services/agent/
     │   └── mcp_client_manager.py # MCP server lifecycle, tool discovery
     └── modules/              # MCP tool servers (each runs as a subprocess)
         ├── mcp_general_tools/
+        ├── mcp_github_tools/
         ├── mcp_homeassistant_tools/
         ├── mcp_mqtt_tools/
+        ├── mcp_music_assistant_tools/
+        ├── mcp_plex_tools/
         └── mcp_qdrant_tools/
 ```
 

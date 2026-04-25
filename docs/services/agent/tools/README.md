@@ -6,11 +6,11 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 
 | Server | Module | Tools | Doc |
 |--------|--------|-------|-----|
-| Home Assistant | `mcp_homeassistant_tools` | 19 — REST/WS control, registry, presence, timer/template/history/calendar, media transport | [home-assistant.md](home-assistant.md) |
+| Home Assistant | `mcp_homeassistant_tools` | 18 — REST/WS control, registry, presence, timer/template/history/calendar, media transport | [home-assistant.md](home-assistant.md) |
 | Plex | `mcp_plex_tools` | 5 — library search + cloud-relay playback | [plex.md](plex.md) |
-| Music Assistant | `mcp_music_assistant_tools` | 6 — audio search, player enumeration, queue-aware playback on speakers / Chromecasts | [music-assistant.md](music-assistant.md) |
+| Music Assistant | `mcp_music_assistant_tools` | 7 — audio search, player enumeration, queue-aware playback / announcement / transport on speakers + Chromecasts | [music-assistant.md](music-assistant.md) |
 | General Tools | `mcp_general_tools` | Up to 7 (credential-gated) — weather, Brave, Wolfram, Wikipedia, ComfyUI, Signal messaging, multimodal vision | [general.md](general.md) |
-| Qdrant | `mcp_qdrant_tools` | 2 — semantic memory store/search on Qdrant + bge embeddings | [qdrant.md](qdrant.md) |
+| Qdrant | `mcp_qdrant_tools` | 3 — semantic memory store/search/delete on Qdrant + bge embeddings | [qdrant.md](qdrant.md) |
 | MQTT / Cameras | `mcp_mqtt_tools` | 1 — camera snapshot trigger via HA + MQTT round-trip | [mqtt.md](mqtt.md) |
 | GitHub | `mcp_github_tools` | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues | [github.md](github.md) |
 
