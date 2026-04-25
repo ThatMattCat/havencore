@@ -96,6 +96,11 @@ async def _persist_enrollment(
     if not cv2.imwrite(str(img_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
         raise HTTPException(status_code=500, detail="failed to write enrollment image to disk")
 
+    # Store relative-under-SNAPSHOT_DIR so the row survives container/mount
+    # moves. _resolve_face_image_path tolerates both forms during the
+    # transition; the startup migration backfills any pre-step-8 rows.
+    rel_path = img_path.relative_to(config.SNAPSHOT_DIR)
+
     try:
         vector_store.upsert_point(
             point_id=str(qdrant_point_id),
@@ -115,7 +120,7 @@ async def _persist_enrollment(
         row = await db.insert_face_image(
             face_image_id=face_image_id,
             person_id=person_id,
-            path=str(img_path),
+            path=str(rel_path),
             qdrant_point_id=qdrant_point_id,
             source=source,
             quality_score=quality_score,

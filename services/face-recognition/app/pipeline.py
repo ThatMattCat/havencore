@@ -97,18 +97,19 @@ def _save_snapshot(frame: np.ndarray, captured_at: datetime, event_id: uuid.UUID
 def _save_auto_improvement_image(
     frame: np.ndarray, person_id: uuid.UUID, face_image_id: uuid.UUID
 ) -> Path:
-    """Save the source frame as an auto-improvement face_image. Absolute path.
+    """Save the source frame as an auto-improvement face_image.
 
-    Stored as full frame (matches enrollment convention) so the step-8
-    re-embedding admin endpoint can re-run detection without depending on
-    pre-cropped data.
+    Returns the path RELATIVE to SNAPSHOT_DIR so it can be stored in
+    face_images.path and stays mount-agnostic. Stored as full frame
+    (matches enrollment convention) so the rebuild-embeddings admin
+    endpoint can re-run detection without depending on pre-cropped data.
     """
     person_dir = AUTO_IMPROVE_DIR / str(person_id)
     person_dir.mkdir(parents=True, exist_ok=True)
     abs_path = person_dir / f"{face_image_id}.jpg"
     if not cv2.imwrite(str(abs_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
         raise RuntimeError(f"failed to write auto-improvement image to {abs_path}")
-    return abs_path
+    return abs_path.relative_to(SNAPSHOT_DIR)
 
 
 async def _maybe_contribute_embedding(
@@ -157,7 +158,8 @@ async def _maybe_contribute_embedding(
     face_image_id = uuid.uuid4()
     qdrant_point_id = uuid.uuid4()
 
-    abs_path = _save_auto_improvement_image(best_frame, person_id, face_image_id)
+    rel_path = _save_auto_improvement_image(best_frame, person_id, face_image_id)
+    abs_path = SNAPSHOT_DIR / rel_path
 
     try:
         vector_store.upsert_point(
@@ -178,7 +180,7 @@ async def _maybe_contribute_embedding(
         await db.insert_face_image_for_detection(
             face_image_id=face_image_id,
             person_id=person_id,
-            path=str(abs_path),
+            path=str(rel_path),
             qdrant_point_id=qdrant_point_id,
             source="detection_auto",
             quality_score=best_quality,

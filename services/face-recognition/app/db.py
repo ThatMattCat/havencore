@@ -100,6 +100,41 @@ class Database:
                 await conn.execute(MIGRATION_SQL)
         logger.info("Face-recognition migrations applied")
 
+        # One-shot data migration: rewrite absolute face_images.path entries
+        # to be relative-under-SNAPSHOT_DIR so postgres rows are container-
+        # mount-agnostic. Idempotent — only matches paths with the prefix;
+        # new writers (people._persist_enrollment, pipeline._save_auto_
+        # improvement_image) write relative directly so re-running on a
+        # fresh DB is a no-op.
+        await self._normalize_face_image_paths()
+
+    async def _normalize_face_image_paths(self) -> None:
+        """Strip the SNAPSHOT_DIR prefix from face_images.path entries.
+
+        Read SNAPSHOT_DIR from the env directly (same default as config.py)
+        rather than importing config — db.py shouldn't pull config in just
+        to discover the mount point.
+        """
+        assert self.pool is not None
+        snapshot_dir = os.getenv("FACE_REC_SNAPSHOT_DIR", "/data/snapshots").rstrip("/")
+        prefix = f"{snapshot_dir}/"
+        async with self.pool.acquire() as conn:
+            updated = await conn.execute(
+                """
+                UPDATE face_images
+                SET path = substring(path FROM length($1) + 1)
+                WHERE path LIKE $1 || '%'
+                """,
+                prefix,
+            )
+        # asyncpg returns "UPDATE N" — extract N for the log line.
+        try:
+            n = int(updated.split()[-1])
+        except (ValueError, IndexError):
+            n = 0
+        if n:
+            logger.info("Normalized %d face_images.path entries to relative", n)
+
     async def health(self) -> bool:
         if self.pool is None:
             return False
