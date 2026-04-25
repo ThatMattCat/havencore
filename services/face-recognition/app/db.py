@@ -514,6 +514,53 @@ class Database:
             )
         return dict(row) if row else None
 
+    async def list_aged_detections(
+        self,
+        unknown_max_age_days: int,
+        known_max_age_days: int,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Return detection rows past their retention window.
+
+        Two thresholds because the operator typically wants unknowns to
+        stick around longer than identified events (the unknowns are the
+        review queue's source of truth). Either threshold ≤ 0 disables
+        sweeping for that bucket.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, snapshot_path, person_id, captured_at
+                FROM face_detections
+                WHERE
+                  ($1::int > 0
+                    AND person_id IS NULL
+                    AND captured_at < now() - make_interval(days => $1))
+                  OR
+                  ($2::int > 0
+                    AND person_id IS NOT NULL
+                    AND captured_at < now() - make_interval(days => $2))
+                ORDER BY captured_at ASC
+                LIMIT $3
+                """,
+                unknown_max_age_days, known_max_age_days, limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def delete_detections_by_ids(self, ids: list[UUID]) -> int:
+        if not ids:
+            return 0
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM face_detections WHERE id = ANY($1::uuid[])", ids,
+            )
+        try:
+            return int(result.split()[-1])
+        except (ValueError, IndexError):
+            return 0
+
     async def reject_detection(
         self, detection_id: UUID
     ) -> Optional[dict[str, Any]]:

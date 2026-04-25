@@ -52,10 +52,15 @@ TRIGGER_MODE = os.getenv("FACE_REC_TRIGGER_MODE", "ha_person_detected")
 BURST_FRAMES = _int(os.getenv("FACE_REC_BURST_FRAMES"), 6)
 BURST_INTERVAL_MS = _int(os.getenv("FACE_REC_BURST_INTERVAL_MS"), 500)
 
-# --- Snapshots / retention (used in step 8) ---
+# --- Snapshots / retention ---
 SNAPSHOT_DIR = os.getenv("FACE_REC_SNAPSHOT_DIR", "/data/snapshots")
 RETENTION_UNKNOWN_DAYS = _int(os.getenv("FACE_SNAPSHOT_RETENTION_UNKNOWN_DAYS"), 30)
 RETENTION_KNOWN_DAYS = _int(os.getenv("FACE_SNAPSHOT_RETENTION_KNOWN_DAYS"), 7)
+# Retention sweep cadence. Setting to 0 disables the periodic sweep entirely
+# (useful for tests / debugging). One sweep also runs on startup unless
+# disabled.
+RETENTION_SWEEP_INTERVAL_MIN = _int(os.getenv("FACE_REC_RETENTION_SWEEP_INTERVAL_MIN"), 60)
+RETENTION_SWEEP_ON_STARTUP = _bool(os.getenv("FACE_REC_RETENTION_SWEEP_ON_STARTUP"), True)
 
 # --- MQTT bridge (used in step 5+) ---
 # Default broker host matches the docker compose service name; the agent's

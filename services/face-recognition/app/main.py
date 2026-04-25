@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 import config
+from api import admin as admin_api
 from api import cameras as cameras_api
 from api import detections as detections_api
 from api import face_images as face_images_api
@@ -21,6 +22,7 @@ from db import db
 from embedder import embedder
 from face_qdrant import vector_store
 from mqtt_bridge import bridge as mqtt_bridge
+from retention import sweeper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,11 +51,14 @@ async def lifespan(_: FastAPI):
     else:
         logger.warning("FACE_REC_MQTT_ENABLED=false — skipping MQTT bridge")
 
+    await sweeper.start()
+
     logger.info("Service ready on port %d", config.PORT)
     try:
         yield
     finally:
         logger.info("Shutting down face-recognition service")
+        await sweeper.stop()
         if config.MQTT_ENABLED:
             await mqtt_bridge.stop()
         await db.close()
@@ -64,6 +69,7 @@ app.include_router(people_api.router)
 app.include_router(detections_api.router)
 app.include_router(face_images_api.router)
 app.include_router(cameras_api.router)
+app.include_router(admin_api.router)
 
 
 @app.get("/health")
@@ -95,4 +101,5 @@ async def health():
             "broker": f"{config.MQTT_BROKER}:{config.MQTT_PORT}",
             "subscribed_topics": mqtt_bridge.subscribed_topics() if config.MQTT_ENABLED else [],
         },
+        "retention": sweeper.info(),
     }
