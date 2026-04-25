@@ -80,6 +80,38 @@ class DetectionOut(BaseModel):
     embedding_contributed: bool
 
 
+class ConfirmDetectionRequest(BaseModel):
+    """Confirm an unknown detection: assign it to an existing person or
+    create a new one in the same call.
+
+    Exactly one of `person_id` or `name` must be provided. When `name` is
+    used, a new `people` row is created (or the existing one with that name
+    is reused) and the embedding is contributed to it.
+    """
+    person_id: Optional[UUID] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+
+
+class ConfirmDetectionResult(BaseModel):
+    detection_id: UUID
+    person_id: UUID
+    person_name: str
+    embedding_contributed: bool
+    quality_score: Optional[float] = None
+    faces_detected: int
+
+
+class FaceImageDeleteResult(BaseModel):
+    id: UUID
+    deleted: bool = True
+
+
+class PersonDeleteResult(BaseModel):
+    id: UUID
+    images_removed: int
+    qdrant_points_removed: int
+
+
 class PipelineResult(BaseModel):
     """Result of a single trigger event through the detection pipeline.
 

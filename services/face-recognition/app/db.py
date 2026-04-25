@@ -220,6 +220,118 @@ class Database:
                 "SELECT name FROM people WHERE id = $1", person_id
             )
 
+    async def delete_person(self, person_id: UUID) -> Optional[list[dict[str, Any]]]:
+        """Delete a person; return their face_images rows for cleanup.
+
+        Returns the (path, qdrant_point_id) of every face_image so the caller
+        can unlink files and remove Qdrant points. Returns None if the person
+        doesn't exist. The face_images rows themselves are removed by the FK
+        cascade. Detection rows keep their snapshot but lose the foreign key
+        (ON DELETE SET NULL on face_detections.person_id).
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                images = await conn.fetch(
+                    "SELECT path, qdrant_point_id FROM face_images WHERE person_id = $1",
+                    person_id,
+                )
+                deleted = await conn.fetchval(
+                    "DELETE FROM people WHERE id = $1 RETURNING id", person_id,
+                )
+        if deleted is None:
+            return None
+        return [dict(r) for r in images]
+
+    async def get_face_image(
+        self, person_id: UUID, face_image_id: UUID
+    ) -> Optional[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, person_id, path, qdrant_point_id, is_primary,
+                       source, quality_score, created_at
+                FROM face_images
+                WHERE id = $1 AND person_id = $2
+                """,
+                face_image_id, person_id,
+            )
+        return dict(row) if row else None
+
+    async def get_face_image_by_id(
+        self, face_image_id: UUID
+    ) -> Optional[dict[str, Any]]:
+        """Same as get_face_image but doesn't require knowing the person_id.
+
+        Used by the bytes-streaming endpoint, which gets only an image id.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, person_id, path, qdrant_point_id, is_primary,
+                       source, quality_score, created_at
+                FROM face_images
+                WHERE id = $1
+                """,
+                face_image_id,
+            )
+        return dict(row) if row else None
+
+    async def delete_face_image(
+        self, person_id: UUID, face_image_id: UUID
+    ) -> Optional[dict[str, Any]]:
+        """Delete one face_image row; return path + qdrant_point_id for cleanup.
+
+        Returns None if the row doesn't belong to `person_id` (or doesn't
+        exist). Refuses to delete a row marked is_primary so the gallery
+        always has a primary as long as it has any images — the caller
+        should set-primary on another image first.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                DELETE FROM face_images
+                WHERE id = $1 AND person_id = $2 AND is_primary = false
+                RETURNING id, path, qdrant_point_id
+                """,
+                face_image_id, person_id,
+            )
+        return dict(row) if row else None
+
+    async def set_primary_face_image(
+        self, person_id: UUID, face_image_id: UUID
+    ) -> Optional[dict[str, Any]]:
+        """Atomically swap the primary marker to `face_image_id`.
+
+        Returns the new primary's row, or None if the image doesn't exist
+        for this person.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM face_images WHERE id = $1 AND person_id = $2",
+                    face_image_id, person_id,
+                )
+                if not exists:
+                    return None
+                await conn.execute(
+                    "UPDATE face_images SET is_primary = false WHERE person_id = $1",
+                    person_id,
+                )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE face_images SET is_primary = true
+                    WHERE id = $1 AND person_id = $2
+                    RETURNING id, path, is_primary, source, quality_score, created_at
+                    """,
+                    face_image_id, person_id,
+                )
+        return dict(row) if row else None
+
     async def update_person(
         self,
         person_id: UUID,
@@ -287,12 +399,17 @@ class Database:
         since_seconds_ago: Optional[int],
         person_id: Optional[UUID],
         limit: int,
+        review_state: Optional[str] = None,
+        unknowns_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Filtered detection history, newest first.
 
         `since_seconds_ago` is converted to an absolute timestamp here rather
         than passed through SQL so the query plan stays parameterized cleanly.
         LEFT JOIN people surfaces person_name (NULL for unknown rows).
+        `unknowns_only=True` is shorthand for "person_id IS NULL AND
+        review_state != 'rejected'" — the queue the /people/unknowns UI
+        watches.
         """
         assert self.pool is not None
         async with self.pool.acquire() as conn:
@@ -307,12 +424,78 @@ class Database:
                 WHERE ($1::text IS NULL OR d.camera = $1)
                   AND ($2::int IS NULL OR d.captured_at >= now() - make_interval(secs => $2))
                   AND ($3::uuid IS NULL OR d.person_id = $3)
+                  AND ($4::text IS NULL OR d.review_state = $4)
+                  AND (NOT $5::bool OR (d.person_id IS NULL AND d.review_state != 'rejected'))
                 ORDER BY d.captured_at DESC
-                LIMIT $4
+                LIMIT $6
                 """,
-                camera, since_seconds_ago, person_id, limit,
+                camera, since_seconds_ago, person_id, review_state, unknowns_only, limit,
             )
         return [dict(r) for r in rows]
+
+    async def get_detection(self, detection_id: UUID) -> Optional[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT d.id, d.event_id, d.camera, d.captured_at,
+                       d.person_id, p.name AS person_name,
+                       d.confidence, d.quality_score, d.snapshot_path,
+                       d.review_state, d.embedding_contributed
+                FROM face_detections d
+                LEFT JOIN people p ON d.person_id = p.id
+                WHERE d.id = $1
+                """,
+                detection_id,
+            )
+        return dict(row) if row else None
+
+    async def confirm_detection(
+        self,
+        detection_id: UUID,
+        person_id: UUID,
+        embedding_contributed: bool,
+    ) -> Optional[dict[str, Any]]:
+        """Mark a detection confirmed and attach a person.
+
+        Used by /api/detections/{id}/confirm after the snapshot has been
+        re-embedded and (optionally) added to the person's gallery via
+        _persist_enrollment.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE face_detections
+                SET person_id = $2,
+                    review_state = 'confirmed',
+                    embedding_contributed = embedding_contributed OR $3
+                WHERE id = $1
+                RETURNING id, event_id, camera, captured_at, person_id,
+                          confidence, quality_score, snapshot_path,
+                          review_state, embedding_contributed
+                """,
+                detection_id, person_id, embedding_contributed,
+            )
+        return dict(row) if row else None
+
+    async def reject_detection(
+        self, detection_id: UUID
+    ) -> Optional[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE face_detections
+                SET review_state = 'rejected'
+                WHERE id = $1
+                RETURNING id, event_id, camera, captured_at, person_id,
+                          confidence, quality_score, snapshot_path,
+                          review_state, embedding_contributed
+                """,
+                detection_id,
+            )
+        return dict(row) if row else None
 
     # --- continuous improvement ---------------------------------------
 

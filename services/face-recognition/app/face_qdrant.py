@@ -12,7 +12,16 @@ import os
 from typing import Iterable
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointIdsList, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    MatchValue,
+    PointIdsList,
+    PointStruct,
+    VectorParams,
+)
 
 
 logger = logging.getLogger("face-recognition.qdrant")
@@ -83,6 +92,36 @@ class FaceVectorStore:
         self.client.delete(
             collection_name=self.collection_name,
             points_selector=PointIdsList(points=[str(point_id)]),
+        )
+
+    def delete_points(self, point_ids: Iterable[str]) -> int:
+        """Delete a batch of points by id; returns the count attempted."""
+        ids = [str(p) for p in point_ids]
+        if not ids:
+            return 0
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=PointIdsList(points=ids),
+        )
+        return len(ids)
+
+    def delete_by_person(self, person_id: str) -> None:
+        """Cascade-delete every point with payload.person_id == person_id.
+
+        Used when a person is removed via DELETE /api/people/{id}. Caller is
+        responsible for removing the person row + face_images files; this is
+        the Qdrant side of the cascade.
+        """
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[FieldCondition(
+                        key="person_id",
+                        match=MatchValue(value=str(person_id)),
+                    )]
+                )
+            ),
         )
 
 

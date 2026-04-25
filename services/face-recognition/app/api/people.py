@@ -26,8 +26,10 @@ from models import (
     CameraEnrollmentResult,
     EnrollFromCameraRequest,
     EnrollmentResult,
+    FaceImageDeleteResult,
     FaceImageOut,
     PersonCreate,
+    PersonDeleteResult,
     PersonDetailOut,
     PersonOut,
     PersonUpdate,
@@ -288,3 +290,113 @@ async def enroll_from_camera(
         frames_processed=len(frames),
         faces_kept=faces_kept,
     )
+
+
+@router.delete("/{person_id}", response_model=PersonDeleteResult)
+async def delete_person(
+    person_id: uuid.UUID = PathParam(...),
+) -> PersonDeleteResult:
+    """Delete a person, their enrollment images, and their Qdrant points.
+
+    Cascade order: collect file paths from face_images BEFORE deleting the
+    person row (so we still have them after the FK cascade fires), then
+    delete the person row, then unlink files, then drop Qdrant points by
+    payload filter. Detection rows survive with person_id NULL'd
+    (ON DELETE SET NULL on face_detections.person_id).
+    """
+    images = await db.delete_person(person_id)
+    if images is None:
+        raise HTTPException(status_code=404, detail="person not found")
+
+    for img in images:
+        try:
+            Path(img["path"]).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to unlink %s during person delete: %s", img["path"], e)
+
+    try:
+        vector_store.delete_by_person(str(person_id))
+    except Exception as e:
+        # Person + files are gone; orphan points get caught by the step-8
+        # rebuild-embeddings reconcile pass. Log loudly so it's noticed.
+        logger.exception("Qdrant cascade-delete failed for person %s: %s", person_id, e)
+
+    return PersonDeleteResult(
+        id=person_id,
+        images_removed=len(images),
+        qdrant_points_removed=len(images),
+    )
+
+
+@router.delete(
+    "/{person_id}/images/{face_image_id}",
+    response_model=FaceImageDeleteResult,
+)
+async def delete_face_image(
+    person_id: uuid.UUID = PathParam(...),
+    face_image_id: uuid.UUID = PathParam(...),
+) -> FaceImageDeleteResult:
+    """Delete one face_image row, its file, and its Qdrant point.
+
+    Refuses to delete a row marked is_primary — caller should set-primary
+    on a different image first so the gallery always has a primary.
+    """
+    img = await db.get_face_image(person_id=person_id, face_image_id=face_image_id)
+    if img is None:
+        raise HTTPException(status_code=404, detail="face image not found")
+    if img["is_primary"]:
+        raise HTTPException(
+            status_code=409,
+            detail="cannot delete primary image; set another image as primary first",
+        )
+
+    deleted = await db.delete_face_image(person_id=person_id, face_image_id=face_image_id)
+    if deleted is None:
+        # Lost a race or concurrent edit flipped it to primary — surface the
+        # collision rather than silently 404'ing.
+        raise HTTPException(status_code=409, detail="face image could not be deleted")
+
+    abs_path = _resolve_face_image_path(deleted["path"])
+    try:
+        abs_path.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("Failed to unlink %s during image delete: %s", abs_path, e)
+
+    try:
+        vector_store.delete_point(str(deleted["qdrant_point_id"]))
+    except Exception as e:
+        logger.warning(
+            "Failed to delete Qdrant point %s: %s", deleted["qdrant_point_id"], e,
+        )
+
+    return FaceImageDeleteResult(id=face_image_id)
+
+
+@router.post(
+    "/{person_id}/images/{face_image_id}/set-primary",
+    response_model=FaceImageOut,
+)
+async def set_primary_face_image(
+    person_id: uuid.UUID = PathParam(...),
+    face_image_id: uuid.UUID = PathParam(...),
+) -> FaceImageOut:
+    """Atomically swap the primary marker to `face_image_id`."""
+    row = await db.set_primary_face_image(
+        person_id=person_id, face_image_id=face_image_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="face image not found")
+    return FaceImageOut(**row)
+
+
+def _resolve_face_image_path(path: str) -> Path:
+    """Resolve a face_images.path to an absolute filesystem path.
+
+    Absolute paths (existing enrollment + auto-improvement rows) are returned
+    as-is. Relative paths resolve under SNAPSHOT_DIR (forward-compatible with
+    the step-8 path normalization that will move enrollment paths to relative).
+    """
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    return Path(config.SNAPSHOT_DIR) / p

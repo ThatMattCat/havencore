@@ -15,6 +15,7 @@ from fastapi import FastAPI
 import config
 from api import cameras as cameras_api
 from api import detections as detections_api
+from api import face_images as face_images_api
 from api import people as people_api
 from db import db
 from embedder import embedder
@@ -61,6 +62,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="HavenCore Face Recognition", lifespan=lifespan)
 app.include_router(people_api.router)
 app.include_router(detections_api.router)
+app.include_router(face_images_api.router)
 app.include_router(cameras_api.router)
 
 
