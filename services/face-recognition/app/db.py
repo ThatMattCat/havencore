@@ -514,6 +514,34 @@ class Database:
             )
         return dict(row) if row else None
 
+    async def list_all_face_images(self) -> list[dict[str, Any]]:
+        """Return every face_images row for admin maintenance jobs.
+
+        Yields full path + qdrant_point_id + person_id so the rebuild
+        endpoint doesn't need a second lookup per row.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, person_id, path, qdrant_point_id, source,
+                       quality_score, is_primary
+                FROM face_images
+                ORDER BY created_at ASC
+                """
+            )
+        return [dict(r) for r in rows]
+
+    async def update_face_image_quality(
+        self, face_image_id: UUID, quality_score: float,
+    ) -> None:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE face_images SET quality_score = $2 WHERE id = $1",
+                face_image_id, quality_score,
+            )
+
     async def list_aged_detections(
         self,
         unknown_max_age_days: int,

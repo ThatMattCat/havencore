@@ -105,6 +105,28 @@ class FaceVectorStore:
         )
         return len(ids)
 
+    def scroll_all_payload(self) -> list[tuple[str, dict]]:
+        """Walk every point in the collection, returning (id, payload) pairs.
+
+        Used by the rebuild-embeddings admin endpoint to find orphans (points
+        whose payload.face_image_id has no matching face_images row).
+        """
+        out: list[tuple[str, dict]] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=512,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+            )
+            for p in points:
+                out.append((str(p.id), p.payload or {}))
+            if offset is None:
+                break
+        return out
+
     def delete_by_person(self, person_id: str) -> None:
         """Cascade-delete every point with payload.person_id == person_id.
 
