@@ -9,7 +9,8 @@ must stay in sync.
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
+from uuid import UUID
 
 import asyncpg
 
@@ -114,6 +115,102 @@ class Database:
             await self.pool.close()
             self.pool = None
             logger.info("asyncpg pool closed")
+
+    # --- people CRUD ---------------------------------------------------
+
+    async def create_person(
+        self, name: str, access_level: str, notes: Optional[str]
+    ) -> dict[str, Any]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO people (name, access_level, notes)
+                VALUES ($1, $2, $3)
+                RETURNING id, name, access_level, notes, created_at, updated_at
+                """,
+                name, access_level, notes,
+            )
+        return dict(row) | {"image_count": 0}
+
+    async def list_people(self) -> list[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT p.id, p.name, p.access_level, p.notes,
+                       p.created_at, p.updated_at,
+                       COUNT(fi.id) AS image_count
+                FROM people p
+                LEFT JOIN face_images fi ON fi.person_id = p.id
+                GROUP BY p.id
+                ORDER BY p.created_at DESC
+                """
+            )
+        return [dict(r) for r in rows]
+
+    async def get_person(self, person_id: UUID) -> Optional[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT p.id, p.name, p.access_level, p.notes,
+                       p.created_at, p.updated_at,
+                       COUNT(fi.id) AS image_count
+                FROM people p
+                LEFT JOIN face_images fi ON fi.person_id = p.id
+                WHERE p.id = $1
+                GROUP BY p.id
+                """,
+                person_id,
+            )
+        return dict(row) if row else None
+
+    async def list_face_images(self, person_id: UUID) -> list[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, path, is_primary, source, quality_score, created_at
+                FROM face_images
+                WHERE person_id = $1
+                ORDER BY is_primary DESC, created_at DESC
+                """,
+                person_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def insert_face_image(
+        self,
+        face_image_id: UUID,
+        person_id: UUID,
+        path: str,
+        qdrant_point_id: UUID,
+        source: str,
+        quality_score: Optional[float],
+        is_primary: bool,
+    ) -> dict[str, Any]:
+        """Insert one face_images row, optionally swapping primary in the same tx."""
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                if is_primary:
+                    await conn.execute(
+                        "UPDATE face_images SET is_primary = false WHERE person_id = $1",
+                        person_id,
+                    )
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO face_images
+                        (id, person_id, path, qdrant_point_id, source,
+                         quality_score, is_primary)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    RETURNING id, path, is_primary, source, quality_score, created_at
+                    """,
+                    face_image_id, person_id, path, qdrant_point_id, source,
+                    quality_score, is_primary,
+                )
+        return dict(row)
 
 
 db = Database()

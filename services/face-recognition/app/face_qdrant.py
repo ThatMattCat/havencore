@@ -9,8 +9,10 @@ to this module and break the import.
 import logging
 import os
 
+from typing import Iterable
+
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 
 logger = logging.getLogger("face-recognition.qdrant")
@@ -49,6 +51,18 @@ class FaceVectorStore:
         except Exception as e:
             logger.warning("Qdrant health check failed: %s", e)
             return False
+
+    def upsert_point(self, point_id: str, vector: Iterable[float], payload: dict) -> None:
+        """Insert (or replace) a single embedding point.
+
+        `vector` should already be L2-normalized — InsightFace's
+        `Face.normed_embedding` is, and the collection uses cosine distance,
+        so no extra normalization is needed here.
+        """
+        self.client.upsert(
+            collection_name=self.collection_name,
+            points=[PointStruct(id=str(point_id), vector=list(vector), payload=payload)],
+        )
 
 
 vector_store = FaceVectorStore()
