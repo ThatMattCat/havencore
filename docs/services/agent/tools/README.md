@@ -13,6 +13,7 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 | Qdrant | `mcp_qdrant_tools` | 3 — semantic memory store/search/delete on Qdrant + bge embeddings | [qdrant.md](qdrant.md) |
 | MQTT / Cameras | `mcp_mqtt_tools` | 1 — camera snapshot trigger via HA + MQTT round-trip | [mqtt.md](mqtt.md) |
 | GitHub | `mcp_github_tools` | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues | [github.md](github.md) |
+| Face Recognition | `mcp_face_tools` | 5 — who's at a camera, recent visitors, list/enroll/access-level for known people | [face.md](face.md) |
 
 ## Writing new tools
 

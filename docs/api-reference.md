@@ -400,6 +400,43 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/system/llm-provider` | Active LLM provider: `{provider: "vllm"\|"anthropic"\|"openai", model, valid: [...], since}` |
 | `POST` | `/api/system/llm-provider` | Switch provider (body `{provider}`); hot-swaps `app.state.provider`. `/v1/chat/completions` stays pinned to vLLM regardless |
 
+### Face recognition (agent proxy)
+
+The agent's `/api/face/*` is a thin pass-through to the
+[face-recognition service](services/face-recognition/README.md) at
+`FACE_REC_API_BASE` (default `http://face-recognition:6006`). Same
+routes, same shapes, same status codes — only the path prefix changes
+(agent `/api/face/*` ↔ face-recognition `/api/*`). The proxy exists so
+the dashboard stays single-port and nginx config doesn't need to change;
+it's also the only surface the SvelteKit `/people` UI calls.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET`  | `/api/face/people` | List enrolled people with `image_count` |
+| `POST` | `/api/face/people` | Create — `{name, access_level?, notes?}` |
+| `GET`  | `/api/face/people/{id}` | Detail with the image gallery |
+| `PATCH`| `/api/face/people/{id}` | Partial update of `access_level` and/or `notes` |
+| `DELETE`| `/api/face/people/{id}` | Cascade delete (rows + files + Qdrant points) |
+| `POST` | `/api/face/people/{id}/images` | Multipart upload — picks the highest-`det_score` face, persists |
+| `POST` | `/api/face/people/{id}/enroll-from-camera` | Burst-capture from HA, picks the highest-quality face — `{camera, is_primary?}` |
+| `DELETE`| `/api/face/people/{id}/images/{img_id}` | Delete a non-primary image |
+| `POST` | `/api/face/people/{id}/images/{img_id}/set-primary` | Atomic primary swap |
+| `GET`  | `/api/face/face_images/{id}/bytes` | Stream a face_image JPEG |
+| `GET`  | `/api/face/detections` | Filters: `camera`, `person_id`, `since_seconds_ago`, `review_state`, `unknowns_only`, `limit` |
+| `GET`  | `/api/face/detections/{id}/snapshot` | Stream a detection snapshot JPEG |
+| `POST` | `/api/face/detections/{id}/confirm` | Body `{person_id}` or `{name}` (exactly one) — re-embeds + persists + marks `confirmed` |
+| `POST` | `/api/face/detections/{id}/reject` | Marks `rejected` so it stops appearing in the unknowns queue |
+| `GET`  | `/api/face/cameras` | Discovery (HA person-sensor → camera entity mapping) |
+| `GET`  | `/api/face/health` | Upstream `/health` (model providers, db, qdrant, mqtt, retention) |
+
+The upstream service also exposes operator endpoints — `POST
+/api/admin/retention/sweep`, `POST /api/admin/rebuild-embeddings`, `GET
+/api/admin/jobs/{id}`, `GET /api/admin/jobs` — that are intentionally
+**not** proxied (they're not part of the dashboard surface). Hit them
+directly on port 6006. See
+[Face Recognition Service](services/face-recognition/README.md#admin--operator)
+for shapes.
+
 ### WebSockets
 
 | URL | Direction | Purpose |

@@ -18,6 +18,7 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [Qdrant](qdrant/README.md) | 6333, 6334 | Vector DB for semantic memory | Qdrant |
 | [Embeddings](embeddings/README.md) | 3000 | Text embeddings | HuggingFace TEI |
 | [Mosquitto](mosquitto/README.md) | 1883, 9001 | MQTT broker | Eclipse Mosquitto |
+| [Face Recognition](face-recognition/README.md) | 6006 | Identity for HA cameras | Python, InsightFace `buffalo_l`, ONNXRuntime-GPU |
 
 ## Service communication
 
@@ -34,6 +35,10 @@ agent → text-to-speech:6005     (TTS playground proxy)
 agent → speech-to-text:6001     (STT playground proxy)
 agent → iav-to-text:8100        (Vision playground proxy)
 agent → text-to-image:8188      (ComfyUI playground proxy)
+agent → face-recognition:6006   (/people dashboard proxy + mcp_face_tools)
+face-recognition → postgres:5432
+face-recognition → qdrant:6333
+face-recognition → mosquitto:1883
 nginx → agent:6002
 nginx → text-to-speech:6005
 nginx → speech-to-text:6001

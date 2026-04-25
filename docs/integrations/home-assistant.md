@@ -265,6 +265,70 @@ Intelligent defaults based on context:
 - **Location-based**: "Turn on the lights" uses current room context
 - **Activity-based**: "Movie mode" automatically adjusts multiple devices
 
+## Face recognition camera triggers
+
+The [face-recognition service](../services/face-recognition/README.md)
+subscribes to `haven/face/trigger/{camera}`. HA fires those triggers
+whenever a Reolink (or any other) camera flips its person sensor to
+`on`. One template-based automation handles every camera at once —
+adding a camera means appending its `binary_sensor.<base>_person` entity
+to the trigger list, no per-camera YAML duplication.
+
+```yaml
+# automations.yaml
+- alias: "HavenCore: face-rec triggers"
+  description: >
+    On any person-detected camera sensor, publish to
+    haven/face/trigger/<camera_entity>. The face-recognition service
+    derives the camera name from the topic suffix and bursts frames via
+    the HA camera_proxy REST endpoint.
+  trigger:
+    - platform: state
+      entity_id:
+        - binary_sensor.front_duo_3_person
+        - binary_sensor.backyard_left_cam_person
+        - binary_sensor.backyard_right_camera_person
+      to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: >-
+          haven/face/trigger/{{
+            trigger.to_state.entity_id
+              | replace('binary_sensor.', 'camera.')
+              | replace('_person', '_fluent')
+          }}
+        payload: >-
+          {
+            "source": "ha_person_detected",
+            "event_id": "{{ now().timestamp() }}",
+            "captured_at": "{{ now().isoformat() }}"
+          }
+```
+
+### Camera entity naming convention
+
+The bridge derives the `camera.*` entity from the trigger topic by
+substituting `binary_sensor.` → `camera.` and `_person` → `_fluent`.
+That matches Reolink's HACS integration default. Different cameras use
+different suffixes (`_main`, `_sub`, etc.) — confirm what HA exposes
+for your camera and either rename the HA entity or extend the template.
+
+### Discovery / sanity check
+
+`GET http://<host>:6006/api/cameras` (or the agent-side
+`GET /api/face/cameras`) lists every person sensor HA has, the
+camera entity the bridge would derive, and whether that camera entity
+actually exists. Run it after adding a camera to catch naming-convention
+drift before the bridge silently fails on it.
+
+### Service status
+
+The bridge publishes capture lifecycle to `haven/face/status`
+(`{camera, mode: "idle"|"capturing"|"matching", since}`). v1 uses a
+single global topic without retain — see deferred follow-up #2 in
+[`docs/todo.md`](../todo.md) for the per-camera retained variant.
+
 ## Troubleshooting
 
 ### Connection Issues
