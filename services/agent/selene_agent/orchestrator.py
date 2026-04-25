@@ -30,7 +30,7 @@ from selene_agent.utils.mcp_client_manager import MCPClientManager
 logger = custom_logger.get_logger('loki')
 
 TOOL_RESULT_MAX_CHARS = config.TOOL_RESULT_MAX_CHARS
-MAX_TOOL_ITERATIONS = 8
+MAX_TOOL_ITERATIONS = 20
 
 
 class EventType(str, Enum):
