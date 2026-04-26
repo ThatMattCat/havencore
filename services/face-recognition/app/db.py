@@ -576,6 +576,30 @@ class Database:
             )
         return [dict(r) for r in rows]
 
+    async def list_unknown_detection_paths(
+        self, *, only_rejected: bool,
+    ) -> list[dict[str, Any]]:
+        """Return [{id, snapshot_path}, ...] for unknown (`person_id IS NULL`)
+        detections. `only_rejected=True` narrows to `review_state='rejected'`.
+
+        Used by the bulk-delete endpoint; mirrors the retention sweeper's
+        list-then-unlink-then-delete pattern.
+        """
+        assert self.pool is not None
+        if only_rejected:
+            sql = (
+                "SELECT id, snapshot_path FROM face_detections "
+                "WHERE person_id IS NULL AND review_state = 'rejected'"
+            )
+        else:
+            sql = (
+                "SELECT id, snapshot_path FROM face_detections "
+                "WHERE person_id IS NULL"
+            )
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql)
+        return [dict(r) for r in rows]
+
     async def delete_detections_by_ids(self, ids: list[UUID]) -> int:
         if not ids:
             return 0

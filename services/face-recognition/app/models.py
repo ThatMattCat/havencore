@@ -1,7 +1,7 @@
 """Pydantic schemas for the face-recognition HTTP API."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -99,6 +99,21 @@ class ConfirmDetectionResult(BaseModel):
     embedding_contributed: bool
     quality_score: Optional[float] = None
     faces_detected: int
+
+
+class BulkDeleteUnknownsRequest(BaseModel):
+    """Bulk-delete scope for the /api/detections/bulk-delete endpoint.
+
+    `rejected` — only rows where `review_state='rejected' AND person_id IS NULL`.
+    `all_unknowns` — every row with `person_id IS NULL`, regardless of state.
+    """
+    scope: Literal["rejected", "all_unknowns"]
+
+
+class BulkDeleteResult(BaseModel):
+    rows_deleted: int
+    files_unlinked: int
+    scope: str
 
 
 class FaceImageDeleteResult(BaseModel):

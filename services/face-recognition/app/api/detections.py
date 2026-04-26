@@ -26,6 +26,8 @@ from db import db
 from embedder import embedder
 from ha_snapshot import HASnapshotError
 from models import (
+    BulkDeleteResult,
+    BulkDeleteUnknownsRequest,
     ConfirmDetectionRequest,
     ConfirmDetectionResult,
     DetectionOut,
@@ -217,6 +219,47 @@ async def confirm_detection(
         embedding_contributed=embedding_contributed,
         quality_score=best_quality if best_face is not None else None,
         faces_detected=faces_detected,
+    )
+
+
+@router.post("/detections/bulk-delete", response_model=BulkDeleteResult)
+async def bulk_delete_unknowns(payload: BulkDeleteUnknownsRequest) -> BulkDeleteResult:
+    """Mass-delete unknown detections (file + DB row) by scope.
+
+    Mirrors the retention sweeper's list → unlink → batch-delete pattern
+    (`app/retention.py`): file unlinks are best-effort and counted; the DB
+    DELETE is the source of truth. Caller surfaces the totals.
+    """
+    rows = await db.list_unknown_detection_paths(
+        only_rejected=(payload.scope == "rejected"),
+    )
+    if not rows:
+        return BulkDeleteResult(rows_deleted=0, files_unlinked=0, scope=payload.scope)
+
+    files_unlinked = 0
+    ids: list[uuid.UUID] = []
+    for row in rows:
+        ids.append(row["id"])
+        abs_path = _resolve_snapshot_path(row["snapshot_path"])
+        try:
+            if abs_path.exists():
+                abs_path.unlink()
+                files_unlinked += 1
+        except Exception as e:
+            logger.warning(
+                "bulk-delete: failed to unlink %s for detection %s: %s",
+                abs_path, row["id"], e,
+            )
+
+    rows_deleted = await db.delete_detections_by_ids(ids)
+    logger.info(
+        "bulk-delete scope=%s: %d rows deleted, %d files unlinked",
+        payload.scope, rows_deleted, files_unlinked,
+    )
+    return BulkDeleteResult(
+        rows_deleted=rows_deleted,
+        files_unlinked=files_unlinked,
+        scope=payload.scope,
     )
 
 

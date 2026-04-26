@@ -231,6 +231,33 @@ async def reject_detection(detection_id: str):
     return await _forward_json("POST", f"/api/detections/{detection_id}/reject")
 
 
+@router.post("/detections/bulk-delete")
+async def bulk_delete_detections(body: Dict[str, Any]):
+    return await _forward_json(
+        "POST", "/api/detections/bulk-delete", json_body=body,
+    )
+
+
+# ---------- Admin (rescan / job polling) ----------
+
+# Rescan-unknowns walks every unknown row, re-embeds, and queries Qdrant.
+# That's an expensive backfill — kick is fast, the work happens in a
+# background asyncio task. Polling reads the in-memory job dict.
+RESCAN_KICK_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+
+@router.post("/admin/rescan-unknowns")
+async def rescan_unknowns():
+    return await _forward_json(
+        "POST", "/api/admin/rescan-unknowns", timeout=RESCAN_KICK_TIMEOUT,
+    )
+
+
+@router.get("/admin/jobs/{job_id}")
+async def get_admin_job(job_id: str):
+    return await _forward_json("GET", f"/api/admin/jobs/{job_id}")
+
+
 # ---------- Cameras (for the review-queue dropdown) ----------
 
 @router.get("/cameras")

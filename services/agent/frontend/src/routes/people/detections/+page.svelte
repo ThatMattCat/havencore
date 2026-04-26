@@ -1,6 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { listDetections, detectionSnapshotUrl } from '$lib/api';
+	import ImageLightbox from '$lib/components/ImageLightbox.svelte';
 
 	let detections = $state([]);
 	let loading = $state(true);
@@ -8,6 +9,7 @@
 	let limit = $state(50);
 	let cameraFilter = $state('');
 	let stateFilter = $state(''); // '' | 'auto' | 'confirmed' | 'rejected' | 'pending'
+	let lightboxSrc = $state(null);
 
 	async function refresh() {
 		loading = true;
@@ -90,9 +92,14 @@
 		<div class="list">
 			{#each detections as d (d.id)}
 				<article class="row">
-					<div class="thumb">
+					<button
+						type="button"
+						class="thumb"
+						onclick={() => (lightboxSrc = detectionSnapshotUrl(d.id))}
+						title="Click to view full snapshot"
+					>
 						<img src={detectionSnapshotUrl(d.id)} alt="snapshot" loading="lazy" />
-					</div>
+					</button>
 					<div class="body">
 						<div class="line top">
 							{#if d.person_id}
@@ -124,6 +131,10 @@
 		</div>
 	{/if}
 </div>
+
+{#if lightboxSrc}
+	<ImageLightbox src={lightboxSrc} alt="full snapshot" onclose={() => (lightboxSrc = null)} />
+{/if}
 
 <style>
 	.page {
@@ -230,11 +241,15 @@
 		background: #0f1117;
 		border-radius: 6px;
 		overflow: hidden;
+		padding: 0;
+		border: 0;
+		cursor: zoom-in;
 	}
 	.thumb img {
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+		display: block;
 	}
 	.body {
 		flex: 1;

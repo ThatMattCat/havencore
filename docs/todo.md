@@ -71,6 +71,21 @@ these unless the trigger is actually firing.
   `face_detections` (idempotent migration in db.py); pipeline writes
   the original HA id alongside the minted UUID. ~15 min.
 
+- **Per-camera trigger cooldown.** Outdoor wide-angle cameras can fire
+  person-detection events every few seconds when someone walks around
+  the yard, generating a flood of `face_detections` rows (mostly
+  low-quality side/back views that get rejected during review).
+  *Trigger:* the unknowns queue + DB are still bloating after rescan
+  + bulk-delete are in active use. *Sketch:* per-camera in-memory
+  last-fire dict in `mqtt_bridge.FaceMqttBridge`, guarded by a new
+  `FACE_REC_TRIGGER_COOLDOWN_SECONDS` env (default 0 = off, ~15 in
+  production). Skip enqueue if `monotonic() - last < cooldown`. Place
+  the check in `_dispatch` before the HA snapshot fetch so the round-
+  trip is also dropped on cooldown. Pair with HA-side `for: '00:00:02'`
+  on the `binary_sensor.*_person` trigger as a complement. Trade-off:
+  presence/last-camera signal is preserved at coarser (cooldown-window)
+  granularity. ~30 min.
+
 ## Stretch goals
 
 Post-MVP / "v2"-class features — multi-modal perception, identity awareness, richer output surfaces. To work on **after** the items above are cleared. Scoping, feasibility, effort, and suggested sequencing live in [`stretch-goals.md`](./stretch-goals.md).

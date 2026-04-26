@@ -515,3 +515,33 @@ export function rejectDetection(detectionId: string): Promise<FaceDetection> {
 export function listFaceCameras(): Promise<FaceCamera[]> {
 	return fetchJSON('/api/face/cameras');
 }
+
+export interface FaceJob {
+	job_id: string;
+	type: 'rescan_unknowns' | 'rebuild_embeddings';
+	status: 'running' | 'done' | 'error';
+	phase: string;
+	started_at: number;
+	finished_at: number | null;
+	elapsed_ms: number;
+	totals: Record<string, number>;
+	errors: { detection_id?: string | null; face_image_id?: string | null; reason: string; detail?: string }[];
+}
+
+export function startRescanUnknowns(): Promise<{ job_id: string; status: string }> {
+	return fetchJSON('/api/face/admin/rescan-unknowns', { method: 'POST' });
+}
+
+export function getFaceJob(jobId: string): Promise<FaceJob> {
+	return fetchJSON(`/api/face/admin/jobs/${jobId}`);
+}
+
+export function bulkDeleteDetections(
+	scope: 'rejected' | 'all_unknowns',
+): Promise<{ rows_deleted: number; files_unlinked: number; scope: string }> {
+	return fetchJSON('/api/face/detections/bulk-delete', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ scope }),
+	});
+}

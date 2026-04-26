@@ -201,6 +201,31 @@ async def _maybe_contribute_embedding(
     return True
 
 
+async def contribute_embedding_for_detection(
+    *,
+    person_id: uuid.UUID,
+    detection_id: uuid.UUID,
+    face,
+    frame: np.ndarray,
+    quality: float,
+    confidence: float,
+) -> bool:
+    """Public wrapper for backfill jobs (rescan-unknowns) — applies the same
+    IMPROVEMENT_QUALITY_FLOOR / IMPROVEMENT_THRESHOLD gates the live pipeline
+    uses, with FIFO eviction and file/Qdrant/DB ordering identical to the
+    live path. Keeps `_Candidate` private to this module.
+    """
+    candidate = _Candidate(frame_idx=0, face=face, quality=quality)
+    return await _maybe_contribute_embedding(
+        person_id=person_id,
+        detection_id=detection_id,
+        best_candidate=candidate,
+        best_frame=frame,
+        best_quality=quality,
+        confidence=confidence,
+    )
+
+
 def _detect_and_score_sync(frames: list[np.ndarray]) -> list[_Candidate]:
     """Detect + quality-score every face in every frame. Filters by floor.
 

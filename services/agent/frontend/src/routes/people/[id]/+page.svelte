@@ -12,12 +12,14 @@
 		faceImageUrl,
 		ACCESS_LEVELS,
 	} from '$lib/api';
+	import ImageLightbox from '$lib/components/ImageLightbox.svelte';
 
 	let personId = $derived(page.params.id);
 	let person = $state(null);
 	let loading = $state(true);
 	let error = $state('');
 	let busy = $state(false);
+	let lightboxSrc = $state(null);
 
 	let uploadFile = $state(null);
 	let uploadPrimary = $state(false);
@@ -213,7 +215,14 @@
 			<div class="gallery">
 				{#each person.images as img (img.id)}
 					<div class="thumb" class:primary={img.is_primary}>
-						<img src={faceImageUrl(img.id)} alt={person.name} />
+						<button
+							type="button"
+							class="thumb-img"
+							onclick={() => (lightboxSrc = faceImageUrl(img.id))}
+							title="Click to view full image"
+						>
+							<img src={faceImageUrl(img.id)} alt={person.name} />
+						</button>
 						<div class="thumb-meta">
 							<span class="src">{sourceLabel(img.source)}</span>
 							{#if img.quality_score != null}
@@ -249,6 +258,10 @@
 		</section>
 	{/if}
 </div>
+
+{#if lightboxSrc}
+	<ImageLightbox src={lightboxSrc} alt="full image" onclose={() => (lightboxSrc = null)} />
+{/if}
 
 <style>
 	.page {
@@ -400,11 +413,20 @@
 		border-color: #6366f1;
 		box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.4);
 	}
-	.thumb img {
+	.thumb-img {
+		display: block;
+		width: 100%;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		cursor: zoom-in;
+	}
+	.thumb-img img {
 		width: 100%;
 		aspect-ratio: 1;
 		object-fit: cover;
 		background: #0f1117;
+		display: block;
 	}
 	.thumb-meta {
 		padding: 8px 10px 0;

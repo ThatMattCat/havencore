@@ -19,6 +19,7 @@ import cv2
 from fastapi import APIRouter, HTTPException
 
 import config
+import pipeline
 import retention
 from db import db
 from embedder import embedder
@@ -37,6 +38,8 @@ SNAPSHOT_DIR = Path(config.SNAPSHOT_DIR)
 # for a Postgres-backed job table.
 _jobs: Dict[str, Dict[str, Any]] = {}
 _rebuild_lock = asyncio.Lock()
+_rescan_lock = asyncio.Lock()
+RESCAN_BATCH = 200
 
 
 def _resolve(path: str) -> Path:
@@ -103,6 +106,56 @@ async def start_rebuild_embeddings():
         "errors": [],
     }
     asyncio.create_task(_run_rebuild(job_id))
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.post("/rescan-unknowns")
+async def start_rescan_unknowns():
+    """Re-match every unknown detection against the current Qdrant index.
+
+    Useful after confirming several unknowns as a known person — the new
+    embeddings raise the chance that older near-misses now clear
+    MATCH_THRESHOLD. High-quality matches that also clear the live
+    pipeline's IMPROVEMENT_QUALITY_FLOOR / IMPROVEMENT_THRESHOLD will
+    additionally feed the gallery (FIFO-bounded by MAX_EMBEDDINGS_PER_PERSON).
+
+    Returns immediately with a job_id. Poll GET /api/admin/jobs/{job_id}.
+    Single-flight per process; second concurrent request returns 409.
+    """
+    if _rescan_lock.locked():
+        in_flight = next(
+            (jid for jid, j in _jobs.items()
+             if j["status"] == "running" and j.get("type") == "rescan_unknowns"),
+            None,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "a rescan is already running",
+                "job_id": in_flight,
+            },
+        )
+
+    job_id = str(_uuid.uuid4())
+    _jobs[job_id] = {
+        "job_id": job_id,
+        "type": "rescan_unknowns",
+        "status": "running",
+        "phase": "pending",
+        "started_at": time.time(),
+        "finished_at": None,
+        "elapsed_ms": 0,
+        "totals": {
+            "examined": 0,
+            "matched": 0,
+            "no_match": 0,
+            "contributed": 0,
+            "skipped_missing_snapshot": 0,
+            "errors": 0,
+        },
+        "errors": [],
+    }
+    asyncio.create_task(_run_rescan(job_id))
     return {"job_id": job_id, "status": "running"}
 
 
@@ -225,6 +278,155 @@ async def _run_rebuild(job_id: str) -> None:
             job["phase"] = "error"
             job["errors"].append({
                 "face_image_id": None,
+                "reason": "fatal",
+                "detail": str(e)[:500],
+            })
+        finally:
+            job["finished_at"] = time.time()
+            job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
+
+
+async def _run_rescan(job_id: str) -> None:
+    """Walk all unknown detections, re-embed from disk, query Qdrant, and
+    confirm matches above MATCH_THRESHOLD. High-quality matches also
+    contribute to the gallery via the live pipeline's improvement gates.
+
+    Pagination strategy: we re-query `unknowns_only=True` each iteration.
+    Matched rows drop out of that filter (review_state flips to 'confirmed'),
+    so the queue naturally drains. If a full batch of `RESCAN_BATCH` rows
+    yields zero matches we've made one full pass with nothing more to do,
+    so we exit.
+    """
+    job = _jobs[job_id]
+    async with _rescan_lock:
+        try:
+            job["phase"] = "scanning"
+            while True:
+                rows = await db.list_detections(
+                    camera=None,
+                    since_seconds_ago=None,
+                    person_id=None,
+                    limit=RESCAN_BATCH,
+                    review_state=None,
+                    unknowns_only=True,
+                )
+                if not rows:
+                    break
+
+                progress = False
+                for row in rows:
+                    job["totals"]["examined"] += 1
+                    detection_id = row["id"]
+                    abs_path = _resolve(row["snapshot_path"])
+                    if not abs_path.exists():
+                        job["totals"]["skipped_missing_snapshot"] += 1
+                        continue
+
+                    try:
+                        img = await asyncio.to_thread(cv2.imread, str(abs_path))
+                        if img is None:
+                            raise ValueError("cv2.imread returned None")
+                        best, q = await asyncio.to_thread(_best_face_in_frame, img)
+                    except Exception as e:
+                        job["totals"]["errors"] += 1
+                        job["errors"].append({
+                            "detection_id": str(detection_id),
+                            "reason": "decode_or_inference_failed",
+                            "detail": str(e)[:200],
+                        })
+                        continue
+
+                    if best is None:
+                        job["totals"]["no_match"] += 1
+                        continue
+
+                    try:
+                        hits = await asyncio.to_thread(
+                            vector_store.query, best.normed_embedding, 3,
+                        )
+                    except Exception as e:
+                        job["totals"]["errors"] += 1
+                        job["errors"].append({
+                            "detection_id": str(detection_id),
+                            "reason": "qdrant_query_failed",
+                            "detail": str(e)[:200],
+                        })
+                        continue
+
+                    if not hits or hits[0].score <= config.MATCH_THRESHOLD:
+                        job["totals"]["no_match"] += 1
+                        continue
+
+                    pid_raw = (hits[0].payload or {}).get("person_id")
+                    try:
+                        pid = _uuid.UUID(pid_raw)
+                    except (TypeError, ValueError):
+                        job["totals"]["errors"] += 1
+                        job["errors"].append({
+                            "detection_id": str(detection_id),
+                            "reason": "invalid_person_id_in_payload",
+                            "detail": str(pid_raw)[:80],
+                        })
+                        continue
+
+                    person = await db.get_person(pid)
+                    if person is None:
+                        # Stale Qdrant point pointing at a deleted person.
+                        job["totals"]["no_match"] += 1
+                        continue
+
+                    confidence = float(hits[0].score)
+                    await db.confirm_detection(
+                        detection_id=detection_id,
+                        person_id=pid,
+                        embedding_contributed=False,
+                    )
+                    job["totals"]["matched"] += 1
+                    progress = True
+
+                    try:
+                        contributed = await pipeline.contribute_embedding_for_detection(
+                            person_id=pid,
+                            detection_id=detection_id,
+                            face=best,
+                            frame=img,
+                            quality=float(q),
+                            confidence=confidence,
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            "rescan: contribute_embedding raised for detection %s",
+                            detection_id,
+                        )
+                        contributed = False
+                        job["totals"]["errors"] += 1
+                        job["errors"].append({
+                            "detection_id": str(detection_id),
+                            "reason": "contribute_failed",
+                            "detail": str(e)[:200],
+                        })
+
+                    if contributed:
+                        job["totals"]["contributed"] += 1
+                        # Flip the row's flag so the UI shows the contribution.
+                        await db.confirm_detection(
+                            detection_id=detection_id,
+                            person_id=pid,
+                            embedding_contributed=True,
+                        )
+
+                if not progress:
+                    # Full batch examined, nothing matched — done.
+                    break
+
+            job["status"] = "done"
+            job["phase"] = "done"
+        except Exception as e:
+            logger.exception("Rescan job %s crashed: %s", job_id, e)
+            job["status"] = "error"
+            job["phase"] = "error"
+            job["errors"].append({
+                "detection_id": None,
                 "reason": "fatal",
                 "detail": str(e)[:500],
             })
