@@ -139,6 +139,7 @@ All paths below are served on port 6006 directly. The agent at port 6002 mirrors
 | `GET` | `/api/detections/{id}/snapshot` | Streams the snapshot JPEG |
 | `POST` | `/api/detections/{id}/confirm` | Body must specify exactly one of `{person_id}` or `{name}` (new person get-or-create). Re-runs detect+embed on the saved snapshot, persists to that person's gallery, marks the row `review_state='confirmed', embedding_contributed=true` |
 | `POST` | `/api/detections/{id}/reject` | Marks `review_state='rejected'` so it stops appearing in the unknowns queue |
+| `POST` | `/api/detections/bulk-delete` | Body `{scope: "rejected"\|"all_unknowns"}`. Mass-deletes unknown (`person_id IS NULL`) detection rows + their snapshot files. `rejected` narrows to `review_state='rejected'`; `all_unknowns` is the heavy hammer. Mirrors the retention sweeper's list → unlink → batch-delete pattern; file unlinks are best-effort. Returns `{rows_deleted, files_unlinked, scope}` |
 
 ### Cameras
 
@@ -152,7 +153,8 @@ All paths below are served on port 6006 directly. The agent at port 6002 mirrors
 |---|---|---|
 | `POST` | `/api/admin/retention/sweep` | Triggers a single retention sweep right now and returns the result (rows examined, files unlinked, rows deleted) |
 | `POST` | `/api/admin/rebuild-embeddings` | Returns `{job_id, status: "running"}`; full re-embed of every `face_images` row from disk in the background. Refreshes Qdrant points in place + updates `face_images.quality_score` with the freshly-computed value. Cleans orphan Qdrant points (payload references no DB row). One job at a time per process — concurrent POST returns 409 with the in-flight `job_id` |
-| `GET` | `/api/admin/jobs/{job_id}` | Polls a job. Phases: `loading → embedding → cleaning_orphans → done`. Per-row failures (`file_missing`, `no_face_above_quality_floor`, `decode_or_inference_failed`, `qdrant_or_db_write_failed`) accumulate in `errors[]` without aborting the run |
+| `POST` | `/api/admin/rescan-unknowns` | Returns `{job_id, status: "running"}`; walks every unknown (`person_id IS NULL AND review_state != 'rejected'`) detection, re-embeds the saved snapshot, queries Qdrant. Matches above `MATCH_THRESHOLD` flip to `review_state='confirmed'`. High-quality matches that also clear the live pipeline's `IMPROVEMENT_QUALITY_FLOOR` + `IMPROVEMENT_THRESHOLD` additionally feed the gallery (FIFO-bounded by `MAX_EMBEDDINGS_PER_PERSON`). Single-flight; concurrent POST returns 409 |
+| `GET` | `/api/admin/jobs/{job_id}` | Polls a job. Job-type-specific phases — rebuild: `loading → embedding → cleaning_orphans → done`; rescan: `scanning → done`. Per-row failures accumulate in `errors[]` without aborting the run. Totals shape varies by job type: rebuild reports `{images, re_embedded, missing_files, no_face, embed_failed, orphan_points_removed}`; rescan reports `{examined, matched, no_match, contributed, skipped_missing_snapshot, errors}` |
 | `GET` | `/api/admin/jobs?limit=20` | Most-recent jobs first |
 
 ### Health
@@ -195,6 +197,12 @@ HA's `camera_proxy` returned 0 frames. Check `HAOS_URL` / `HAOS_TOKEN` and that 
 ### Identified events have `embedding_contributed: false` consistently
 
 One of the three improvement gates is blocking. Most common culprit on outdoor wide-angle cameras: `quality_score` < `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`. The default was lowered to 0.65 specifically for the front_duo_3 install; per-camera overrides are tracked in [docs/todo.md](../../todo.md).
+
+### Unknowns queue is bloated
+
+After confirming several unknowns as the same person, kick `POST /api/admin/rescan-unknowns` to re-match every still-unknown detection against the now-richer index. The dashboard `/people/unknowns` page exposes this as a "Rescan against current index" button. High-quality matches contribute to the gallery on the same pass; the rest stay unknown for manual review.
+
+For raw cleanup, the same page has "Clear rejected" (deletes `review_state='rejected'` rows and their snapshot files) and "Delete ALL unknowns" (deletes every `person_id IS NULL` row, with a typed-`DELETE` confirmation). Both call `POST /api/detections/bulk-delete` with the appropriate scope.
 
 ### Postgres + Qdrant drift suspected
 

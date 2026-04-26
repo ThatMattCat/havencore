@@ -426,14 +426,16 @@ it's also the only surface the SvelteKit `/people` UI calls.
 | `GET`  | `/api/face/detections/{id}/snapshot` | Stream a detection snapshot JPEG |
 | `POST` | `/api/face/detections/{id}/confirm` | Body `{person_id}` or `{name}` (exactly one) — re-embeds + persists + marks `confirmed` |
 | `POST` | `/api/face/detections/{id}/reject` | Marks `rejected` so it stops appearing in the unknowns queue |
+| `POST` | `/api/face/detections/bulk-delete` | Body `{scope: "rejected"\|"all_unknowns"}` — mass-deletes unknown rows + snapshot files; returns `{rows_deleted, files_unlinked, scope}` |
+| `POST` | `/api/face/admin/rescan-unknowns` | Kicks the rescan-unknowns admin job (re-match every unknown against the current index, contribute high-quality matches to the gallery). Returns `{job_id, status: "running"}` immediately; poll `/api/face/admin/jobs/{id}` |
+| `GET`  | `/api/face/admin/jobs/{id}` | Poll a face-recognition admin job (rescan or rebuild). Status, phase, totals, errors |
 | `GET`  | `/api/face/cameras` | Discovery (HA person-sensor → camera entity mapping) |
 | `GET`  | `/api/face/health` | Upstream `/health` (model providers, db, qdrant, mqtt, retention) |
 
-The upstream service also exposes operator endpoints — `POST
-/api/admin/retention/sweep`, `POST /api/admin/rebuild-embeddings`, `GET
-/api/admin/jobs/{id}`, `GET /api/admin/jobs` — that are intentionally
-**not** proxied (they're not part of the dashboard surface). Hit them
-directly on port 6006. See
+Other operator endpoints — `POST /api/admin/retention/sweep`, `POST
+/api/admin/rebuild-embeddings`, `GET /api/admin/jobs?limit=` — are
+intentionally **not** proxied (not part of the dashboard surface). Hit
+them directly on port 6006. See
 [Face Recognition Service](services/face-recognition/README.md#admin--operator)
 for shapes.
 
