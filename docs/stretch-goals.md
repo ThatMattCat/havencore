@@ -29,22 +29,40 @@ Effort scale: **S** = weekend (4–12 hrs), **M** = 1–2 weeks spare-time, **L*
 
 ---
 
-## 2. Face Recognition (doorbell + general cameras)
+## 2. Face Recognition (doorbell + general cameras) — ✅ DONE
 
-**Plausibility: High** — if offloaded to Frigate rather than rolling our own.
+**Status:** Shipped 2026-04-25 as the **`face-recognition` microservice**
+(port 6006). The DIY-with-InsightFace path was taken over the Frigate
+recommendation because GPU 3 was already free (`iav-to-text` evicted),
+because the project already had Postgres + Qdrant + Mosquitto in place,
+and because rolling our own kept the data plane on-LAN with no
+intermediary daemon to coexist with.
 
-**Approach:**
-- **Recommended**: stand up **Frigate** as an HA add-on, point it at camera streams, enable its built-in face recognition (or plug in `deepstack` / `double-take`). Frigate publishes detection + identity events to MQTT — a surface HavenCore already consumes.
-- Extend `selene_agent/modules/mcp_mqtt_tools/` with a `camera_face_events` subscriber; wire detections into the autonomy engine (`autonomy/mqtt_listener.py`) so "unknown person at front door" becomes a trigger.
-- Alternative (DIY, not recommended first pass): add `face_recognition` Python lib or InsightFace to a new service; camera snapshots already work via `get_camera_snapshots()` in `mcp_mqtt_tools/mcp_server.py`.
+**What landed:**
+- `services/face-recognition/` — InsightFace `buffalo_l` (RetinaFace +
+  ArcFace, 512-d) on GPU 3, ~600 MB VRAM idle, <100 ms inference per
+  frame.
+- `face_detections` / `face_images` / `people` tables in Postgres;
+  `faces` collection in Qdrant.
+- HA template automation publishes `haven/face/trigger/{camera}` on any
+  person sensor flip; bridge bursts frames via `camera_proxy`, picks
+  top-K by quality, mean-embeds, kNN against the gallery, publishes to
+  `haven/face/identified` / `haven/face/unknown`.
+- Continuous-improvement loop (3 gates + FIFO eviction) so confident
+  identifications grow each person's gallery without operator action.
+- Agent MCP module `mcp_face_tools` (5 tools) + agent `/api/face/*`
+  proxy + SvelteKit `/people` UI (grid, gallery, detections timeline,
+  unknowns review queue).
+- Operator endpoints: retention sweeper + `rebuild-embeddings` for
+  drift recovery.
 
-**Effort: S (with Frigate) | L (rolling own).**
+**v1 is log-only.** The MQTT contract was designed so an enforcer can
+subscribe later without schema changes — that part is the doorbell
+greeter (#7) below.
 
-**Unlocks:** doorbell greeter, "who's home" context, autonomy rules keyed to identity, per-person notifications.
-
-**Gotchas:**
-- Frigate wants its own GPU slice; vLLM + iav-to-text + ComfyUI + embeddings are already coexisting. May need a second GPU or CPU-only detection.
-- Qwen2.5-Omni (iav-to-text) can *describe* faces but is unreliable for identity matching — don't use it as a face-rec primitive.
+See [Face Recognition Service](services/face-recognition/README.md) for
+the full reference and [todo.md](todo.md#face-recognition--deferred-polish)
+for the three small carry-overs from the rollout.
 
 ---
 
@@ -131,14 +149,15 @@ Three sub-problems: hardware, rendering, pushing frames. The last one is mostly 
 
 ## Suggested Sequencing
 
-Ordered by leverage and dependency:
+Ordered by leverage and dependency. Item #2 (Face Recognition) is now
+done — the rest of the list is unchanged in order, just shifted up.
 
 1. **Streaming TTS + barge-in (#4, M)** — unblocks natural conversation; prerequisite for non-janky avatar.
 2. **Speaker recognition (#1, S–M)** — unlocks per-user memory, security; feeds emotion/presence.
-3. **Face rec via Frigate (#2, S)** — cheap given Frigate does the heavy lifting.
+3. ~~**Face rec via Frigate**~~ — done as a DIY InsightFace microservice instead. See #2 above.
 4. **Presence + emotion (#5 + #6, S each)** — small additions on top of #1.
 5. **Kiosk display + Live2D avatar (#3, M)** — the visible payoff.
-6. **Doorbell greeter (#7, S)** — composes #2, #4, #11.
+6. **Doorbell greeter (#7, S)** — now actually buildable; composes the shipped face-rec MQTT events with bi-directional doorbell audio.
 7. **Personal wake-word (#8, S–M)** — satellite-repo work, can parallelize.
 8. **Learned routines (#10, L)** — longer horizon, plugs into autonomy v2.
 9. **Speech-to-speech (#9, XL)** — defer; revisit when open models catch up.
@@ -149,6 +168,6 @@ Ordered by leverage and dependency:
 
 ## Notes
 
-- GPU budget is the real constraint. vLLM, iav-to-text (Qwen-Omni), ComfyUI, embeddings already coexist. Adding Frigate + neural avatar would likely need a second GPU. Live2D sidesteps this.
+- GPU budget is the real constraint. vLLM (`-tp 4`) spans all four GPUs at `--gpu-memory-utilization 0.77`; face-recognition co-tenants GPU 3 with vLLM (small ~600 MB resident model). ComfyUI and embeddings co-tenant on the lower GPUs. iav-to-text is currently shelved (see [todo.md](todo.md#replace-iav-to-text-imagevision-analysis)) — its slot is what face-rec moved into. A neural-avatar talking head would still need new headroom. Live2D sidesteps this.
 - Satellite firmware lives in a separate repo (`havencore-satellite-firmware`); anything touching audio capture, wake-word, or on-device embeddings straddles both repos.
 - Multi-user / speaker-aware memory is already flagged in the autonomy v2 direction — speaker ID (#1) is effectively the prerequisite for that roadmap, not a side quest.

@@ -149,6 +149,73 @@ register, so the agent stays healthy without them.
 - **Brave Search**: Get key from [Brave Search API](https://api.search.brave.com/)
 - **WolframAlpha**: Register at [Wolfram Developer Portal](https://developer.wolframalpha.com/)
 
+### Face recognition
+
+Identity for Home Assistant cameras. Full service reference:
+[`services/face-recognition/README.md`](services/face-recognition/README.md).
+
+```bash
+# Master switch — set false to skip the entire startup (model load, DB,
+# Qdrant collection bootstrap, MQTT bridge, sweeper). HTTP /health still
+# responds.
+FACE_REC_ENABLED=true
+
+# Where new triggers come from. ha_person_detected is the only mode in
+# active use; polling and both are available but not currently exercised.
+FACE_REC_TRIGGER_MODE=ha_person_detected     # ha_person_detected | polling | both
+FACE_REC_POLL_CAMERAS=                       # CSV; only used when mode includes polling
+FACE_REC_POLL_INTERVAL_SEC=10
+
+# Cosine similarity floor for the top-1 Qdrant hit to count as identified.
+# 0.50 is the empirical default for ArcFace R100 on buffalo_l.
+FACE_REC_MATCH_THRESHOLD=0.50
+
+# Continuous improvement gates — applied on top of MATCH_THRESHOLD only
+# when an event was identified. The improvement threshold is intentionally
+# stricter than the match threshold so we only learn from confident hits.
+FACE_REC_IMPROVEMENT_THRESHOLD=0.65
+FACE_REC_QUALITY_FLOOR=0.40
+FACE_REC_IMPROVEMENT_QUALITY_FLOOR=0.65   # outdoor wide-angle scores routinely 0.66-0.69
+FACE_REC_MAX_EMBEDDINGS_PER_PERSON=50     # FIFO eviction on cap
+
+# Burst-capture from HA per trigger
+FACE_REC_BURST_FRAMES=6
+FACE_REC_BURST_INTERVAL_MS=500
+
+# GPU label (informational only; the actual placement is via
+# CUDA_VISIBLE_DEVICES on the compose service)
+FACE_REC_GPU_DEVICE=3
+
+# Snapshot retention sweeper. Set INTERVAL_MIN=0 to disable the periodic
+# loop entirely; the startup sweep can be skipped independently.
+# Unknowns are kept longer because they're the review-queue source of truth.
+FACE_SNAPSHOT_RETENTION_UNKNOWN_DAYS=30
+FACE_SNAPSHOT_RETENTION_KNOWN_DAYS=7
+FACE_REC_RETENTION_SWEEP_INTERVAL_MIN=60
+FACE_REC_RETENTION_SWEEP_ON_STARTUP=true
+
+# MQTT bridge — defaults match the compose service. Set MQTT_ENABLED=false
+# to run as HTTP-only (manual /api/trigger still works; HA triggers won't).
+FACE_REC_MQTT_ENABLED=true
+FACE_REC_MQTT_CLIENT_ID=havencore-face-recognition
+FACE_REC_MQTT_RECONNECT_MAX_SEC=60
+```
+
+The agent's MCP shim and frontend proxy both use:
+
+```bash
+# Face-recognition base URL the agent reaches it at. Default works for
+# the compose-internal network; override only if you've moved the service.
+FACE_REC_API_BASE="http://face-recognition:6006"
+```
+
+The face-recognition service also reads the existing `HAOS_URL` /
+`HAOS_TOKEN` (camera_proxy snapshots — see
+[Home Assistant](#home-assistant) above) and the existing `MQTT_BROKER` /
+`MQTT_PORT` (default `mosquitto:1883` matches the compose service — same
+vars `mcp_mqtt_tools` consumes; see
+[`docs/services/agent/tools/mqtt.md`](services/agent/tools/mqtt.md)).
+
 ### Semantic memory (Qdrant + embeddings)
 
 ```bash

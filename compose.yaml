@@ -320,6 +320,47 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
+  face-recognition:
+    # InsightFace buffalo_l (RetinaFace + ArcFace) on GPU 3.
+    # Volume-mounted app dir so step-by-step changes don't require a rebuild.
+    # CUDA_VISIBLE_DEVICES pins the host GPU; ctx_id=0 inside the container.
+    build:
+      context: ./services/face-recognition
+      dockerfile: Dockerfile
+    image: face-recognition:${VERSION:-latest}
+    env_file:
+      - .env
+    ports:
+      - "6006:6006"
+    environment:
+      - CUDA_VISIBLE_DEVICES=3
+    volumes:
+      - ./services/face-recognition/app:/app
+      - ./volumes/face_snapshots:/data/snapshots
+      - ./volumes/insightface_models:/root/.insightface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      mosquitto:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6006/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # buffalo_l is small (~600MB), but first run downloads the model pack.
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
   signal-api:
     # signal-cli-rest-api — outbound-only bridge to Signal's servers.
     # Bound to 127.0.0.1 so the QR-link endpoint is reachable from the host

@@ -335,3 +335,213 @@ export function getMetricSummary(days = 7): Promise<MetricsSummary> {
 export function getTopTools(days = 7, limit = 10): Promise<{ tools: TopTool[]; days: number }> {
 	return fetchJSON(`/api/metrics/top-tools?days=${days}&limit=${limit}`);
 }
+
+// --- Face recognition ---
+
+export type AccessLevel = 'unknown' | 'resident' | 'guest' | 'blocked';
+export const ACCESS_LEVELS: AccessLevel[] = ['unknown', 'resident', 'guest', 'blocked'];
+
+export interface FaceImage {
+	id: string;
+	path: string;
+	is_primary: boolean;
+	source: string;
+	quality_score: number | null;
+	created_at: string;
+}
+
+export interface Person {
+	id: string;
+	name: string;
+	access_level: AccessLevel;
+	notes: string | null;
+	image_count: number;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface PersonDetail extends Person {
+	images: FaceImage[];
+}
+
+export interface FaceDetection {
+	id: string;
+	event_id: string;
+	camera: string;
+	captured_at: string;
+	person_id: string | null;
+	person_name: string | null;
+	confidence: number | null;
+	quality_score: number | null;
+	snapshot_path: string;
+	review_state: 'auto' | 'confirmed' | 'rejected' | 'pending';
+	embedding_contributed: boolean;
+}
+
+export interface FaceCamera {
+	sensor_entity: string;
+	camera_entity: string;
+	camera_exists: boolean;
+	current_state: string;
+}
+
+// URL helpers — return the agent-proxy stream URLs so callers can drop
+// them straight into <img src=...>.
+export function faceImageUrl(faceImageId: string): string {
+	return `/api/face/face_images/${faceImageId}/bytes`;
+}
+
+export function detectionSnapshotUrl(detectionId: string): string {
+	return `/api/face/detections/${detectionId}/snapshot`;
+}
+
+export function listPeople(): Promise<Person[]> {
+	return fetchJSON('/api/face/people');
+}
+
+export function getPerson(personId: string): Promise<PersonDetail> {
+	return fetchJSON(`/api/face/people/${personId}`);
+}
+
+export function createPerson(body: {
+	name: string;
+	access_level?: AccessLevel;
+	notes?: string;
+}): Promise<Person> {
+	return fetchJSON('/api/face/people', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
+export function updatePerson(
+	personId: string,
+	body: { access_level?: AccessLevel; notes?: string },
+): Promise<Person> {
+	return fetchJSON(`/api/face/people/${personId}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
+export function deletePerson(
+	personId: string,
+): Promise<{ id: string; images_removed: number; qdrant_points_removed: number }> {
+	return fetchJSON(`/api/face/people/${personId}`, { method: 'DELETE' });
+}
+
+export async function enrollImage(
+	personId: string,
+	file: File,
+	opts?: { isPrimary?: boolean; source?: string },
+): Promise<{ id: string; quality_score: number; faces_detected: number }> {
+	const form = new FormData();
+	form.append('file', file);
+	form.append('is_primary', opts?.isPrimary ? 'true' : 'false');
+	form.append('source', opts?.source ?? 'upload');
+	const res = await fetch(`/api/face/people/${personId}/images`, {
+		method: 'POST',
+		body: form,
+	});
+	if (!res.ok) {
+		const detail = await res.text().catch(() => res.statusText);
+		throw new Error(`${res.status}: ${detail}`);
+	}
+	return res.json();
+}
+
+export function setPrimaryImage(personId: string, faceImageId: string): Promise<FaceImage> {
+	return fetchJSON(`/api/face/people/${personId}/images/${faceImageId}/set-primary`, {
+		method: 'POST',
+	});
+}
+
+export function deleteFaceImage(
+	personId: string,
+	faceImageId: string,
+): Promise<{ id: string; deleted: boolean }> {
+	return fetchJSON(`/api/face/people/${personId}/images/${faceImageId}`, {
+		method: 'DELETE',
+	});
+}
+
+export interface DetectionsQuery {
+	camera?: string;
+	person_id?: string;
+	since_seconds_ago?: number;
+	review_state?: 'auto' | 'confirmed' | 'rejected' | 'pending';
+	unknowns_only?: boolean;
+	limit?: number;
+}
+
+export function listDetections(q: DetectionsQuery = {}): Promise<FaceDetection[]> {
+	const params = new URLSearchParams();
+	if (q.camera) params.set('camera', q.camera);
+	if (q.person_id) params.set('person_id', q.person_id);
+	if (q.since_seconds_ago != null) params.set('since_seconds_ago', String(q.since_seconds_ago));
+	if (q.review_state) params.set('review_state', q.review_state);
+	if (q.unknowns_only) params.set('unknowns_only', 'true');
+	if (q.limit != null) params.set('limit', String(q.limit));
+	const qs = params.toString();
+	return fetchJSON(`/api/face/detections${qs ? `?${qs}` : ''}`);
+}
+
+export interface ConfirmResult {
+	detection_id: string;
+	person_id: string;
+	person_name: string;
+	embedding_contributed: boolean;
+	quality_score: number | null;
+	faces_detected: number;
+}
+
+export function confirmDetection(
+	detectionId: string,
+	body: { person_id?: string; name?: string },
+): Promise<ConfirmResult> {
+	return fetchJSON(`/api/face/detections/${detectionId}/confirm`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
+export function rejectDetection(detectionId: string): Promise<FaceDetection> {
+	return fetchJSON(`/api/face/detections/${detectionId}/reject`, { method: 'POST' });
+}
+
+export function listFaceCameras(): Promise<FaceCamera[]> {
+	return fetchJSON('/api/face/cameras');
+}
+
+export interface FaceJob {
+	job_id: string;
+	type: 'rescan_unknowns' | 'rebuild_embeddings';
+	status: 'running' | 'done' | 'error';
+	phase: string;
+	started_at: number;
+	finished_at: number | null;
+	elapsed_ms: number;
+	totals: Record<string, number>;
+	errors: { detection_id?: string | null; face_image_id?: string | null; reason: string; detail?: string }[];
+}
+
+export function startRescanUnknowns(): Promise<{ job_id: string; status: string }> {
+	return fetchJSON('/api/face/admin/rescan-unknowns', { method: 'POST' });
+}
+
+export function getFaceJob(jobId: string): Promise<FaceJob> {
+	return fetchJSON(`/api/face/admin/jobs/${jobId}`);
+}
+
+export function bulkDeleteDetections(
+	scope: 'rejected' | 'all_unknowns',
+): Promise<{ rows_deleted: number; files_unlinked: number; scope: string }> {
+	return fetchJSON('/api/face/detections/bulk-delete', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ scope }),
+	});
+}

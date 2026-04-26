@@ -59,7 +59,7 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 - **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
 - **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 
-**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate port 6006 FastAPI app were removed during the 2026 revamp.
+**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate FastAPI app on port 6006 were removed during the 2026 revamp; port 6006 is now used by the unrelated [face-recognition service](services/face-recognition/README.md).
 
 ### 3. Speech-to-Text Service (Port 6001)
 **Purpose**: Audio Transcription and Processing
@@ -123,6 +123,16 @@ conversation_histories (
 - Supports multiple embedding models
 - Integration with vector database
 - Semantic similarity computation
+
+### 9. Face Recognition Service (Port 6006)
+**Purpose**: Identity for Home Assistant cameras — knows *who* a camera is seeing
+- InsightFace `buffalo_l` (RetinaFace + ArcFace, 512-d) on a dedicated GPU
+- Subscribes to `haven/face/trigger/{camera}` (HA fires it on person-detected)
+- Bursts frames via HA `camera_proxy`, picks top-K faces by quality, embeds, kNN against the Qdrant `faces` collection
+- Persists detections + snapshots to Postgres / disk; publishes results to MQTT
+- v1 is log-only — access-control enforcement is deliberately deferred
+
+Uses the existing Postgres + Qdrant + Mosquitto + HA primitives rather than introducing new infrastructure. See [Face Recognition](services/face-recognition/README.md) for full reference.
 
 ## Data Flow Architecture
 
