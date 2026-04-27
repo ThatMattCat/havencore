@@ -30,6 +30,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("face-recognition")
 
+# Quiet third-party libraries that log every HTTP call at INFO. The qdrant
+# client routes through httpx for every query; uvicorn's access logger fires
+# on every Docker /health poll (every 30s). Both drown out the lines we
+# actually care about.
+for noisy in ("httpx", "httpcore", "openai"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+class _SuppressHealthAccessLog(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        # uvicorn access format: '127.0.0.1:xxxxx - "GET /health HTTP/1.1" 200 OK'
+        return "/health" not in msg
+
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLog())
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):

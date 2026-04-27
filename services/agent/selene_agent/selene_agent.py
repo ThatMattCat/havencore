@@ -52,6 +52,24 @@ from selene_agent.autonomy.engine import AutonomyEngine
 
 logger = custom_logger.get_logger('loki')
 
+# Quiet third-party libraries that log every HTTP call at INFO. The OpenAI
+# SDK + qdrant client both route through httpx for every request; uvicorn's
+# access logger fires on every Docker /health poll (every 30s). Both drown
+# out the lines we actually care about. Apply after get_logger() so the
+# dictConfig in the custom logger module doesn't override these.
+import logging as _logging
+for _noisy in ("httpx", "httpcore", "openai"):
+    _logging.getLogger(_noisy).setLevel(_logging.WARNING)
+
+
+class _SuppressHealthAccessLog(_logging.Filter):
+    def filter(self, record: _logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/health" not in msg
+
+
+_logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLog())
+
 
 # --- Pydantic models for OpenAI-compatible API ---
 
