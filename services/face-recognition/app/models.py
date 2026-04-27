@@ -78,6 +78,9 @@ class DetectionOut(BaseModel):
     snapshot_path: str
     review_state: str
     embedding_contributed: bool
+    # InsightFace genderage outputs — informational only.
+    age: Optional[int] = None
+    sex: Optional[str] = None
 
 
 class ConfirmDetectionRequest(BaseModel):

@@ -467,6 +467,16 @@ async def process_event(
 
         snapshot_rel_path = _save_snapshot(best_frame, captured_at, event_id)
 
+        # genderage submodel ships in buffalo_l and runs on every face by
+        # default — these come back as estimates, not ground truth, and exist
+        # only for dashboard display. Coerce age to int (insightface returns
+        # numpy.int64 on some installs) so asyncpg's SMALLINT bind doesn't
+        # complain.
+        best_age = getattr(best.face, "age", None)
+        best_sex = getattr(best.face, "sex", None)
+        if best_age is not None:
+            best_age = int(best_age)
+
         detection = await db.insert_face_detection(
             event_id=event_id,
             camera=camera,
@@ -475,6 +485,8 @@ async def process_event(
             confidence=confidence,
             quality_score=best_quality,
             snapshot_path=snapshot_rel_path,
+            age=best_age,
+            sex=best_sex,
         )
         detection_id: uuid.UUID = detection["id"]
 

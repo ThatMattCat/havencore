@@ -376,6 +376,9 @@ export interface FaceDetection {
 	snapshot_path: string;
 	review_state: 'auto' | 'confirmed' | 'rejected' | 'pending';
 	embedding_contributed: boolean;
+	// InsightFace genderage outputs — informational, not used in matching.
+	age: number | null;
+	sex: 'M' | 'F' | null;
 }
 
 export interface FaceCamera {

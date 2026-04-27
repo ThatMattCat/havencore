@@ -55,8 +55,16 @@ CREATE TABLE IF NOT EXISTS face_detections (
   quality_score REAL,
   snapshot_path TEXT NOT NULL,
   review_state TEXT NOT NULL DEFAULT 'auto',
-  embedding_contributed BOOLEAN DEFAULT false
+  embedding_contributed BOOLEAN DEFAULT false,
+  -- InsightFace genderage submodel outputs. Surfaced read-only in the
+  -- dashboard; not used in matching, gating, or autonomy. NULL when no
+  -- face cleared QUALITY_FLOOR (the no_face outcome) since there's no
+  -- face to estimate from.
+  age SMALLINT,
+  sex CHAR(1)
 );
+ALTER TABLE face_detections ADD COLUMN IF NOT EXISTS age SMALLINT;
+ALTER TABLE face_detections ADD COLUMN IF NOT EXISTS sex CHAR(1);
 CREATE INDEX IF NOT EXISTS idx_face_detections_captured ON face_detections(captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_face_detections_unknown
   ON face_detections(review_state) WHERE person_id IS NULL;
@@ -487,6 +495,8 @@ class Database:
         confidence: Optional[float],
         quality_score: float,
         snapshot_path: str,
+        age: Optional[int] = None,
+        sex: Optional[str] = None,
     ) -> dict[str, Any]:
         assert self.pool is not None
         async with self.pool.acquire() as conn:
@@ -494,14 +504,14 @@ class Database:
                 """
                 INSERT INTO face_detections
                     (event_id, camera, captured_at, person_id, confidence,
-                     quality_score, snapshot_path)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     quality_score, snapshot_path, age, sex)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id, event_id, camera, captured_at, person_id,
                           confidence, quality_score, snapshot_path,
-                          review_state, embedding_contributed
+                          review_state, embedding_contributed, age, sex
                 """,
                 event_id, camera, captured_at, person_id, confidence,
-                quality_score, snapshot_path,
+                quality_score, snapshot_path, age, sex,
             )
         return dict(row)
 
@@ -530,7 +540,8 @@ class Database:
                 SELECT d.id, d.event_id, d.camera, d.captured_at,
                        d.person_id, p.name AS person_name,
                        d.confidence, d.quality_score, d.snapshot_path,
-                       d.review_state, d.embedding_contributed
+                       d.review_state, d.embedding_contributed,
+                       d.age, d.sex
                 FROM face_detections d
                 LEFT JOIN people p ON d.person_id = p.id
                 WHERE ($1::text IS NULL OR d.camera = $1)
@@ -553,7 +564,8 @@ class Database:
                 SELECT d.id, d.event_id, d.camera, d.captured_at,
                        d.person_id, p.name AS person_name,
                        d.confidence, d.quality_score, d.snapshot_path,
-                       d.review_state, d.embedding_contributed
+                       d.review_state, d.embedding_contributed,
+                       d.age, d.sex
                 FROM face_detections d
                 LEFT JOIN people p ON d.person_id = p.id
                 WHERE d.id = $1
@@ -585,7 +597,7 @@ class Database:
                 WHERE id = $1
                 RETURNING id, event_id, camera, captured_at, person_id,
                           confidence, quality_score, snapshot_path,
-                          review_state, embedding_contributed
+                          review_state, embedding_contributed, age, sex
                 """,
                 detection_id, person_id, embedding_contributed,
             )
@@ -702,7 +714,7 @@ class Database:
                 WHERE id = $1
                 RETURNING id, event_id, camera, captured_at, person_id,
                           confidence, quality_score, snapshot_path,
-                          review_state, embedding_contributed
+                          review_state, embedding_contributed, age, sex
                 """,
                 detection_id,
             )

@@ -100,7 +100,15 @@
 	}
 
 	function shortCamera(entity) {
-		return entity.replace(/^camera\./, '').replace(/_fluent$/, '');
+		return entity.replace(/^camera\./, '').replace(/_(clear|fluent|main|sub)$/, '');
+	}
+
+	function formatDemographic(d) {
+		if (d.age == null && !d.sex) return null;
+		const parts = [];
+		if (d.sex) parts.push(d.sex);
+		if (d.age != null) parts.push(`~${d.age}`);
+		return parts.join(' ');
 	}
 
 	async function startRescan() {
@@ -290,6 +298,9 @@
 							{/if}
 							{#if d.quality_score != null}
 								<span class="conf">quality {d.quality_score.toFixed(2)}</span>
+							{/if}
+							{#if formatDemographic(d)}
+								<span class="conf" title="InsightFace estimate — display only">{formatDemographic(d)}</span>
 							{/if}
 						</div>
 

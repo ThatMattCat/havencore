@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS face_detections (
     quality_score REAL,
     snapshot_path TEXT NOT NULL,
     review_state TEXT NOT NULL DEFAULT 'auto',
-    embedding_contributed BOOLEAN DEFAULT false
+    embedding_contributed BOOLEAN DEFAULT false,
+    -- InsightFace genderage outputs (read-only display; not used in matching).
+    age SMALLINT,
+    sex CHAR(1)
 );
 CREATE INDEX IF NOT EXISTS idx_face_detections_captured ON face_detections(captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_face_detections_unknown
