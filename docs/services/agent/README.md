@@ -6,7 +6,7 @@ The core AI agent — Python + FastAPI + a built-in SvelteKit dashboard, all ser
 
 - [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, Music Assistant, general, Qdrant, MQTT, GitHub, plus a tool-development guide.
 - [Conversation history](conversation-history.md) — how timed-out conversations get persisted to Postgres.
-- [Autonomy engine (v1)](autonomy/README.md) — proactive background behaviors (morning briefing, ambient anomaly sweep) that wake on a schedule, run a tier-filtered autonomous turn, and notify via Signal message or HA push.
+- [Autonomy engine](autonomy/README.md) — proactive background behaviors that wake on a schedule or in response to live MQTT/webhook events, run a tier-filtered autonomous turn, and notify via Signal, HA push, or speaker. Includes scheduled briefing + anomaly sweep, user-programmable reminders / watches / routines, the supervised act tier, and the [camera/sensor event pipeline](autonomy/cameras.md) that wires face-recognition (and future vehicle/motion/doorbell sources) through `watch_llm` for proactive notifications.
 - [Revamp 2026](revamp-2026.md) — architectural notes on the April 2026 rewrite (Gradio removal, async FastAPI, dashboard, streaming).
 
 ## Responsibilities
@@ -49,7 +49,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/` | GET | SvelteKit dashboard SPA (Dashboard, Chat, Devices, Memory, History, Playgrounds, Metrics, System) |
+| `/` | GET | SvelteKit dashboard SPA (Dashboard, Chat, Playgrounds, Metrics, Devices, People, Cameras, Memory, Autonomy, History, System) |
 | `/api/chat` | POST | Send a message, get full response + tool event log |
 | `/api/status` | GET | Health: agent, MCP servers, DB, vLLM |
 | `/api/tools` | GET | Registered tools grouped by MCP server |
@@ -69,6 +69,8 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/autonomy/trigger/{id}` | POST | Fire an agenda item immediately, bypassing schedule + rate limit |
 | `/api/memory/*` | GET/POST/PATCH/DELETE | Tiered memory (L2/L3/L4): stats, L2/L3/L4 browse, L4 CRUD, proposal approve/reject, L3 source drill-down, semantic search, run history + manual trigger, `admin/purge` hygiene endpoint. See [autonomy/memory/README.md](autonomy/memory/README.md). |
 | `/api/face/*` | GET/POST/PATCH/DELETE | Pass-through proxy to the [face-recognition service](../face-recognition/README.md) (port 6006). Mirrors the upstream `/api/*` surface 1:1 — only the path prefix changes. Backs the SvelteKit `/people` routes (people grid + detail, detections timeline, unknowns review queue) and streams snapshot/face-image bytes so the dashboard never sees on-disk paths. Reads `FACE_REC_API_BASE`. See [API Reference → Face recognition (agent proxy)](../../api-reference.md#face-recognition-agent-proxy). |
+| `/api/cameras` | GET | Discovered HA cameras (proxied from face-rec) left-joined with the autonomy `camera_zones` table. Backs the `/cameras` dashboard page where the operator maps each camera to a zone slug (`front_door`, `backyard`, `driveway`, …). Zones are what the autonomy LLM reasons about, not raw entity_ids. |
+| `/api/cameras/{entity}/zone` | PUT/DELETE | Upsert or clear a zone assignment. Updates fan out via Postgres `LISTEN/NOTIFY` so the autonomy engine's in-memory zone cache refreshes without a restart. See [autonomy/cameras.md](autonomy/cameras.md). |
 | `/api/agent/phase` | GET/POST | Read or set the agent's operational phase (`learning` \| `operating`). Writes to the `agent_state` Postgres table and refreshes active sessions' system prompts. |
 | `/api/system/llm-provider` | GET/POST | Read or switch the active LLM provider (`vllm` \| `anthropic`; `openai` is stubbed). Writes to the `agent_state` table and hot-swaps `app.state.provider`. See [LLM provider toggle](#llm-provider-toggle). |
 | `/ws/chat` | WS | Streaming chat with tool visibility + metric events |

@@ -439,6 +439,25 @@ them directly on port 6006. See
 [Face Recognition Service](services/face-recognition/README.md#admin--operator)
 for shapes.
 
+### Cameras (zone mapping)
+
+`/api/cameras/*` manages the camera-to-zone map the autonomy engine reads
+when triaging camera/sensor events. Zones are free-text slugs
+(`front_door`, `backyard`, `driveway`, `side_yard`, …) — the LLM reasons
+about zones, not raw HA camera entity_ids, so the same notification
+logic generalizes across deployments. Backed by the `camera_zones`
+Postgres table; updates fan out via `LISTEN/NOTIFY` so the autonomy
+engine's in-memory zone cache refreshes without a restart. Backs the
+`/cameras` SvelteKit page. See
+[autonomy/cameras.md](services/agent/autonomy/cameras.md) for the
+end-to-end flow.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET`    | `/api/cameras` | Returns `{cameras: [...], zones: [...]}`. `cameras[]` is the discovered HA camera list (proxied from face-rec's `/api/cameras`) left-joined with `camera_zones` — each row is `{camera_entity, sensor_entity, camera_exists, current_state, zone, zone_label, notes, updated_at}`. Orphan rows whose entity_id is no longer reported by face-rec are still included so they can be cleaned up. `zones[]` is the distinct list of in-use zone slugs for autocomplete |
+| `PUT`    | `/api/cameras/{entity}/zone` | Upsert. Body: `{zone: string, zone_label?: string, notes?: string}`. `entity` is the HA camera entity_id (e.g. `camera.front_duo_3_fluent`); the path uses FastAPI's `:path` converter so `.` is preserved |
+| `DELETE` | `/api/cameras/{entity}/zone` | Clear the assignment. Returns `{camera_entity, deleted: bool}` |
+
 ### WebSockets
 
 | URL | Direction | Purpose |

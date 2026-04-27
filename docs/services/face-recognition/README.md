@@ -86,6 +86,8 @@ The full env reference lives in [`docs/configuration.md` → Face recognition](.
 8. **Continuous improvement** (only when identified): if quality ≥ `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`, confidence ≥ `FACE_REC_IMPROVEMENT_THRESHOLD`, and the person has fewer than `FACE_REC_MAX_EMBEDDINGS_PER_PERSON` gallery embeddings, contribute the new crop. FIFO-evicts the oldest non-primary embedding if the cap is hit.
 9. Publish to `haven/face/identified` or `haven/face/unknown`; status → `idle` (in `try/finally` so it always emits).
 
+If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, and publishes to `haven/face/no_face`. This gives downstream subscribers (autonomy + a future vision LLM) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
+
 InsightFace inference runs in a worker thread (`asyncio.to_thread`) so a burst doesn't peg the FastAPI event loop while the MQTT bridge is consuming triggers.
 
 ## MQTT contract
@@ -93,11 +95,14 @@ InsightFace inference runs in a worker thread (`asyncio.to_thread`) so a burst d
 | Topic | Direction | Payload |
 |---|---|---|
 | `haven/face/trigger/{camera}` | HA → face-rec | `{source, event_id, captured_at}` (camera comes from the topic suffix; HA's `event_id` is a timestamp string and is logged but not persisted — see deferred follow-up in [docs/todo.md](../../todo.md)) |
-| `haven/face/identified` | face-rec → world | `{event_id, camera, person_id, person_name, confidence, quality, snapshot_path, captured_at}` |
-| `haven/face/unknown` | face-rec → world | `{event_id, camera, snapshot_path, quality, captured_at}` |
+| `haven/face/identified` | face-rec → world | `{event_id, detection_id, camera, person_id, person_name, confidence, quality_score, snapshot_path, captured_at}` |
+| `haven/face/unknown` | face-rec → world | `{event_id, detection_id, camera, snapshot_path, quality_score, captured_at}` |
+| `haven/face/no_face` | face-rec → world | `{event_id, detection_id, camera, snapshot_path, frames_processed, captured_at}` — person sensor tripped + frames captured, but no face cleared `FACE_REC_QUALITY_FLOOR`. Middle frame is saved so a vision-LLM gather step can still inspect it. |
 | `haven/face/status` | face-rec → world | `{camera, mode: "idle"\|"capturing"\|"matching", since}` (single global topic; not retained) |
 
-`no_face` and `no_frames` outcomes are intentionally not published — there's nothing actionable downstream.
+`detection_id` on the result topics is the UUID of the inserted `face_detections` row. Downstream consumers (e.g. the agent's autonomy `sensor_events` normalizer) use it to synthesize the snapshot URL `{AGENT_INTERNAL_BASE_URL}/api/face/detections/{detection_id}/snapshot` for notification attachments.
+
+`no_frames` outcomes (HA `camera_proxy` returned zero decoded frames — capture itself failed) are still intentionally not published; there's nothing to attach.
 
 The HA-side automation that fires the trigger is documented in [`docs/integrations/home-assistant.md` → Face recognition camera triggers](../../integrations/home-assistant.md#face-recognition-camera-triggers).
 
