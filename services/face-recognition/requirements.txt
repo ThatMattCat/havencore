@@ -12,3 +12,7 @@ qdrant-client==1.12.1
 python-multipart==0.0.12
 aiohttp==3.10.10
 paho-mqtt>=2.1.0,<3.0.0
+# Testing — kept in the runtime image so volume-mounted tests under
+# services/face-recognition/app/tests/ run via `docker compose exec`.
+pytest>=8.0,<9.0
+pytest-asyncio>=0.23,<0.25

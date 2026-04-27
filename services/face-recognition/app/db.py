@@ -60,6 +60,42 @@ CREATE TABLE IF NOT EXISTS face_detections (
 CREATE INDEX IF NOT EXISTS idx_face_detections_captured ON face_detections(captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_face_detections_unknown
   ON face_detections(review_state) WHERE person_id IS NULL;
+
+-- Per-camera FOV metadata. The pipeline reads `fov_type` to decide whether
+-- to tile a frame before InsightFace (panoramic_dual_lens cameras get split
+-- into two horizontally overlapping halves so each ~half-FOV gets the full
+-- detector budget). entity_id is the HA snapshot entity (the high-res
+-- `_clear` profile for Reolink); sensor_entity is the matching person
+-- binary_sensor that fires the trigger.
+CREATE TABLE IF NOT EXISTS cameras (
+  entity_id     TEXT PRIMARY KEY,
+  sensor_entity TEXT NOT NULL,
+  fov_type      TEXT NOT NULL DEFAULT 'standard'
+                CHECK (fov_type IN ('standard', 'panoramic_dual_lens')),
+  native_width  INTEGER,
+  native_height INTEGER,
+  notes         TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cameras_sensor ON cameras(sensor_entity);
+"""
+
+
+# Seed cameras the operator confirmed in the design pass — only inserted if
+# the cameras table is empty, so re-running the migration on a populated
+# deployment is a no-op. The three current cameras are all Reolink dual-lens
+# stitched panoramas; the front Duo 3 has confirmed 7680x2160 native, the
+# backyard pair's exact resolution can be filled in later (NULL preserves
+# "panoramic" semantics regardless).
+CAMERA_SEED_SQL = """
+INSERT INTO cameras (entity_id, sensor_entity, fov_type, native_width, native_height, notes)
+SELECT * FROM (VALUES
+  ('camera.front_duo_3_clear',       'binary_sensor.front_duo_3_person',       'panoramic_dual_lens', 7680, 2160, 'Reolink Duo 3, dual-lens stitched'),
+  ('camera.backyard_left_cam_clear', 'binary_sensor.backyard_left_cam_person', 'panoramic_dual_lens', NULL, NULL, 'Reolink dual-lens stitched'),
+  ('camera.backyard_right_camera_clear', 'binary_sensor.backyard_right_camera_person', 'panoramic_dual_lens', NULL, NULL, 'Reolink dual-lens stitched')
+) AS seed(entity_id, sensor_entity, fov_type, native_width, native_height, notes)
+WHERE NOT EXISTS (SELECT 1 FROM cameras);
 """
 
 
@@ -98,6 +134,7 @@ class Database:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(MIGRATION_SQL)
+                await conn.execute(CAMERA_SEED_SQL)
         logger.info("Face-recognition migrations applied")
 
         # One-shot data migration: rewrite absolute face_images.path entries
@@ -107,6 +144,15 @@ class Database:
         # improvement_image) write relative directly so re-running on a
         # fresh DB is a no-op.
         await self._normalize_face_image_paths()
+
+        # One-shot data migration paired with the _fluent → _clear convention
+        # switch. camera_zones is owned by the agent's autonomy module, but
+        # both face-rec output (`face_detections.camera`) and autonomy zone
+        # mapping have to agree on the entity_id, so the rename has to happen
+        # before either service serves traffic against the new convention.
+        # Idempotent and skipped silently if camera_zones doesn't exist yet
+        # (fresh deployment where autonomy hasn't migrated).
+        await self._rename_camera_zones_to_clear()
 
     async def _normalize_face_image_paths(self) -> None:
         """Strip the SNAPSHOT_DIR prefix from face_images.path entries.
@@ -134,6 +180,37 @@ class Database:
             n = 0
         if n:
             logger.info("Normalized %d face_images.path entries to relative", n)
+
+    async def _rename_camera_zones_to_clear(self) -> None:
+        """Rename camera_zones rows from camera.<base>_fluent → camera.<base>_clear.
+
+        Coupled to the rollout that introduced the cameras table + switched
+        the HA snapshot entity convention. No-op if the table doesn't exist
+        yet (autonomy hasn't migrated on this deployment) or if no rows
+        match (already converged).
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT to_regclass('public.camera_zones')"
+            )
+            if exists is None:
+                return
+            result = await conn.execute(
+                r"""
+                UPDATE camera_zones
+                SET camera_entity = REPLACE(camera_entity, '_fluent', '_clear')
+                WHERE camera_entity LIKE '%\_fluent' ESCAPE '\'
+                """
+            )
+        try:
+            n = int(result.split()[-1])
+        except (ValueError, IndexError):
+            n = 0
+        if n:
+            logger.info(
+                "Renamed %d camera_zones rows from _fluent to _clear", n
+            )
 
     async def health(self) -> bool:
         if self.pool is None:
@@ -630,6 +707,43 @@ class Database:
                 detection_id,
             )
         return dict(row) if row else None
+
+    # --- cameras ------------------------------------------------------
+
+    async def get_camera(self, entity_id: str) -> Optional[dict[str, Any]]:
+        """Return the cameras row for `entity_id`, or None if unregistered.
+
+        The pipeline calls this once per trigger to decide whether to tile
+        the frame before InsightFace. Unregistered cameras fall back to
+        `fov_type='standard'` at the call site.
+        """
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT entity_id, sensor_entity, fov_type,
+                       native_width, native_height, notes,
+                       created_at, updated_at
+                FROM cameras
+                WHERE entity_id = $1
+                """,
+                entity_id,
+            )
+        return dict(row) if row else None
+
+    async def list_cameras(self) -> list[dict[str, Any]]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT entity_id, sensor_entity, fov_type,
+                       native_width, native_height, notes,
+                       created_at, updated_at
+                FROM cameras
+                ORDER BY entity_id ASC
+                """
+            )
+        return [dict(r) for r in rows]
 
     # --- continuous improvement ---------------------------------------
 

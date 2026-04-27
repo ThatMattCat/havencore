@@ -18,9 +18,9 @@ which avoids concurrent CUDA contexts hitting the same FaceAnalysis model.
 HA automation snippet (drop into configuration.yaml or add via the UI)
 ----------------------------------------------------------------------------
 One template-driven automation covers every camera that follows the
-``binary_sensor.<base>_person`` ↔ ``camera.<base>_fluent`` naming
-convention. Adding a new camera is a one-line append to the entity_id
-list.
+``binary_sensor.<base>_person`` ↔ ``camera.<base>_clear`` naming
+convention (Reolink HACS's high-res stream profile). Adding a new camera
+is a one-line append to the entity_id list.
 
     automation:
       - alias: "Face rec - person sensor → MQTT trigger"
@@ -39,7 +39,7 @@ list.
         action:
           - service: mqtt.publish
             data:
-              topic: "haven/face/trigger/camera.{{ base }}_fluent"
+              topic: "haven/face/trigger/camera.{{ base }}_clear"
               payload: >-
                 {"source":"ha_person_sensor",
                  "sensor":"{{ trigger.entity_id }}",

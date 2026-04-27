@@ -37,7 +37,11 @@ ENABLED = _bool(os.getenv("FACE_REC_ENABLED"), True)
 # (CUDA_VISIBLE_DEVICES=3) so ctx_id=0 is correct here.
 MODEL_PACK = os.getenv("FACE_REC_MODEL_PACK", "buffalo_l")
 CTX_ID = _int(os.getenv("FACE_REC_CTX_ID"), 0)
-DET_SIZE = _int(os.getenv("FACE_REC_DET_SIZE"), 640)  # square; 640 is buffalo_l's default
+# 1280 (vs buffalo_l's 640 default) gives ~3x the per-face pixels post-resize,
+# calibrated for high-res Reolink "_clear" feeds and panoramic dual-lens
+# cameras that get tiled per-half before detection. Bumping further trades
+# VRAM for accuracy; 640 still works for legacy low-res feeds.
+DET_SIZE = _int(os.getenv("FACE_REC_DET_SIZE"), 1280)
 GPU_DEVICE_LABEL = os.getenv("FACE_REC_GPU_DEVICE", "3")  # informational only; for /health
 
 # --- Pipeline thresholds (used in step 4+, defined here so they're discoverable) ---
