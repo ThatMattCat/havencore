@@ -21,6 +21,12 @@ FastAPI process; no extra container.
   Assistant, LLM-judged `watch_llm` kind, and a supervised `act` tier with
   per-item `action_allow_list` + optional confirmation gate. Full detail in
   [v4.md](v4.md).
+- **Camera/sensor events**: generic proactive-notification pipeline on top
+  of `watch_llm` — face-recognition is the first source, vehicles/motion/
+  doorbell plug in via the same `haven/<domain>/<kind>` MQTT topic schema.
+  Camera-to-zone mapping lives in Postgres + a `/cameras` dashboard page so
+  the LLM reasons about zones, not raw camera entity_ids. See
+  [cameras.md](cameras.md).
 
 ## What v1 does
 

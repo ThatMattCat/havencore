@@ -545,3 +545,44 @@ export function bulkDeleteDetections(
 		body: JSON.stringify({ scope }),
 	});
 }
+
+// --- Camera ↔ zone mapping ---
+
+export interface CameraZoneRow {
+	camera_entity: string;
+	sensor_entity: string | null;
+	camera_exists: boolean;
+	current_state: string | null;
+	zone: string | null;
+	zone_label: string | null;
+	notes: string | null;
+	updated_at: string | null;
+}
+
+export interface CameraZonesResponse {
+	cameras: CameraZoneRow[];
+	zones: string[];
+}
+
+export function listCameraZones(): Promise<CameraZonesResponse> {
+	return fetchJSON('/api/cameras');
+}
+
+export function setCameraZone(
+	cameraEntity: string,
+	body: { zone: string; zone_label?: string | null; notes?: string | null },
+): Promise<{ camera_entity: string; zone: string; zone_label: string | null; notes: string | null }> {
+	return fetchJSON(`/api/cameras/${encodeURIComponent(cameraEntity)}/zone`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
+export function clearCameraZone(
+	cameraEntity: string,
+): Promise<{ camera_entity: string; deleted: boolean }> {
+	return fetchJSON(`/api/cameras/${encodeURIComponent(cameraEntity)}/zone`, {
+		method: 'DELETE',
+	});
+}

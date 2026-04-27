@@ -17,11 +17,15 @@ logger = custom_logger.get_logger('loki')
 
 
 def _tool_result_ok(result: Any) -> Tuple[bool, str]:
-    """Inspect an MCP tool result for a ``success: false`` envelope.
+    """Inspect an MCP tool result for delivery failure.
 
-    MCP tools return strings; our general_tools / HA tools wrap replies as
-    ``{"success": bool, ...}`` JSON. A non-raising call does not imply delivery
-    — SMTP/HA failures come back as ``success: false`` payloads.
+    MCP tools return strings (or sometimes dicts). Our general_tools and HA
+    tools mostly wrap replies as ``{"success": bool, ...}`` JSON, but the HA
+    tools occasionally return a bare ``"Error sending notification ..."``
+    string when the upstream service raises — those need to surface as a
+    failure too, otherwise the notifier records ``notified_via=ha_push`` for
+    a delivery that never happened.
+
     Returns ``(ok, detail)`` where ``detail`` is the tool's error message
     when ``ok`` is False, or a short trace of the payload otherwise.
     """
@@ -31,6 +35,10 @@ def _tool_result_ok(result: Any) -> Tuple[bool, str]:
         payload = result
     else:
         text = str(result)
+        # Plain-string error envelopes from HA tools (not JSON).
+        stripped = text.strip()
+        if stripped.lower().startswith("error") or "error sending notification" in stripped.lower():
+            return False, stripped[:300]
         try:
             payload = json.loads(text)
         except (ValueError, TypeError):

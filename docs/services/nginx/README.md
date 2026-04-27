@@ -14,10 +14,6 @@ API gateway / reverse proxy in front of the agent, TTS, and STT services.
 **Location**: `services/nginx/nginx.conf`
 
 ```nginx
-upstream agent_backend {
-    server agent:6002;
-}
-
 upstream tts_backend {
     server text-to-speech:6005;
 }
@@ -29,9 +25,15 @@ upstream stt_backend {
 server {
     listen 80;
 
-    # Chat completions routing
+    # Re-resolve `agent` against Docker's embedded DNS on a 10s TTL so
+    # nginx picks up the new container IP after `docker compose restart agent`
+    # without needing nginx itself to be restarted.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Chat completions routing — variable indirection forces re-resolution.
     location /v1/chat/completions {
-        proxy_pass http://agent_backend;
+        set $agent_upstream "agent:6002";
+        proxy_pass http://$agent_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -46,6 +48,16 @@ server {
     }
 }
 ```
+
+The agent upstream is intentionally **not** declared as a static
+`upstream agent_backend { server agent:6002; }` block. nginx resolves
+hostnames in static upstream blocks once at startup and caches the IP
+forever, so an `agent` restart leaves nginx proxying to a dead IP until
+nginx itself restarts. The `resolver` directive plus a `set $var ...;
+proxy_pass http://$var;` pattern forces nginx to re-resolve the
+hostname on each request (cached for the resolver's `valid=` window).
+This is applied to every agent location: `/v1/chat/completions`,
+`/api/`, `/ws/`, and the SPA catch-all `/`.
 
 ## Features
 

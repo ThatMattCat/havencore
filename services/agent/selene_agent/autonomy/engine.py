@@ -83,6 +83,7 @@ class AutonomyEngine:
         self._running_items: set[str] = set()
         self._mqtt_listener = None  # wired in start() when enabled
         self.mqtt_refresh = asyncio.Event()
+        self._zone_listener_task: Optional[asyncio.Task] = None
 
     # --- lifecycle ------------------------------------------------------
 
@@ -91,8 +92,14 @@ class AutonomyEngine:
             return
         await autonomy_db.ensure_schema()
         await autonomy_db.ensure_default_agenda()
+        try:
+            from selene_agent.autonomy.seeds import camera_events as camera_event_seeds
+            await camera_event_seeds.ensure_seeds()
+        except Exception as e:
+            logger.warning(f"[engine] camera-event seed failed: {e}")
         self.started_at = datetime.now(timezone.utc)
         self._shutdown.clear()
+        await self._start_zone_listener()
         await self._start_mqtt_listener()
         self._task = asyncio.create_task(self._loop(), name="autonomy-engine")
         logger.info("AutonomyEngine started")
@@ -108,7 +115,29 @@ class AutonomyEngine:
             logger.warning("AutonomyEngine stop: task did not exit cleanly, cancelled")
         self._task = None
         await self._stop_mqtt_listener()
+        await self._stop_zone_listener()
         logger.info("AutonomyEngine stopped")
+
+    async def _start_zone_listener(self) -> None:
+        try:
+            from selene_agent.autonomy import sensor_events
+        except Exception as e:
+            logger.warning(f"[engine] sensor_events unavailable: {e}")
+            return
+        self._zone_listener_task = asyncio.create_task(
+            sensor_events.start_zone_listener(self._shutdown),
+            name="autonomy-zone-listener",
+        )
+
+    async def _stop_zone_listener(self) -> None:
+        if self._zone_listener_task is None:
+            return
+        self._zone_listener_task.cancel()
+        try:
+            await self._zone_listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        self._zone_listener_task = None
 
     async def _start_mqtt_listener(self) -> None:
         if not getattr(config, "AUTONOMY_MQTT_ENABLED", False):
@@ -455,10 +484,12 @@ class AutonomyEngine:
                 notifier = _build_notifier(
                     self.mcp_manager, notify_channel, notify_to, notify_cfg
                 )
+                attachments = result.get("_notify_attachments") or None
                 delivered = await notifier.send(
                     title=result.get("_notify_title") or "Selene",
                     body=result.get("_notify_body") or result.get("summary") or "",
                     severity=severity,
+                    attachments=attachments,
                 )
                 result["notified_via"] = notify_channel if delivered else None
 
@@ -476,6 +507,17 @@ class AutonomyEngine:
                 "error": result.get("error"),
                 "action_audit": result.get("action_audit"),
             })
+            # Handlers can opt-in to having the engine delete the agenda row
+            # post-fire (currently used by one-shot reminders to keep the
+            # dashboard Agenda list clean). Done after insert_run so the FK
+            # reference is valid; ON DELETE SET NULL nulls the run's FK.
+            if result.get("_delete_after_run"):
+                try:
+                    await autonomy_db.delete_item(item_id)
+                except Exception as e:
+                    logger.warning(
+                        f"[engine] post-fire delete failed for {kind} {item_id}: {e}"
+                    )
             await self._advance(item, triggered_at)
             return {
                 "status": result.get("status", "ok"),

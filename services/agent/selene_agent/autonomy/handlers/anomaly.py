@@ -164,7 +164,10 @@ async def handle(
         system_prompt=ANOMALY_SYSTEM_PROMPT.format(agent_name=config.AGENT_NAME or "Selene"),
         timeout_sec=config.AUTONOMY_TURN_TIMEOUT_SEC,
         temperature=0.2,
-        max_tokens=400,
+        # GLM-4.5's reasoning parser consumes the generation budget on CoT
+        # before producing the JSON answer; 400 tokens leaves content empty.
+        # 2000 is plenty for a strict short-JSON response on a reasoning model.
+        max_tokens=2000,
         provider_getter=provider_getter,
     )
     result = await turn.run(user_prompt)

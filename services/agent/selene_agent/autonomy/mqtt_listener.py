@@ -174,8 +174,18 @@ class MqttListener:
         except Exception as e:
             logger.error(f"[mqtt] failed to load agenda for dispatch: {e}")
             return
+        from selene_agent.autonomy import sensor_events
         from selene_agent.autonomy.trigger_match import match  # local to avoid cycle
-        event = {"source": "mqtt", "topic": topic, "payload": payload}
+
+        # Normalize haven/<domain>/<kind> events into a SensorEvent envelope so
+        # handlers can reason about zone/subject without each one re-parsing
+        # the raw payload. Topics outside the schema fall back to the legacy
+        # raw shape — pre-existing agenda items keep working.
+        enriched = await sensor_events.normalize(topic, payload, source="mqtt")
+        if enriched is None:
+            event: Dict[str, Any] = {"source": "mqtt", "topic": topic, "payload": payload}
+        else:
+            event = enriched
         for item in items:
             spec = item.get("trigger_spec") or {}
             if spec.get("source") != "mqtt":

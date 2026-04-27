@@ -1,5 +1,6 @@
 <script>
 	import cronstrue from 'cronstrue';
+	import ReminderTimePicker from './ReminderTimePicker.svelte';
 
 	let { item = null, timezone = 'UTC', onclose, onsaved } = $props();
 
@@ -120,9 +121,12 @@
 	// --- Reminder config ---
 	let reminderTitle = $state(item?.config?.title ?? '');
 	let reminderBody = $state(item?.config?.body ?? '');
-	let reminderChannel = $state(item?.config?.channel ?? 'ha_push');
+	let reminderChannel = $state(item?.config?.channel ?? 'signal');
 	let reminderTo = $state(item?.config?.to ?? '');
 	let reminderOneShot = $state(item?.config?.one_shot ?? false);
+	// Personalize defaults to true when the field is missing — matches the
+	// handler's behavior so legacy items hydrate correctly into the form.
+	let reminderPersonalize = $state(item?.config?.personalize ?? true);
 
 	// --- Watch config ---
 	let watchBodyTemplate = $state(item?.config?.body_template ?? '');
@@ -231,6 +235,9 @@
 			if (reminderChannel) cfg.channel = reminderChannel;
 			if (reminderTo) cfg.to = reminderTo;
 			if (reminderOneShot) cfg.one_shot = true;
+			// Always send personalize so unchecking the box on an existing
+			// reminder takes effect (vs. defaulting back to true on the server).
+			cfg.personalize = !!reminderPersonalize;
 		} else if (kind === 'watch') {
 			if (watchBodyTemplate) cfg.body_template = watchBodyTemplate;
 			if (watchChannel) cfg.channel = watchChannel;
@@ -480,38 +487,49 @@
 			</div>
 
 			{#if triggerMode === 'cron'}
-				<div class="field">
-					<span>Cron expression</span>
-					<div class="cron-row">
-						<input
-							class="input mono cron-input"
-							type="text"
-							bind:value={cron}
-							placeholder="0 8 * * *"
+				{#if kind === 'reminder'}
+					<div class="field">
+						<span>Schedule</span>
+						<ReminderTimePicker
+							bind:cron
+							bind:oneShot={reminderOneShot}
+							{timezone}
 						/>
-						<select
-							class="input preset-select"
-							bind:value={cronPreset}
-							onchange={applyPreset}
-							aria-label="Insert cron preset"
-						>
-							<option value="">Presets…</option>
-							{#each CRON_PRESETS as p}
-								<option value={p.cron}>{p.label}</option>
-							{/each}
-						</select>
 					</div>
-					{#if cron}
-						<small class="muted" class:valid={cronValid} class:invalid={!cronValid}>
-							{cronValid ? '✓' : ''}
-							{cronHuman}
+				{:else}
+					<div class="field">
+						<span>Cron expression</span>
+						<div class="cron-row">
+							<input
+								class="input mono cron-input"
+								type="text"
+								bind:value={cron}
+								placeholder="0 8 * * *"
+							/>
+							<select
+								class="input preset-select"
+								bind:value={cronPreset}
+								onchange={applyPreset}
+								aria-label="Insert cron preset"
+							>
+								<option value="">Presets…</option>
+								{#each CRON_PRESETS as p}
+									<option value={p.cron}>{p.label}</option>
+								{/each}
+							</select>
+						</div>
+						{#if cron}
+							<small class="muted" class:valid={cronValid} class:invalid={!cronValid}>
+								{cronValid ? '✓' : ''}
+								{cronHuman}
+							</small>
+						{/if}
+						<small class="muted">
+							5-field cron. Interpreted in <code>{timezone}</code> (from
+							<code>CURRENT_TIMEZONE</code> env).
 						</small>
-					{/if}
-					<small class="muted">
-						5-field cron. Interpreted in <code>{timezone}</code> (from
-						<code>CURRENT_TIMEZONE</code> env).
-					</small>
-				</div>
+					</div>
+				{/if}
 			{:else if triggerMode === 'mqtt'}
 				<label class="field">
 					<span>Topic (supports + wildcard)</span>
@@ -563,8 +581,9 @@
 						<label class="field">
 							<span>Channel</span>
 							<select class="input" bind:value={reminderChannel}>
-								<option value="ha_push">ha_push</option>
 								<option value="signal">signal</option>
+								<option value="ha_push">ha_push</option>
+								<option value="speaker">speaker</option>
 							</select>
 						</label>
 						<label class="field">
@@ -573,8 +592,17 @@
 						</label>
 					</div>
 					<label class="checkbox-field">
+						<input type="checkbox" bind:checked={reminderPersonalize} />
+						<span>Personalize</span>
+					</label>
+					<small class="muted hint">
+						Selene rewrites the body in her voice at fire time and may attach a
+						relevant generated image when the channel is <code>signal</code>.
+						Uncheck for verbatim delivery.
+					</small>
+					<label class="checkbox-field">
 						<input type="checkbox" bind:checked={reminderOneShot} />
-						<span>One-shot (disable after fire)</span>
+						<span>One-shot (delete after fire)</span>
 					</label>
 				</fieldset>
 			{:else if kind === 'watch'}
