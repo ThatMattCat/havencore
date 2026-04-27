@@ -70,7 +70,7 @@ The full env reference lives in [`docs/configuration.md` → Face recognition](.
 |---|---|
 | `people` | Identity records — name (unique), `access_level` (`unknown\|resident\|guest\|blocked`), notes |
 | `face_images` | Per-person gallery — JPEG path, Qdrant point id, source (`upload\|detection_confirmed\|detection_auto\|agent_enroll`), is_primary, quality_score |
-| `face_detections` | Every event seen — camera, captured_at, person_id (NULL for unknowns), confidence, quality_score, snapshot_path, review_state (`auto\|confirmed\|rejected\|pending`), embedding_contributed |
+| `face_detections` | Every event seen — camera, captured_at, person_id (NULL for unknowns), confidence, quality_score, snapshot_path, review_state (`auto\|confirmed\|rejected\|pending`), embedding_contributed, plus InsightFace genderage estimates (`age`, `sex`) for display only — never used in matching, gating, or autonomy |
 
 `face_images.path` and `face_detections.snapshot_path` are stored relative to `SNAPSHOT_DIR` so rows survive container or mount-point moves.
 
@@ -86,7 +86,7 @@ The full env reference lives in [`docs/configuration.md` → Face recognition](.
 8. **Continuous improvement** (only when identified): if quality ≥ `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`, confidence ≥ `FACE_REC_IMPROVEMENT_THRESHOLD`, and the person has fewer than `FACE_REC_MAX_EMBEDDINGS_PER_PERSON` gallery embeddings, contribute the new crop. FIFO-evicts the oldest non-primary embedding if the cap is hit.
 9. Publish to `haven/face/identified` or `haven/face/unknown`; status → `idle` (in `try/finally` so it always emits).
 
-If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, and publishes to `haven/face/no_face`. This gives downstream subscribers (autonomy + a future vision LLM) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
+If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, `age=NULL`, `sex=NULL`, and publishes to `haven/face/no_face`. This gives downstream subscribers (autonomy + a future vision LLM) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
 
 InsightFace inference runs in a worker thread (`asyncio.to_thread`) so a burst doesn't peg the FastAPI event loop while the MQTT bridge is consuming triggers.
 
