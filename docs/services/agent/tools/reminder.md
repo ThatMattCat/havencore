@@ -34,8 +34,8 @@ up immediately rather than on the next dispatch tick.
 
 | Tool | Purpose |
 |------|---------|
-| `schedule_reminder(title, body?, in_seconds? \| at? \| cron?, channel?, to?)` | Create a reminder. Provide exactly one of `in_seconds` (relative delay), `at` (ISO 8601 absolute time, naive interpreted in `CURRENT_TIMEZONE`), or `cron` (5-field cron expression). `in_seconds` and `at` always produce one-shot items; `cron` produces a recurring item. Default `channel` is `signal`. Returns `{id, title, channel, cron, one_shot, next_fire_at}`. |
-| `list_reminders(include_disabled?)` | Return active reminders with `id`, `title`, `cron`, `next_fire_at`, `channel`, and `one_shot`. Default skips disabled rows; `include_disabled=true` returns all `kind='reminder'` items. |
+| `schedule_reminder(title, body?, in_seconds? \| at? \| cron?, channel?, to?, personalize?)` | Create a reminder. Provide exactly one of `in_seconds` (relative delay), `at` (ISO 8601 absolute time, naive interpreted in `CURRENT_TIMEZONE`), or `cron` (5-field cron expression). `in_seconds` and `at` always produce one-shot items; `cron` produces a recurring item. Default `channel` is `signal`. `personalize` defaults to `true` — see [Personalization](#personalization). Returns `{id, title, channel, cron, one_shot, personalize, next_fire_at}`. |
+| `list_reminders(include_disabled?)` | Return active reminders with `id`, `title`, `cron`, `next_fire_at`, `channel`, `one_shot`, and `personalize`. Default skips disabled rows; `include_disabled=true` returns all `kind='reminder'` items. |
 | `cancel_reminder(id)` | Hard-delete a reminder by id. Use `list_reminders` first to look up the id. Returns `{deleted: true, id}` or surfaces the API's 404. |
 
 ## Time-spec resolution
@@ -68,6 +68,63 @@ The `to` argument overrides the per-channel recipient (Signal phone
 number, HA `notify.<service>` target, or Music Assistant device name).
 When omitted, the defaults from the autonomy notifier layer apply —
 see [autonomy/README.md → Configuration](../autonomy/README.md#configuration).
+
+## Personalization
+
+By default (`personalize: true`), every reminder is rewritten by the LLM at
+fire time so it lands in Selene's voice rather than the user's verbatim
+phrasing. The rewrite is a single direct
+`client.chat.completions.create()` call — modeled on
+`autonomy/memory_clustering.summarize_cluster` — not a full
+`AutonomousTurn`. Implementation lives in
+`services/agent/selene_agent/autonomy/reminder_personalize.py`.
+
+The helper returns `{body, image_prompt}`:
+
+- `body` — the rewritten reminder text. Always non-empty; on any failure
+  (LLM timeout, JSON parse error, empty response) the helper returns the
+  original body so the handler can fall through to deterministic delivery.
+- `image_prompt` — only populated when `channel == "signal"` and the
+  model judged a small illustrative image would add value. For other
+  channels the helper strips this field defensively, even if the model
+  ignored the system prompt.
+
+### Image attachments (Signal only)
+
+When the personalization step yields an `image_prompt` and the channel is
+`signal`, the reminder handler invokes the `generate_image` MCP tool from
+`mcp_general_tools` with that prompt, takes the local file path from the
+returned `images[0].path`, and passes it through to
+`SignalNotifier.send(..., attachments=[path])`. ComfyUI image generation
+is bounded by a 25-second timeout (`IMAGE_GEN_TIMEOUT_SEC` in
+`handlers/reminder.py`); if it times out or errors, the handler falls
+through to a text-only Signal message with the personalized body.
+
+`SIGNAL_MAX_ATTACHMENT_BYTES = 95 MiB` is enforced by the Signal tool
+itself, so reminder images don't need separate size validation.
+
+### Opting out
+
+Pass `personalize: false` to `schedule_reminder` for verbatim delivery —
+useful when the user explicitly says *"remind me of my exact words"* or
+when the reminder is already in the desired voice. The dashboard
+AgendaForm exposes the same toggle.
+
+Existing reminders created before personalization landed have no
+`personalize` field in their stored config; both the handler and
+`list_reminders` treat that as `personalize=true`, so they get
+personalized on their next fire automatically. To preserve verbatim
+delivery for one of these legacy items, edit it via the dashboard and
+uncheck Personalize.
+
+### Cost / latency
+
+- Personalization adds one LLM round-trip (~100–300 ms on local vLLM)
+  per fire.
+- Image generation, when invoked, adds 15–30 s end-to-end (ComfyUI
+  diffusion). Reminders are inherently asynchronous push notifications,
+  so this is acceptable for the in-home use case. Manual triggers via
+  `POST /api/autonomy/trigger/{id}` exhibit the same latency.
 
 ## One-shot lifecycle
 
@@ -106,6 +163,29 @@ Default delivery channel and recipient resolution are not configured
 here — they live in the autonomy notifier layer
 (`AUTONOMY_BRIEFING_NOTIFY_TO`, `AUTONOMY_HA_NOTIFY_TARGET`,
 `SIGNAL_DEFAULT_RECIPIENT`).
+
+## Dashboard
+
+Reminders show up in the agenda items table on `/autonomy` like any
+other agenda kind. Click **New** (or **Edit** on an existing reminder)
+to open the modal; with `kind=reminder` selected the schedule input is
+a friendly time picker rather than a raw cron field:
+
+- **Easy** mode (default) has three sub-tabs:
+  - **In…** — number + unit (minutes/hours/days) → one-shot relative
+  - **At…** — date and time pickers → one-shot at an absolute moment
+  - **Every…** — frequency picker (daily / weekdays / weekends / weekly /
+    custom-days) + time → recurring
+- **Cron (advanced)** mode keeps the raw cron text input plus the
+  preset list, for power users.
+
+The picker emits both `schedule_cron` and `one_shot`; the rest of the
+form is unchanged. The reminder fieldset also exposes the `speaker`
+channel and a **Personalize** checkbox (default on); see
+[Personalization](#personalization).
+
+The picker component lives at
+`services/agent/frontend/src/routes/autonomy/ReminderTimePicker.svelte`.
 
 ## Internals worth knowing
 
@@ -172,16 +252,26 @@ fields are `minute hour day-of-month month day-of-week`. Examples:
 
 - `services/agent/selene_agent/modules/mcp_reminder_tools/mcp_server.py`
   — implementation.
+- `services/agent/selene_agent/autonomy/reminder_personalize.py` —
+  the one-shot LLM rewrite helper.
 - `services/agent/selene_agent/autonomy/handlers/reminder.py` — fire-time
-  delivery handler that the engine invokes for `kind='reminder'` items.
+  delivery handler that the engine invokes for `kind='reminder'` items;
+  invokes the personalize helper and `generate_image` for Signal.
 - `services/agent/selene_agent/autonomy/engine.py` — `_fire_item` honors
   the `_delete_after_run` result flag for one-shot cleanup.
 - `services/agent/selene_agent/autonomy/notifiers.py` — Signal /
-  HA-push / speaker notifier implementations.
+  HA-push / speaker notifier implementations. `SignalNotifier.send`
+  accepts `attachments`.
 - `services/agent/selene_agent/api/autonomy.py` — REST endpoints this
   tool calls.
+- `services/agent/frontend/src/routes/autonomy/AgendaForm.svelte` —
+  reminder fieldset (channel, personalize, one-shot).
+- `services/agent/frontend/src/routes/autonomy/ReminderTimePicker.svelte`
+  — Easy/Cron schedule picker for reminder kind.
 - `services/agent/tests/test_reminder_tool.py` — tool tests.
 - `services/agent/tests/test_reminder_handler.py` — handler tests.
+- `services/agent/tests/test_reminder_personalize.py` — personalize
+  helper tests.
 
 ## See also
 
