@@ -107,6 +107,30 @@ DROP TRIGGER IF EXISTS autonomy_runs_notify ON autonomy_runs;
 CREATE TRIGGER autonomy_runs_notify
     AFTER INSERT ON autonomy_runs
     FOR EACH ROW EXECUTE FUNCTION notify_autonomy_run();
+
+-- camera_zones: maps a raw camera entity_id to a generic zone slug
+-- (front_door, backyard, driveway, etc.). The autonomy sensor-event
+-- normalizer reads this so the LLM reasons about zones, not camera names.
+CREATE TABLE IF NOT EXISTS camera_zones (
+    camera_entity TEXT PRIMARY KEY,
+    zone          TEXT NOT NULL,
+    zone_label    TEXT,
+    notes         TEXT,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_camera_zones_zone ON camera_zones (zone);
+
+CREATE OR REPLACE FUNCTION notify_camera_zones() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('camera_zones_ch', COALESCE(NEW.camera_entity, OLD.camera_entity));
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS camera_zones_notify ON camera_zones;
+CREATE TRIGGER camera_zones_notify
+    AFTER INSERT OR UPDATE OR DELETE ON camera_zones
+    FOR EACH ROW EXECUTE FUNCTION notify_camera_zones();
 """
 
 
@@ -881,6 +905,89 @@ async def count_awaiting_confirmation() -> int:
             "SELECT COUNT(*)::int FROM autonomy_runs WHERE status = 'awaiting_confirmation'"
         )
     return int(val or 0)
+
+
+# --- camera_zones --------------------------------------------------------
+
+async def list_camera_zones() -> List[Dict[str, Any]]:
+    pool = conversation_db.pool
+    if not pool:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT camera_entity, zone, zone_label, notes, updated_at "
+            "FROM camera_zones ORDER BY zone, camera_entity"
+        )
+    return [
+        {
+            "camera_entity": r["camera_entity"],
+            "zone": r["zone"],
+            "zone_label": r["zone_label"],
+            "notes": r["notes"],
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+async def get_camera_zone(camera_entity: str) -> Optional[Dict[str, Any]]:
+    pool = conversation_db.pool
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT camera_entity, zone, zone_label, notes "
+            "FROM camera_zones WHERE camera_entity = $1",
+            camera_entity,
+        )
+    if not row:
+        return None
+    return {
+        "camera_entity": row["camera_entity"],
+        "zone": row["zone"],
+        "zone_label": row["zone_label"],
+        "notes": row["notes"],
+    }
+
+
+async def upsert_camera_zone(
+    camera_entity: str,
+    *,
+    zone: str,
+    zone_label: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    pool = conversation_db.pool
+    if not pool:
+        raise RuntimeError("db not initialized")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO camera_zones (camera_entity, zone, zone_label, notes, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (camera_entity) DO UPDATE SET
+                zone = EXCLUDED.zone,
+                zone_label = EXCLUDED.zone_label,
+                notes = EXCLUDED.notes,
+                updated_at = NOW()
+            """,
+            camera_entity,
+            zone,
+            zone_label,
+            notes,
+        )
+    return {"camera_entity": camera_entity, "zone": zone, "zone_label": zone_label, "notes": notes}
+
+
+async def delete_camera_zone(camera_entity: str) -> bool:
+    pool = conversation_db.pool
+    if not pool:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM camera_zones WHERE camera_entity = $1", camera_entity,
+        )
+    return result.endswith(" 1")
 
 
 async def count_runs_by_trigger_source_last(hours: int = 24) -> Dict[str, int]:

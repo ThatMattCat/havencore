@@ -75,6 +75,11 @@ TRIGGER_TOPIC_PATTERN = "haven/face/trigger/+"
 TRIGGER_TOPIC_PREFIX = "haven/face/trigger/"
 TOPIC_IDENTIFIED = "haven/face/identified"
 TOPIC_UNKNOWN = "haven/face/unknown"
+# Published when a trigger fires + frames are captured but no face cleared
+# QUALITY_FLOOR. Useful for "person sensor tripped but face hidden" — gives
+# autonomy a chance to evaluate context (presence, time, zone) and, when a
+# vision LLM is wired in, to inspect the snapshot for suspicious cues.
+TOPIC_NO_FACE = "haven/face/no_face"
 TOPIC_STATUS = "haven/face/status"
 
 
@@ -317,11 +322,16 @@ class FaceMqttBridge:
         )
 
     async def _publish_result(self, result: PipelineResult) -> None:
+        # detection_id is included so downstream consumers (autonomy
+        # sensor-event normalizer) can synthesize a snapshot URL via the
+        # agent's /api/face/detections/{id}/snapshot proxy without an
+        # extra round-trip lookup against the detections table.
         if result.outcome == "identified":
             self._publish(
                 TOPIC_IDENTIFIED,
                 {
                     "event_id": str(result.event_id),
+                    "detection_id": str(result.detection_id) if result.detection_id else None,
                     "camera": result.camera,
                     "person_id": str(result.person_id) if result.person_id else None,
                     "person_name": result.person_name,
@@ -336,13 +346,27 @@ class FaceMqttBridge:
                 TOPIC_UNKNOWN,
                 {
                     "event_id": str(result.event_id),
+                    "detection_id": str(result.detection_id) if result.detection_id else None,
                     "camera": result.camera,
                     "snapshot_path": result.snapshot_path,
                     "quality_score": result.quality_score,
                     "captured_at": result.captured_at.isoformat(),
                 },
             )
-        # no_face / no_frames are intentionally not published.
+        elif result.outcome == "no_face":
+            self._publish(
+                TOPIC_NO_FACE,
+                {
+                    "event_id": str(result.event_id),
+                    "detection_id": str(result.detection_id) if result.detection_id else None,
+                    "camera": result.camera,
+                    "snapshot_path": result.snapshot_path,
+                    "frames_processed": result.frames_processed,
+                    "captured_at": result.captured_at.isoformat(),
+                },
+            )
+        # no_frames is intentionally not published — no snapshot, nothing
+        # actionable; capture failed before insightface even ran.
 
 
 bridge = FaceMqttBridge()

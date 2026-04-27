@@ -166,3 +166,199 @@ async def test_speaker_notify_cfg_passthrough(monkeypatch):
     assert speaker["device"] == "Living Room"
     assert speaker["voice"] == "af_heart"
     assert speaker["volume"] == 0.5
+
+
+# --- v2: LLM-picked channel + safety rails --------------------------------
+
+@pytest.mark.asyncio
+async def test_llm_silent_collapses_to_nominal(monkeypatch):
+    """When the LLM emits channel=silent it's saying 'on reflection, nothing
+    to do here' — handler must mark _unusual=False so the cooldown bookkeeping
+    treats it consistently with a true nominal."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(return_value={})
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": true, "severity": "med", '
+        '"summary": "x", "signature": "sig", "evidence": [], '
+        '"channel": "silent"}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-silent",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {"gather": {"memories_k": 0}},
+        "_trigger_event": {"source": "mqtt", "topic": "t", "payload": {}},
+    }
+    result = await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+    assert result["_unusual"] is False
+    assert result["severity"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_llm_picks_speaker_when_someone_home(monkeypatch):
+    from selene_agent.autonomy.handlers import watch_llm
+
+    mcp = MagicMock()
+    # gather presence call returns persons w/ one home
+    mcp.execute_tool = AsyncMock(return_value={
+        "persons": [{"entity_id": "person.matt", "state": "home"}],
+        "device_trackers": [],
+    })
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": true, "severity": "med", '
+        '"summary": "stranger at door", "signature": "sig", "evidence": [], '
+        '"channel": "speaker", "urgency": "alert"}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-spk",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {"presence": True, "memories_k": 0},
+            "notify": {"channel": "signal"},
+        },
+        "_trigger_event": {"source": "mqtt", "topic": "t", "payload": {}},
+    }
+    result = await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+    assert result["_notify_channel"] == "speaker"
+    assert result["_notify_urgency"] == "alert"
+
+
+@pytest.mark.asyncio
+async def test_speaker_downgrades_to_signal_when_no_one_home(monkeypatch):
+    """Safety rail: if presence shows no resident is home, the speaker
+    channel is downgraded so the alert still reaches the user via Signal."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(return_value={
+        "persons": [{"entity_id": "person.matt", "state": "not_home"}],
+        "device_trackers": [],
+    })
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": true, "severity": "high", '
+        '"summary": "front door at 3am", "signature": "sig", "evidence": [], '
+        '"channel": "speaker"}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-down",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {"presence": True, "memories_k": 0},
+            "notify": {"channel": "signal"},
+        },
+        "_trigger_event": {"source": "mqtt", "topic": "t", "payload": {}},
+    }
+    result = await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+    # Speaker would be silly if nobody's there to hear it — Signal carries
+    # the alert instead.
+    assert result["_notify_channel"] == "signal"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_attachment_threaded_for_signal(monkeypatch):
+    """When the inbound event carries a sensor_event.snapshot_url and
+    attach_snapshot is enabled, the handler returns _notify_attachments so
+    the engine forwards it to SignalNotifier."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(return_value={})
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": true, "severity": "med", '
+        '"summary": "unknown face", "signature": "sig", "evidence": [], '
+        '"channel": "signal"}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-attach",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {"memories_k": 0},
+            "notify": {"channel": "signal"},
+            "attach_snapshot": True,
+        },
+        "_trigger_event": {
+            "source": "mqtt",
+            "topic": "haven/face/unknown",
+            "payload": {},
+            "sensor_event": {
+                "domain": "face",
+                "kind": "unknown",
+                "zone": "front_door",
+                "snapshot_url": "http://agent:6002/api/face/detections/d/snapshot",
+                "subject": {"type": "person", "identity": None},
+                "raw": {},
+            },
+        },
+    }
+    result = await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+    assert result["_notify_attachments"] == [
+        "http://agent:6002/api/face/detections/d/snapshot"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_attach_snapshot_skipped_when_channel_is_speaker(monkeypatch):
+    """Speaker can't carry a binary attachment; handler must not put a
+    snapshot URL on a speaker run."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(return_value={
+        "persons": [{"entity_id": "person.matt", "state": "home"}],
+    })
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": true, "severity": "med", '
+        '"summary": "x", "signature": "sig", "evidence": [], '
+        '"channel": "speaker"}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-spk-no-attach",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {"presence": True, "memories_k": 0},
+            "attach_snapshot": True,
+        },
+        "_trigger_event": {
+            "source": "mqtt",
+            "topic": "haven/face/unknown",
+            "payload": {},
+            "sensor_event": {
+                "snapshot_url": "http://agent:6002/x.jpg",
+                "raw": {},
+            },
+        },
+    }
+    result = await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+    assert result["_notify_channel"] == "speaker"
+    assert result["_notify_attachments"] is None

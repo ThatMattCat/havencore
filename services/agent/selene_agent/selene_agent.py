@@ -43,6 +43,7 @@ from selene_agent.api.comfy import router as comfy_router
 from selene_agent.api.autonomy import router as autonomy_router, ws_router as autonomy_ws_router
 from selene_agent.api.memory import router as memory_router
 from selene_agent.api.face import router as face_router
+from selene_agent.api.cameras import router as cameras_router
 from selene_agent.api.agent import router as agent_router
 from selene_agent.api.logs import ws_router as logs_ws_router
 from selene_agent.utils import log_stream
@@ -300,6 +301,7 @@ app.include_router(comfy_router, prefix="/api")
 app.include_router(autonomy_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
 app.include_router(face_router, prefix="/api")
+app.include_router(cameras_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")

@@ -295,6 +295,22 @@ async def process_event(
                 "event %s: %d frames, no face cleared quality floor",
                 event_id, len(frames),
             )
+            # Save the middle frame so downstream consumers (autonomy
+            # watch_llm + future vision-AI gather) can attach an image to
+            # any "person tripped sensor but no face matched" notification.
+            # The DB row gets person_id=NULL/confidence=NULL/quality=0.0 so
+            # the existing /detections endpoint can serve the snapshot.
+            mid_frame = frames[len(frames) // 2]
+            no_face_snapshot = _save_snapshot(mid_frame, captured_at, event_id)
+            no_face_detection = await db.insert_face_detection(
+                event_id=event_id,
+                camera=camera,
+                captured_at=captured_at,
+                person_id=None,
+                confidence=None,
+                quality_score=0.0,
+                snapshot_path=no_face_snapshot,
+            )
             return PipelineResult(
                 outcome="no_face",
                 event_id=event_id,
@@ -302,6 +318,8 @@ async def process_event(
                 camera=camera,
                 frames_processed=len(frames),
                 faces_kept=0,
+                detection_id=no_face_detection["id"],
+                snapshot_path=no_face_snapshot,
             )
 
         top = _select_top_k(candidates, TOP_K_FACES)
