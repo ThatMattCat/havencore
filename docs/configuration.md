@@ -338,8 +338,8 @@ Notes:
 
 The agent's tool surface is delivered by MCP servers bundled in the agent
 image (Home Assistant, Plex, Music Assistant, general, Qdrant, MQTT,
-GitHub). They are spawned as subprocesses and advertise tools over stdio — no
-separate container.
+GitHub, face recognition, reminder). They are spawned as subprocesses
+and advertise tools over stdio — no separate container.
 
 ```bash
 # Master switch for the MCP client manager
@@ -356,7 +356,9 @@ MCP_SERVERS='[
   {"name": "general",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],          "enabled": true},
   {"name": "qdrant",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],           "enabled": true},
   {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true},
-  {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true}
+  {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true},
+  {"name": "face",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_face_tools"],             "enabled": true},
+  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true}
 ]'
 ```
 
