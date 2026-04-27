@@ -114,7 +114,10 @@ class ReminderToolsServer:
                         "phrases like 'in an hour'), `at` (ISO 8601 absolute time, e.g. "
                         "'2026-04-27T18:00:00'; naive times are interpreted in local tz), or "
                         "`cron` (5-field cron in local tz for recurring; '0 18 * * 0' = "
-                        "Sundays at 6pm). Default channel is 'signal'."
+                        "Sundays at 6pm). Default channel is 'signal'. By default the "
+                        "agent rewrites the reminder body in its own voice at fire time and "
+                        "may attach a generated image when the channel is 'signal'; pass "
+                        "`personalize: false` for verbatim delivery."
                     ),
                     inputSchema={
                         "type": "object",
@@ -147,6 +150,10 @@ class ReminderToolsServer:
                             "to": {
                                 "type": "string",
                                 "description": "Optional recipient override per channel: signal phone number, ha_push notify.<service>, or speaker MA device target."
+                            },
+                            "personalize": {
+                                "type": "boolean",
+                                "description": "Whether the agent rewrites the body in its own voice at fire time (and may attach a generated image for signal channel). Defaults to true. Set to false for verbatim delivery."
                             }
                         },
                         "required": ["title"]
@@ -226,11 +233,16 @@ class ReminderToolsServer:
                 "error": f"channel must be one of {sorted(ALLOWED_CHANNELS)}; got {channel!r}",
             }
 
+        # personalize defaults to True; only an explicit False opts out.
+        personalize = args.get("personalize")
+        personalize = True if personalize is None else bool(personalize)
+
         cfg: Dict[str, Any] = {
             "title": title,
             "body": body,
             "channel": channel,
             "one_shot": one_shot,
+            "personalize": personalize,
         }
         to = (args.get("to") or "").strip()
         if to:
@@ -270,6 +282,7 @@ class ReminderToolsServer:
             "channel": channel,
             "cron": cron_expr,
             "one_shot": one_shot,
+            "personalize": personalize,
             "next_fire_at": item.get("next_fire_at"),
         }
 
@@ -304,6 +317,9 @@ class ReminderToolsServer:
                 "title": cfg.get("title") or it.get("name"),
                 "channel": cfg.get("channel"),
                 "one_shot": cfg.get("one_shot", False),
+                # Missing personalize on existing rows is treated as True
+                # to match the handler's default behavior.
+                "personalize": cfg.get("personalize", True),
                 "cron": it.get("schedule_cron"),
                 "next_fire_at": it.get("next_fire_at"),
                 "enabled": it.get("enabled", True),

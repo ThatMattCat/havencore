@@ -142,6 +142,70 @@ async def test_schedule_reminder_defaults_channel_to_signal():
 
 
 @pytest.mark.asyncio
+async def test_schedule_reminder_personalize_defaults_to_true():
+    """Caller omits personalize → cfg payload sent to /api/autonomy/items has personalize=True."""
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    fake = _FakeSession(_FakeResponse(200, {"item": {"id": "p-1", "next_fire_at": None}}))
+    server = mcp_server.ReminderToolsServer()
+
+    with patch.object(mcp_server.aiohttp, "ClientSession", return_value=fake):
+        result = await server.schedule_reminder({
+            "title": "Take the trash out",
+            "in_seconds": 3600,
+        })
+
+    assert result["status"] == "ok"
+    assert result["personalize"] is True
+    assert fake.last_call["json"]["config"]["personalize"] is True
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_personalize_false_propagates():
+    """Explicit personalize=false → cfg payload preserves it."""
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    fake = _FakeSession(_FakeResponse(200, {"item": {"id": "p-2", "next_fire_at": None}}))
+    server = mcp_server.ReminderToolsServer()
+
+    with patch.object(mcp_server.aiohttp, "ClientSession", return_value=fake):
+        result = await server.schedule_reminder({
+            "title": "Verbatim",
+            "in_seconds": 3600,
+            "personalize": False,
+        })
+
+    assert result["personalize"] is False
+    assert fake.last_call["json"]["config"]["personalize"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_reminders_surfaces_personalize_default_true_for_legacy_items():
+    """Existing rows without `personalize` in config should be reported as personalize=True
+    so the LLM's mental model matches the handler's default."""
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    body = {"items": [
+        # Legacy row: no personalize key
+        {"id": "1", "kind": "reminder", "enabled": True, "schedule_cron": "0 9 * * *",
+         "next_fire_at": None, "config": {"title": "old", "channel": "signal"}},
+        # New row: explicit personalize=false
+        {"id": "2", "kind": "reminder", "enabled": True, "schedule_cron": "0 0 * * *",
+         "next_fire_at": None,
+         "config": {"title": "verbatim", "channel": "signal", "personalize": False}},
+    ]}
+    fake = _FakeSession(_FakeResponse(200, body))
+    server = mcp_server.ReminderToolsServer()
+
+    with patch.object(mcp_server.aiohttp, "ClientSession", return_value=fake):
+        result = await server.list_reminders({})
+
+    by_id = {r["id"]: r for r in result["reminders"]}
+    assert by_id["1"]["personalize"] is True
+    assert by_id["2"]["personalize"] is False
+
+
+@pytest.mark.asyncio
 async def test_schedule_reminder_recurring_keeps_one_shot_false():
     from selene_agent.modules.mcp_reminder_tools import mcp_server
 
