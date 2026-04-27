@@ -455,7 +455,7 @@ end-to-end flow.
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET`    | `/api/cameras` | Returns `{cameras: [...], zones: [...]}`. `cameras[]` is the discovered HA camera list (proxied from face-rec's `/api/cameras`) left-joined with `camera_zones` — each row is `{camera_entity, sensor_entity, camera_exists, current_state, zone, zone_label, notes, updated_at}`. Orphan rows whose entity_id is no longer reported by face-rec are still included so they can be cleaned up. `zones[]` is the distinct list of in-use zone slugs for autocomplete |
-| `PUT`    | `/api/cameras/{entity}/zone` | Upsert. Body: `{zone: string, zone_label?: string, notes?: string}`. `entity` is the HA camera entity_id (e.g. `camera.front_duo_3_fluent`); the path uses FastAPI's `:path` converter so `.` is preserved |
+| `PUT`    | `/api/cameras/{entity}/zone` | Upsert. Body: `{zone: string, zone_label?: string, notes?: string}`. `entity` is the HA camera entity_id (e.g. `camera.front_duo_3_clear`); the path uses FastAPI's `:path` converter so `.` is preserved |
 | `DELETE` | `/api/cameras/{entity}/zone` | Clear the assignment. Returns `{camera_entity, deleted: bool}` |
 
 ### WebSockets

@@ -42,7 +42,7 @@ contract documented in
 {
   "event_id": "uuid",
   "detection_id": "uuid",
-  "camera": "camera.front_duo_3_fluent",
+  "camera": "camera.front_duo_3_clear",
   "person_id": "uuid | null",
   "person_name": "Matt | null",
   "confidence": 0.91,
@@ -68,7 +68,7 @@ contract documented in
 ```json
 {
   "event_id": "uuid",
-  "camera": "camera.front_duo_3_fluent",
+  "camera": "camera.front_duo_3_clear",
   "captured_at": "..."
 }
 ```
@@ -108,7 +108,7 @@ publisher  ──►  mosquitto  ──►  agent autonomy/mqtt_listener
 ```
 
 The normalizer sits in `services/agent/selene_agent/autonomy/sensor_events.py`.
-It maps the raw camera entity_id (e.g. `camera.front_duo_3_fluent`) to a
+It maps the raw camera entity_id (e.g. `camera.front_duo_3_clear`) to a
 generic *zone* (e.g. `front_door`) using the `camera_zones` Postgres table —
 the LLM downstream reasons about zones, not entity_ids, so the same logic
 generalizes across deployments.
@@ -126,7 +126,7 @@ Two ways:
 2. **Direct SQL**:
    ```sql
    INSERT INTO camera_zones (camera_entity, zone, zone_label)
-   VALUES ('camera.front_duo_3_fluent', 'front_door', 'Front Door');
+   VALUES ('camera.front_duo_3_clear', 'front_door', 'Front Door');
    ```
 
 Common zone slugs: `front_door`, `backyard`, `driveway`, `side_yard`,
@@ -216,7 +216,7 @@ missing rows — your dashboard tweaks survive restarts.
 ### Stranger at front door
 
 1. `face-recognition` publishes `haven/face/unknown` with
-   `camera="camera.front_duo_3_fluent"`, `quality_score=0.7`,
+   `camera="camera.front_duo_3_clear"`, `quality_score=0.7`,
    `detection_id="d1"`.
 2. Normalizer maps the camera → zone `front_door`, attaches
    `snapshot_url=http://agent:6002/api/face/detections/d1/snapshot`.

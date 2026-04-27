@@ -175,8 +175,15 @@ FACE_REC_MATCH_THRESHOLD=0.50
 # stricter than the match threshold so we only learn from confident hits.
 FACE_REC_IMPROVEMENT_THRESHOLD=0.65
 FACE_REC_QUALITY_FLOOR=0.40
-FACE_REC_IMPROVEMENT_QUALITY_FLOOR=0.65   # outdoor wide-angle scores routinely 0.66-0.69
+FACE_REC_IMPROVEMENT_QUALITY_FLOOR=0.65   # tune via the per-face quality logs (area/sharp/pose/bright breakdown)
 FACE_REC_MAX_EMBEDDINGS_PER_PERSON=50     # FIFO eviction on cap
+
+# Detector input size — InsightFace resizes the longest edge to this value
+# before RetinaFace runs. 1280 (vs buffalo_l's 640 default) gives ~3x the
+# per-face pixels post-resize on high-res `_clear` Reolink streams and
+# panoramic tiles. Lower to 640 if running on a smaller GPU; raise for
+# higher accuracy at the cost of VRAM.
+FACE_REC_DET_SIZE=1280
 
 # Burst-capture from HA per trigger
 FACE_REC_BURST_FRAMES=6

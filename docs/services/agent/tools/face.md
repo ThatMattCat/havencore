@@ -52,7 +52,7 @@ ambiguity now surfaces explicitly.)
 The substring + `get_close_matches` cutoff is intentionally generous:
 empirically every natural-language LLM query (`"front door"`,
 `"frontdoor"`, `"front_door"`, `"front"`) needed cutoff ≤ 0.3 to resolve
-against entity_ids like `camera.front_duo_3_fluent`.
+against entity_ids like `camera.front_duo_3_clear`.
 
 ## Configuration
 
@@ -98,7 +98,7 @@ The system prompt encourages composing these tools naturally:
 - **"Who's been around today?"** → `face_recent_visitors(hours=24)`
 - **"Add this person — they're called Sam"** → check
   `face_list_known_people()`, then `face_enroll_person("Sam",
-  "camera:camera.front_duo_3_fluent")`
+  "camera:camera.front_duo_3_clear")`
 - **"Mark Sam as a resident"** → `face_set_access_level("Sam", "resident")`
 
 ## Troubleshooting

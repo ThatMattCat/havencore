@@ -150,7 +150,7 @@ All paths below are served on port 6006 directly. The agent at port 6002 mirrors
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/cameras` | Discovery — queries HA `/api/states`, filters person sensors, derives the matching `camera.<base>_fluent` entity, reports `camera_exists` for each. Surfaces naming-convention drift before the bridge fails on it |
+| `GET` | `/api/cameras` | Discovery — queries HA `/api/states`, filters person sensors, joins the `cameras` registry table to surface `camera_entity`, `fov_type`, `native_resolution`, and `registered`. Falls back to deriving `camera.<base>_clear` for sensors not yet seeded into the registry. `camera_exists` flags naming-convention drift before the bridge fails on it |
 
 ### Admin / operator
 
@@ -167,6 +167,40 @@ All paths below are served on port 6006 directly. The agent at port 6002 mirrors
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/health` | Reports model providers + load time, db status, qdrant collection + dim, mqtt broker + subscribed topics, retention `{last_sweep, interval_min, unknown_days, known_days}` |
+
+## Cameras registry & FOV-aware detection
+
+The `cameras` Postgres table is the per-camera metadata source. Each row maps
+the HA snapshot entity (e.g. `camera.front_duo_3_clear`) to the matching
+person sensor and to a `fov_type`:
+
+| `fov_type` | Behavior |
+|---|---|
+| `standard` | Single-pass detection. The full frame goes to InsightFace at `FACE_REC_DET_SIZE` (default 1280) |
+| `panoramic_dual_lens` | Frame is split into two horizontally overlapping halves (10% overlap on each side of the seam). Detection runs per tile; bboxes are translated back to full-frame coordinates and overlap-deduped by IoU > 0.5 |
+
+Tiling exists because Reolink dual-lens cameras stitch two ~90° views into
+one ~180° image. A 7680×2160 panorama hitting a 1280-wide detector is a 6×
+downscale; tiling halves that loss before the resize, so faces near either
+lens see ~3× the pixels they would in a single-pass run.
+
+A camera that isn't registered falls back to `fov_type=standard` so adding
+new cameras to HA doesn't require a DB write before face-rec works on them
+— it just won't get tiling until you seed a row. Use `GET /api/cameras` to
+see which sensors are registered and which are running on convention
+defaults.
+
+Adding or correcting a camera:
+
+```sql
+-- Register a new panoramic camera
+INSERT INTO cameras (entity_id, sensor_entity, fov_type, native_width, native_height)
+VALUES ('camera.driveway_clear', 'binary_sensor.driveway_person',
+        'panoramic_dual_lens', 4096, 1440);
+
+-- Flip an existing camera's FOV type
+UPDATE cameras SET fov_type = 'standard' WHERE entity_id = 'camera.porch_clear';
+```
 
 ## Retention
 
@@ -189,6 +223,31 @@ Operators can force a sweep via `POST /api/admin/retention/sweep` (useful right 
 - **Cold start downloads the buffalo_l pack** (~280 MB) into `./volumes/insightface_models`; subsequent restarts skip the download.
 - **Single-instance assumption**: the in-memory job registry for `/api/admin/jobs` and the rebuild lock assume one process. Don't scale horizontally.
 
+### Quality scoring
+
+Every detected face is scored 0–1 from four signals: bbox area, sharpness
+(Laplacian variance of the crop), pose (eye symmetry around the nose),
+and brightness (mean grayscale). The composite uses fixed weights —
+0.30 area, 0.30 sharpness, 0.25 pose, 0.15 brightness — and the per-face
+breakdown is logged at INFO so tuning is observable:
+
+```
+quality score=0.83 (area=0.75 sharp=1.00 pose=0.97 bright=0.40) face=156x191 det=0.82
+```
+
+`area` saturates at ~200×200 pixels in the face crop (`AREA_SATURATION_PX`,
+40000 px), an *absolute* count rather than a fraction of the frame —
+ArcFace resizes everything to 112×112 internally, and frame-relative
+ratios punish wide-angle/panoramic cameras unfairly. A close-up face on
+a 7680×2160 panorama saturates area to 1.0; a small distant face still
+scores low.
+
+Two thresholds gate the score: `FACE_REC_QUALITY_FLOOR` (default 0.40) is
+the bar to be considered for matching; `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`
+(default 0.65) is the higher bar to feed back into the gallery via
+continuous improvement. Tune both by watching the score breakdown logs
+across a few weeks of real events.
+
 ## Troubleshooting
 
 ### `/health` shows `mqtt.connected: false`
@@ -197,7 +256,7 @@ Mosquitto isn't reachable. Check `docker compose ps mosquitto`. Set `FACE_REC_MQ
 
 ### Trigger fires but pipeline returns `no_frames`
 
-HA's `camera_proxy` returned 0 frames. Check `HAOS_URL` / `HAOS_TOKEN` and that the camera entity is `camera.<base>_fluent` (matches the discovery convention). `GET /api/cameras` will show whether the bridge can derive a camera from each person sensor.
+HA's `camera_proxy` returned 0 frames. Check `HAOS_URL` / `HAOS_TOKEN` and that the camera entity is `camera.<base>_clear` (matches the discovery convention) or that the camera is registered in the `cameras` table with the snapshot entity HA actually exposes. `GET /api/cameras` will show whether the bridge can derive a camera from each person sensor.
 
 ### Identified events have `embedding_contributed: false` consistently
 

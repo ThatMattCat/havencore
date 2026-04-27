@@ -296,7 +296,7 @@ to the trigger list, no per-camera YAML duplication.
           haven/face/trigger/{{
             trigger.to_state.entity_id
               | replace('binary_sensor.', 'camera.')
-              | replace('_person', '_fluent')
+              | replace('_person', '_clear')
           }}
         payload: >-
           {
@@ -309,10 +309,24 @@ to the trigger list, no per-camera YAML duplication.
 ### Camera entity naming convention
 
 The bridge derives the `camera.*` entity from the trigger topic by
-substituting `binary_sensor.` → `camera.` and `_person` → `_fluent`.
-That matches Reolink's HACS integration default. Different cameras use
-different suffixes (`_main`, `_sub`, etc.) — confirm what HA exposes
-for your camera and either rename the HA entity or extend the template.
+substituting `binary_sensor.` → `camera.` and `_person` → `_clear`.
+That points at Reolink HACS's high-resolution stream profile (e.g.
+7680×2160 on the Duo 3 vs the `_fluent` low-res profile's 1536×432).
+
+HA's `camera_proxy` is on-demand: face-recognition pulls a single JPEG
+per call, so having the `_clear` entity exposed in HA does not by itself
+trigger continuous high-res RTSP streaming — only an active live-view
+consumer (HA dashboard, Frigate, etc.) would. Bandwidth cost is one JPEG
+per `binary_sensor.*_person` trip.
+
+Different camera brands use different suffixes (`_main`, `_sub`, etc.).
+Two ways to handle them:
+
+1. **Rename the HA entity** to match the `_clear` convention.
+2. **Register the camera in the `cameras` Postgres table** with the
+   actual entity id you have. The face-recognition discovery endpoint
+   will use the registered value; the trigger automation just needs to
+   publish to `haven/face/trigger/<that_entity_id>`.
 
 ### Discovery / sanity check
 
