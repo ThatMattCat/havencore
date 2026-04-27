@@ -34,18 +34,23 @@ async def test_reminder_sends_notification_and_returns_ok(monkeypatch):
     assert result["status"] == "ok"
     assert result["notified_via"] == "ha_push"
     assert update_item.await_count == 0  # not one_shot
+    assert not result.get("_delete_after_run")  # recurring reminders are not deleted
 
 
 @pytest.mark.asyncio
-async def test_reminder_one_shot_disables_item_on_success(monkeypatch):
+async def test_reminder_one_shot_signals_delete_on_success(monkeypatch):
     from selene_agent.autonomy.handlers import reminder
 
     fake_notifier = MagicMock()
     fake_notifier.send = AsyncMock(return_value=True)
     monkeypatch.setattr(reminder, "_make_notifier", lambda *a, **kw: fake_notifier)
 
+    # Handler should not touch the DB itself; the engine does the delete
+    # after insert_run so the autonomy_runs FK reference stays valid.
     update_item = AsyncMock()
+    delete_item = AsyncMock()
     monkeypatch.setattr(reminder.autonomy_db, "update_item", update_item)
+    monkeypatch.setattr(reminder.autonomy_db, "delete_item", delete_item, raising=False)
 
     item = {
         "id": "r-2",
@@ -60,11 +65,13 @@ async def test_reminder_one_shot_disables_item_on_success(monkeypatch):
         item, client=None, mcp_manager=MagicMock(), model_name="m", base_tools=[]
     )
     assert result["status"] == "ok"
-    update_item.assert_awaited_once_with("r-2", {"enabled": False})
+    assert result["_delete_after_run"] is True
+    update_item.assert_not_called()
+    delete_item.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_reminder_one_shot_does_not_disable_on_failure(monkeypatch):
+async def test_reminder_one_shot_does_not_signal_delete_on_failure(monkeypatch):
     from selene_agent.autonomy.handlers import reminder
 
     fake_notifier = MagicMock()
@@ -83,6 +90,7 @@ async def test_reminder_one_shot_does_not_disable_on_failure(monkeypatch):
     )
     assert result["status"] == "error"
     assert result["notified_via"] is None
+    assert not result.get("_delete_after_run")
     update_item.assert_not_called()
 
 

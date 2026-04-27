@@ -80,11 +80,11 @@ async def handle(
     delivered = await notifier.send(title=title, body=body)
     notified_via = channel if delivered else None
 
-    if delivered and bool(cfg.get("one_shot")):
-        try:
-            await autonomy_db.update_item(item["id"], {"enabled": False})
-        except Exception as e:
-            logger.warning(f"[reminder] failed to disable one_shot item {item['id']}: {e}")
+    # One-shot reminders that fired successfully are removed from agenda_items
+    # so they don't accumulate in the dashboard's Agenda list. The audit trail
+    # lives in autonomy_runs (FK is ON DELETE SET NULL). The engine performs
+    # the actual delete after insert_run so the FK reference is valid.
+    delete_after_run = delivered and bool(cfg.get("one_shot"))
 
     return {
         "status": "ok" if delivered else "error",
@@ -95,4 +95,5 @@ async def handle(
         "messages": [],
         "metrics": {"channel": channel, "delivered": delivered},
         "error": None if delivered else f"{channel} delivery failed",
+        "_delete_after_run": delete_after_run,
     }

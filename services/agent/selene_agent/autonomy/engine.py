@@ -507,6 +507,17 @@ class AutonomyEngine:
                 "error": result.get("error"),
                 "action_audit": result.get("action_audit"),
             })
+            # Handlers can opt-in to having the engine delete the agenda row
+            # post-fire (currently used by one-shot reminders to keep the
+            # dashboard Agenda list clean). Done after insert_run so the FK
+            # reference is valid; ON DELETE SET NULL nulls the run's FK.
+            if result.get("_delete_after_run"):
+                try:
+                    await autonomy_db.delete_item(item_id)
+                except Exception as e:
+                    logger.warning(
+                        f"[engine] post-fire delete failed for {kind} {item_id}: {e}"
+                    )
             await self._advance(item, triggered_at)
             return {
                 "status": result.get("status", "ok"),
