@@ -308,6 +308,30 @@ class HomeAssistantMCPServer:
                     }
                 ),
                 Tool(
+                    name="ha_get_state",
+                    description=(
+                        "Cheap single-entity state read. Returns "
+                        "{entity_id, state, attributes, last_changed, last_updated} for "
+                        "one entity in one round-trip. Use this for trivial reads — "
+                        "\"is the porch light on\", \"what's the thermostat set to\", "
+                        "\"what was that door's last state change?\" — instead of "
+                        "ha_list_entities (which returns the whole domain) or "
+                        "ha_evaluate_template (which is the escape hatch for compound "
+                        "logic). Attributes are curated per domain, same shape as "
+                        "ha_list_entities, so the value round-trips into ha_control_*."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Entity ID to read (e.g. 'light.porch', 'climate.living_room')."
+                            }
+                        },
+                        "required": ["entity_id"]
+                    }
+                ),
+                Tool(
                     name="ha_list_services",
                     description=(
                         "List callable services (actions) for a Home Assistant domain. Returns "
@@ -775,6 +799,10 @@ class HomeAssistantMCPServer:
                         arguments.get("include_state"),
                     )
                     return [types.TextContent(type="text", text=result)]
+
+                elif name == "ha_get_state":
+                    result = await self._get_state(arguments.get("entity_id"))
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
                 elif name == "ha_list_services":
                     result = await self._list_services(arguments.get("domain"))
@@ -1380,6 +1408,34 @@ class HomeAssistantMCPServer:
             return await self._format_entity_not_found(e, "Timer")
         except Exception as e:
             return f"Error cancelling timer '{entity_id}': {e}"
+
+    async def _get_state(self, entity_id: Optional[str]) -> Dict[str, Any]:
+        if not entity_id:
+            return {"error": "entity_id is required"}
+        if TEST_MODE:
+            return {
+                "entity_id": entity_id,
+                "state": "on",
+                "attributes": {"friendly_name": "Test Entity"},
+                "last_changed": None,
+                "last_updated": None,
+            }
+        try:
+            data = await self.ha_client._get(f"/api/states/{entity_id}")
+        except aiohttp.ClientResponseError as e:
+            if e.status == 404:
+                return {"error": f"entity '{entity_id}' not found"}
+            return {"error": f"HA returned {e.status}: {e.message}"}
+        except Exception as e:
+            return {"error": str(e)}
+        domain = entity_id.split(".", 1)[0]
+        return {
+            "entity_id": entity_id,
+            "state": data.get("state"),
+            "attributes": _project_attrs(domain, data.get("attributes") or {}),
+            "last_changed": data.get("last_changed"),
+            "last_updated": data.get("last_updated"),
+        }
 
     async def _evaluate_template(self, template: Optional[str]) -> str:
         if not template:
