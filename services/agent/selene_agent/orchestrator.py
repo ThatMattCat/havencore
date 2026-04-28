@@ -26,6 +26,10 @@ from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
 from selene_agent.utils.mcp_client_manager import MCPClientManager
+from selene_agent.utils.tokens import (
+    estimate_messages_tokens,
+    resolve_context_limit_tokens,
+)
 
 logger = custom_logger.get_logger('loki')
 
@@ -134,14 +138,21 @@ class AgentOrchestrator:
         self.device_name: Optional[str] = None
         self._user_turn_since_reset: bool = False
 
-        # Stash for a summary produced by _check_session_timeout at turn start;
-        # run() reads and clears this to yield a SUMMARY_RESET event before the
-        # first thinking frame so the client sees the compaction inline.
-        self._pending_summary_reset: Optional[str] = None
+        # Stash for a summary produced by _check_session_timeout or
+        # _check_context_size at turn start; run() reads and clears this to
+        # yield a SUMMARY_RESET event before the first thinking frame so the
+        # client sees the compaction inline. Tuple is (reason, summary) so the
+        # event carries the right reason for both idle and size triggers.
+        self._pending_summary_reset: Optional[tuple[str, str]] = None
 
         # Per-turn retrieval injection. Session-pool sessions enable it; the
         # stateless /v1/chat/completions path overrides this to False.
         self.retrieval_enabled: bool = True
+
+        # Context-size summarization gate. Pool-managed sessions leave this on;
+        # autonomy turns flip it off so a one-shot orchestrator can never
+        # trigger a summarize-and-reset on its tiny scratch state.
+        self.context_size_check_enabled: bool = True
 
     def effective_timeout(self) -> int:
         """Idle window in seconds — per-session override or global default.
@@ -192,7 +203,44 @@ class AgentOrchestrator:
         if self.last_query_time and time.time() - self.last_query_time > timeout:
             summary = await self._summarize_and_reset(reason="idle_timeout_summarize")
             if summary:
-                self._pending_summary_reset = summary
+                self._pending_summary_reset = ("idle_timeout_summarize", summary)
+
+    async def _check_context_size(self):
+        """Route into summarize-and-reset when message bytes exceed the budget.
+
+        Threshold tracks the active provider's max_model_len (see
+        ``utils.tokens.resolve_context_limit_tokens``) so a ``--max-model-len``
+        bump in compose flows through automatically. ``idle_timeout=-1`` is
+        unaffected — size is a separate axis from idle. Skipped on autonomy
+        orchestrators (``context_size_check_enabled = False``).
+        """
+        if not self.context_size_check_enabled:
+            return
+        if not self.messages or len(self.messages) <= 1:
+            return
+        try:
+            provider = self.provider_getter()
+        except Exception as e:
+            logger.warning(f"context-size check provider lookup failed: {e}")
+            return
+        threshold = await resolve_context_limit_tokens(provider)
+        if threshold is None:
+            return
+        size = estimate_messages_tokens(self.messages)
+        if size <= threshold:
+            return
+        logger.info(
+            "context_size_threshold_exceeded",
+            extra={
+                "event": "context_size_threshold_exceeded",
+                "session_id": self.session_id,
+                "estimated_tokens": size,
+                "threshold_tokens": threshold,
+            },
+        )
+        summary = await self._summarize_and_reset(reason="context_size_summarize")
+        if summary:
+            self._pending_summary_reset = ("context_size_summarize", summary)
 
     async def _summarize_and_reset(self, reason: str) -> Optional[str]:
         """Persist full history, then reset `messages` to [system, summary, last N exchanges].
@@ -440,12 +488,14 @@ class AgentOrchestrator:
         unique_id = f"query_{int(time.time())}"
 
         await self._check_session_timeout()
+        await self._check_context_size()
         if self._pending_summary_reset:
+            reason, summary_text = self._pending_summary_reset
             yield AgentEvent(
                 type=EventType.SUMMARY_RESET,
                 data={
-                    "reason": "idle_timeout_summarize",
-                    "summary": self._pending_summary_reset,
+                    "reason": reason,
+                    "summary": summary_text,
                 },
             )
             self._pending_summary_reset = None

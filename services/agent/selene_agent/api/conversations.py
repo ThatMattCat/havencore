@@ -2,7 +2,7 @@
 Conversations API router — browse and retrieve stored conversation histories.
 """
 
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -13,6 +13,28 @@ from selene_agent.utils.session_pool import SessionOrchestratorPool
 logger = custom_logger.get_logger('loki')
 
 router = APIRouter()
+
+
+SUMMARY_PREFIX = "[Prior conversation summary]"
+
+
+def _filter_messages_for_resume(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip the leading base system prompt before sending the post-hydrate
+    messages to the dashboard. The `[Prior conversation summary]` system
+    message stays — the UI renders it as a `summary` role card so the user
+    sees what the model sees.
+    """
+    if not messages:
+        return []
+    first = messages[0]
+    content = first.get("content")
+    if (
+        first.get("role") == "system"
+        and isinstance(content, str)
+        and not content.startswith(SUMMARY_PREFIX)
+    ):
+        return list(messages[1:])
+    return list(messages)
 
 
 @router.get("/conversations")
@@ -64,4 +86,5 @@ async def resume_conversation(session_id: str, req: Request):
         "session_id": orch.session_id,
         "resumed": resumed,
         "message_count": message_count,
+        "messages": _filter_messages_for_resume(orch.messages or []),
     }

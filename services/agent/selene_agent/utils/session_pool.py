@@ -34,6 +34,10 @@ from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
 from selene_agent.utils.mcp_client_manager import MCPClientManager
+from selene_agent.utils.tokens import (
+    estimate_messages_tokens,
+    resolve_context_limit_tokens,
+)
 
 logger = custom_logger.get_logger('loki')
 
@@ -264,25 +268,53 @@ class SessionOrchestratorPool:
             except Exception as e:
                 logger.error(f"Idle sweep iteration failed: {e}")
 
-    async def idle_sweep(self) -> None:
-        """Reset timed-out sessions. Non-blocking: skips busy sessions.
+    def _is_idle_candidate(self, orch: AgentOrchestrator, now: float) -> bool:
+        return bool(
+            orch.last_query_time
+            and orch._user_turn_since_reset
+            and orch.effective_timeout() > 0
+            and (now - orch.last_query_time) > orch.effective_timeout()
+        )
 
-        Each session's idle window is `orch.effective_timeout()` — the
-        per-session override when set, otherwise the global default.
+    async def _is_size_candidate(self, orch: AgentOrchestrator) -> bool:
+        if not orch.context_size_check_enabled:
+            return False
+        if not orch.messages or len(orch.messages) <= 1:
+            return False
+        try:
+            provider = self._provider_getter() if self._provider_getter else None
+        except Exception:
+            return False
+        threshold = await resolve_context_limit_tokens(provider)
+        if threshold is None:
+            return False
+        return estimate_messages_tokens(orch.messages) > threshold
+
+    async def idle_sweep(self) -> None:
+        """Reset sessions that exceed their idle window OR their token budget.
+
+        Non-blocking: skips busy sessions. Each candidate is tagged with the
+        reason it qualified so the right ``summary_reset`` event reaches live
+        clients. Idle and size are independent axes — a dashboard session with
+        ``idle_timeout=-1`` will never qualify on idle but can qualify on size,
+        and that's the intended behavior.
         """
         now = time.time()
         # Snapshot under pool lock to avoid mutation during iteration.
-        # A non-positive effective_timeout() is the "never" sentinel — skip.
         async with self._pool_lock:
-            candidates = [
-                (sid, orch) for sid, orch in self._sessions.items()
-                if orch.last_query_time
-                and orch._user_turn_since_reset
-                and orch.effective_timeout() > 0
-                and (now - orch.last_query_time) > orch.effective_timeout()
-            ]
+            sessions_snapshot = list(self._sessions.items())
 
-        for sid, orch in candidates:
+        # Compute size membership outside the pool lock — get_max_model_len()
+        # may hit the provider's HTTP endpoint and we don't want to serialize
+        # that behind the pool lock.
+        candidates: List[tuple[str, AgentOrchestrator, str]] = []
+        for sid, orch in sessions_snapshot:
+            if self._is_idle_candidate(orch, now):
+                candidates.append((sid, orch, "idle_timeout_summarize"))
+            elif await self._is_size_candidate(orch):
+                candidates.append((sid, orch, "context_size_summarize"))
+
+        for sid, orch, reason in candidates:
             lock = self.lock_for(sid)
             # Non-blocking try-acquire: skip busy sessions.
             try:
@@ -292,20 +324,26 @@ class SessionOrchestratorPool:
             except Exception:
                 continue
             try:
-                # Re-check under the lock — a turn may have just started.
-                if (
-                    orch.last_query_time
-                    and orch._user_turn_since_reset
-                    and orch.effective_timeout() > 0
-                    and (time.time() - orch.last_query_time) > orch.effective_timeout()
-                ):
-                    summary = await orch._summarize_and_reset(reason="idle_timeout_summarize")
-                    if summary:
-                        self.publish(sid, {
-                            "type": "summary_reset",
-                            "reason": "idle_timeout_summarize",
-                            "summary": summary,
-                        })
+                # Re-check under the lock — a turn may have just started, or the
+                # condition may have already been resolved by the orchestrator's
+                # own per-turn checks.
+                still_idle = (
+                    reason == "idle_timeout_summarize"
+                    and self._is_idle_candidate(orch, time.time())
+                )
+                still_oversized = (
+                    reason == "context_size_summarize"
+                    and await self._is_size_candidate(orch)
+                )
+                if not (still_idle or still_oversized):
+                    continue
+                summary = await orch._summarize_and_reset(reason=reason)
+                if summary:
+                    self.publish(sid, {
+                        "type": "summary_reset",
+                        "reason": reason,
+                        "summary": summary,
+                    })
             except Exception as e:
                 logger.error(f"Idle-sweep reset failed for session {sid}: {e}")
             finally:
@@ -365,6 +403,29 @@ class SessionOrchestratorPool:
         # Only persist meaningful conversations (more than the system message).
         if len(msgs) <= 1:
             return
+        # Size-aware bypass: if this session is being evicted/flushed while
+        # oversized, route through _summarize_and_reset so the persisted row
+        # carries metadata.rolling_summary instead of a bloated raw blob.
+        # Otherwise cold-resume would just replay the bloat on the next visit.
+        # _summarize_and_reset persists internally, so we can return early.
+        if orch.context_size_check_enabled:
+            try:
+                provider = self._provider_getter() if self._provider_getter else None
+                threshold = await resolve_context_limit_tokens(provider)
+                if (
+                    threshold is not None
+                    and estimate_messages_tokens(msgs) > threshold
+                ):
+                    flush_reason = (
+                        "lru_eviction_size" if reason == "lru_eviction"
+                        else f"{reason}_size"
+                    )
+                    await orch._summarize_and_reset(reason=flush_reason)
+                    return
+            except Exception as e:
+                logger.warning(
+                    f"Size-aware flush check failed for {orch.session_id}: {e}"
+                )
         try:
             metadata = {
                 "reset_reason": reason,

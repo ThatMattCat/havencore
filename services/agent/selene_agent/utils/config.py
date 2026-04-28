@@ -78,6 +78,13 @@ CONVERSATION_TIMEOUT_MAX = int(os.getenv("CONVERSATION_TIMEOUT_MAX", "3600"))
 SESSION_SUMMARY_MAX_TOKENS = int(os.getenv("SESSION_SUMMARY_MAX_TOKENS", "400"))
 SESSION_SUMMARY_TAIL_EXCHANGES = int(os.getenv("SESSION_SUMMARY_TAIL_EXCHANGES", "2"))
 SESSION_SUMMARY_LLM_TIMEOUT_SEC = float(os.getenv("SESSION_SUMMARY_LLM_TIMEOUT_SEC", "15"))
+# Context-size summarization. Threshold tracks the active provider's
+# max_model_len so a `--max-model-len` bump in compose flows through
+# without a second knob to flip. Override sets an absolute ceiling when
+# truthy (>0); otherwise the fraction is multiplied against the
+# provider-reported max length.
+CONVERSATION_CONTEXT_LIMIT_FRACTION = float(os.getenv("CONVERSATION_CONTEXT_LIMIT_FRACTION", "0.75"))
+CONVERSATION_CONTEXT_LIMIT_TOKENS_OVERRIDE = int(os.getenv("CONVERSATION_CONTEXT_LIMIT_TOKENS", "0"))
 TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120"))
 

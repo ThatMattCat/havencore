@@ -108,6 +108,7 @@ export interface ResumeResponse {
 	session_id: string;
 	resumed: boolean;
 	message_count: number;
+	messages: any[];
 }
 
 export function resumeConversation(sessionId: string): Promise<ResumeResponse> {

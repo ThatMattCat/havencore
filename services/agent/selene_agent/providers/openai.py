@@ -6,7 +6,7 @@ the Anthropic path is validated in production.
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 
 class OpenAIProvider:
@@ -20,3 +20,6 @@ class OpenAIProvider:
 
     def pop_last_cache_stats(self) -> Dict[str, int]:
         return {"read": 0, "create": 0}
+
+    async def get_max_model_len(self) -> Optional[int]:
+        return None

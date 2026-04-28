@@ -3,11 +3,12 @@
 	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
 	import { listConversations, getConversation, resumeConversation, getConversationDeviceName } from '$lib/api';
-	import { setSessionId } from '$lib/stores/chat';
+	import { setSessionId, messages as chatMessages, clearMessages } from '$lib/stores/chat';
 
 	let conversations = $state([]);
 	let selectedConv = $state(null);
 	let selectedMessages = $state(null);
+	let viewMode = $state('llm');
 	let loading = $state(true);
 	let loadingDetail = $state(false);
 	let error = $state('');
@@ -34,6 +35,7 @@
 	async function selectConversation(conv) {
 		selectedConv = conv;
 		selectedMessages = null;
+		viewMode = 'llm';
 		loadingDetail = true;
 		try {
 			const data = await getConversation(conv.session_id, conv.id);
@@ -90,12 +92,54 @@
 
 	let resumingSid = $state(null);
 
+	const USER_MESSAGE_RE = /### User Message\n([\s\S]*)/;
+
+	function stripUserMessageWrapper(content) {
+		if (typeof content !== 'string') return '';
+		const match = content.match(USER_MESSAGE_RE);
+		return match ? match[1].trim() : content.trim();
+	}
+
+	function mapResumedMessages(raw) {
+		if (!Array.isArray(raw)) return [];
+		const now = Date.now();
+		const out = [];
+		for (const m of raw) {
+			if (!m || typeof m !== 'object') continue;
+			const role = m.role;
+			const content = typeof m.content === 'string' ? m.content : '';
+			if (role === 'system' && content.startsWith(SUMMARY_PREFIX)) {
+				out.push({
+					role: 'summary',
+					content: summaryBody(m),
+					events: [],
+					timestamp: now,
+				});
+			} else if (role === 'user') {
+				const text = stripUserMessageWrapper(content);
+				if (text) {
+					out.push({ role: 'user', content: text, events: [], timestamp: now });
+				}
+			} else if (role === 'assistant') {
+				if (content.trim()) {
+					out.push({ role: 'assistant', content, events: [], timestamp: now });
+				}
+				// assistant with empty content (tool-call-only step) is dropped
+				// — no live events array to drive ToolCallCard.
+			}
+			// 'tool' messages and base 'system' messages are dropped.
+		}
+		return out;
+	}
+
 	async function handleResume(conv, event) {
 		// Prevent the row's selectConversation click.
 		if (event) event.stopPropagation();
 		resumingSid = conv.session_id;
 		try {
 			const result = await resumeConversation(conv.session_id);
+			clearMessages();
+			chatMessages.set(mapResumedMessages(result.messages));
 			setSessionId(result.session_id);
 			await goto('/chat');
 		} catch (e) {
@@ -179,14 +223,36 @@
 			{:else if loadingDetail}
 				<p class="muted">Loading conversation...</p>
 			{:else if selectedMessages}
+				{@const rollingSummary = selectedMessages[0]?.metadata?.rolling_summary}
+				{@const hasRollingSummary = typeof rollingSummary === 'string' && rollingSummary.trim().length > 0}
 				<div class="detail-header">
-					<h2>{formatTime(selectedConv.created_at)}</h2>
-					<span class="muted">
-						{#if getConversationDeviceName(selectedConv)}{getConversationDeviceName(selectedConv)} · {/if}
-						{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
-					</span>
+					<div class="detail-header-meta">
+						<h2>{formatTime(selectedConv.created_at)}</h2>
+						<span class="muted">
+							{#if getConversationDeviceName(selectedConv)}{getConversationDeviceName(selectedConv)} · {/if}
+							{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
+						</span>
+					</div>
+					{#if hasRollingSummary}
+						<button
+							class="view-toggle"
+							onclick={() => (viewMode = viewMode === 'llm' ? 'raw' : 'llm')}
+							title={viewMode === 'llm'
+								? 'Show the pre-summary message buffer (debug view)'
+								: 'Show the rolling summary the LLM saw on subsequent turns'}
+						>
+							{viewMode === 'llm' ? 'Show raw transcript' : 'Show summary view'}
+						</button>
+					{/if}
 				</div>
-				{#if selectedMessages.length > 0}
+				{#if hasRollingSummary && viewMode === 'llm'}
+					<div class="message-list">
+						<div class="msg summary">
+							<span class="msg-role">Prior conversation summary</span>
+							<div class="msg-content">{rollingSummary}</div>
+						</div>
+					</div>
+				{:else if selectedMessages.length > 0}
 					<div class="message-list">
 						{#each selectedMessages[0].messages as msg}
 							{#if shouldRenderMessage(msg)}
@@ -387,16 +453,40 @@
 	.detail-header {
 		display: flex;
 		justify-content: space-between;
-		align-items: baseline;
+		align-items: center;
+		gap: 12px;
 		margin-bottom: 16px;
 		padding-bottom: 12px;
 		border-bottom: 1px solid #2d3148;
+	}
+
+	.detail-header-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
 	}
 
 	.detail-header h2 {
 		font-size: 16px;
 		font-weight: 600;
 		color: #f0f0f0;
+	}
+
+	.view-toggle {
+		padding: 6px 10px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 6px;
+		color: #a5b4fc;
+		font-size: 12px;
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.view-toggle:hover {
+		background: #252a3e;
+		border-color: #6366f1;
 	}
 
 	.message-list {

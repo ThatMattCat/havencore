@@ -51,3 +51,10 @@ class LLMProvider(Protocol):
         the orchestrator can ship a uniform REASONING event.
         """
         ...
+
+    async def get_max_model_len(self) -> Optional[int]:
+        """Return the active model's max context length in tokens, or
+        ``None`` when the backend can't report it. Providers should cache
+        the value so repeated calls don't hammer the backend.
+        """
+        ...
