@@ -2,18 +2,6 @@
 
 Forward-looking items that aren't in-flight. Each bullet is a seed for a later pass; details to be fleshed out when the work is picked up.
 
-## Resume-from-history UX
-
-- **Resume should repopulate `/chat` with the orchestrator's actual `messages`, not an empty pane.** Today the Resume button hydrates the session server-side and navigates to `/chat`, but the chat transcript doesn't visually reflect what the LLM will see on the next turn. After resume, the Chat pane should clear any stale transcript and render exactly the post-hydrate `messages` — i.e. `[system prompt + L4] + [Prior conversation summary] + tail exchanges`, with the base system prompt hidden and the summary shown in the same distinct styling we use on `/history`. The user should see what the model sees.
-
-## Context-size-triggered summarization
-
-- **Auto-summarize any session when its context size crosses a threshold.** With the dashboard's `idle_timeout=-1` sentinel, dashboard sessions now never auto-reset on idle — they live until "New Chat" or LRU eviction, and their message list grows unbounded. Pucks/satellites also risk this if a single exchange balloons (long tool outputs, big multimodal payloads). Add a size-based trigger parallel to the idle one: when total token/char count of `messages` exceeds some limit (TBD — probably a fraction of the model's context window, e.g. 75%), fire `_summarize_and_reset(reason="context_size_summarize")`. Hook points: likely in `AgentOrchestrator.run()` alongside the existing `_check_session_timeout()` call (`orchestrator.py:411`), and/or as a second gate in the pool sweep. Needs: (a) a cheap token-count estimator (reuse whatever the metrics path uses, or a char/4 approximation), (b) a new config var `CONVERSATION_CONTEXT_LIMIT_TOKENS` or similar, (c) a way to bypass/override for dashboard sessions if the user wants truly unbounded, or to set a higher ceiling there. Keep the `idle_timeout=-1` sentinel path unaffected — this is a separate axis.
-
-## History detail parity with what the LLM received
-
-- **`/history` detail should mirror the LLM's view of each flush, not the raw pre-flush buffer.** When a session is summarized, the stored flush includes the pre-summary messages (captured for auditing) plus `metadata.rolling_summary`. The dashboard currently renders the pre-summary messages too, which misrepresents what context the LLM actually had on subsequent turns. Flip the default: for rows where `metadata.rolling_summary` is set, show the summary (and any post-reset exchanges, if we begin storing those as separate flushes) rather than the pre-reset transcript. Keep the raw pre-reset transcript accessible — maybe via a "show raw" toggle — since it's still useful for debugging.
-
 ## LLM provider work — follow-ups
 
 - **Wire the stubbed OpenAI provider.** `providers/openai.py` currently raises `NotImplementedError` and the factory falls back to vLLM when it's selected. Shape should mirror vLLM (`AsyncOpenAI` with a different base_url + key + model). The System-page button is already rendered disabled with "soon"; un-disable once the provider lands. Translation layer is not needed — OpenAI tool-calling is already OpenAI-shaped.
