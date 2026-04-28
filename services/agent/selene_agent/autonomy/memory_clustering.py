@@ -74,7 +74,7 @@ async def summarize_cluster(
     client,
     model_name: str,
     member_texts: List[str],
-    max_tokens: int = 400,
+    max_tokens: int = 1500,
     temperature: float = 0.2,
 ) -> Optional[Dict[str, Any]]:
     """Call the LLM once to summarize a cluster. Returns normalized dict or None.

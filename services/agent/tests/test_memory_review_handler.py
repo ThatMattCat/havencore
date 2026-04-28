@@ -143,37 +143,61 @@ async def test_propose_l4_flags_eligible_l3(qdrant_stub, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_prune_respects_source_protection(qdrant_stub, monkeypatch):
+async def test_prune_deletes_stale_low_importance_l2(qdrant_stub, monkeypatch):
     from selene_agent.autonomy.handlers import memory_review
 
-    # L3 references "protected". Both "protected" and "unprotected" are
-    # stale+low-importance L2, but only "unprotected" should be deleted.
-    l3 = _stub_point("l3", "x", 3, tier="L3", source_ids=["protected"])
-    l2_protected = _stub_point(
-        "protected", "p", importance=1, tier="L2",
+    # Both L2 points are stale + low-importance. With absorb-on-consolidate,
+    # _prune_l2 no longer consults source_ids — every candidate that meets
+    # the age + importance gates is deleted. (Sources that survived to this
+    # step are by definition orphans of the last consolidation pass.)
+    l2_a = _stub_point(
+        "a", "x", importance=1, tier="L2",
         created="2025-09-01T00:00:00+00:00",
         importance_effective=0.1,
     )
-    l2_free = _stub_point(
-        "unprotected", "u", importance=1, tier="L2",
+    l2_b = _stub_point(
+        "b", "y", importance=1, tier="L2",
         created="2025-09-01T00:00:00+00:00",
         importance_effective=0.1,
     )
-
-    def _scroll_side_effect(**kw):
-        flt = kw.get("scroll_filter")
-        # Detect tier being filtered by stringifying the filter.
-        s = str(flt)
-        if "'L3'" in s:
-            return ([l3], None)
-        return ([l2_protected, l2_free], None)
-
-    qdrant_stub.scroll.side_effect = _scroll_side_effect
+    qdrant_stub.scroll.return_value = ([l2_a, l2_b], None)
     monkeypatch.setattr(memory_review, "_now", lambda: datetime(2026, 4, 13, tzinfo=timezone.utc))
 
     stats = {"l2_pruned": 0}
     await memory_review._prune_l2(qdrant_stub, stats)
-    assert stats["l2_pruned"] == 1
+    assert stats["l2_pruned"] == 2
     delete_call = qdrant_stub.delete.call_args
     ids = delete_call.kwargs["points_selector"].points
-    assert ids == ["unprotected"]
+    assert set(ids) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_cluster_step_absorbs_l2_sources_after_l3_verify(qdrant_stub, monkeypatch):
+    from selene_agent.autonomy.handlers import memory_review
+    from selene_agent.autonomy import memory_clustering
+
+    # 6 L2 points clustered into one L3; verify that the source L2s are
+    # deleted (absorbed) after the L3 upsert is confirmed via retrieve().
+    pts = [_stub_point(f"e{i}", "text", 3) for i in range(6)]
+    for p in pts:
+        p.vector = [float(i) for i in range(8)]
+    qdrant_stub.scroll.return_value = (pts, None)
+    qdrant_stub.retrieve = MagicMock(return_value=[MagicMock()])  # verify succeeds
+
+    monkeypatch.setattr(memory_clustering, "cluster_vectors", lambda v, **k: [0] * len(v))
+    async def _summarize(**kw):
+        return {"summary": "unified topic", "tags": ["t1"], "rationale": "because"}
+    monkeypatch.setattr(memory_clustering, "summarize_cluster", _summarize)
+    monkeypatch.setattr(memory_review, "_embed", lambda text: [0.0] * 1024)
+
+    stats = {"l3_created": 0, "clusters_found": 0, "noise_points": 0,
+             "llm_calls": 0, "l2_absorbed": 0}
+    await memory_review._cluster_to_l3(
+        qdrant_stub, stats,
+        since=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        llm_client=MagicMock(), model_name="gpt-3.5-turbo",
+    )
+    assert stats["l2_absorbed"] == 6
+    delete_call = qdrant_stub.delete.call_args
+    deleted_ids = delete_call.kwargs["points_selector"].points
+    assert set(deleted_ids) == {f"e{i}" for i in range(6)}

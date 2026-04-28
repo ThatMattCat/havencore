@@ -14,11 +14,6 @@ Forward-looking items that aren't in-flight. Each bullet is a seed for a later p
 
 - **`/history` detail should mirror the LLM's view of each flush, not the raw pre-flush buffer.** When a session is summarized, the stored flush includes the pre-summary messages (captured for auditing) plus `metadata.rolling_summary`. The dashboard currently renders the pre-summary messages too, which misrepresents what context the LLM actually had on subsequent turns. Flip the default: for rows where `metadata.rolling_summary` is set, show the summary (and any post-reset exchanges, if we begin storing those as separate flushes) rather than the pre-reset transcript. Keep the raw pre-reset transcript accessible — maybe via a "show raw" toggle — since it's still useful for debugging.
 
-## Broken tests on main
-
-- **`tests/test_memory_review_handler.py::test_prune_respects_source_protection` asserts `stats["l2_pruned"] == 1` but gets `2`.** The `_prune_l2` flow is deleting the protected L2 point even though an L3 still references it via `source_ids=["protected"]`. Either the protection lookup isn't being consulted or the L3 scroll filter is missing in the code path the test exercises. Pre-dates the LLM-provider branch (confirmed via `git stash`). Fix the handler or update the test to match the intended semantics — whichever is correct.
-- **`tests/test_integration_memory_review.py::test_end_to_end_consolidation` fails with `requests.exceptions.MissingSchema: Invalid URL '/api/memory/runs/trigger'`.** The test uses bare `requests` with a relative path; it needs either a `base_url` or a FastAPI `TestClient`. Probably broke when the endpoint was moved and nobody re-ran this integration test. Also pre-dates the LLM-provider branch.
-
 ## LLM provider work — follow-ups
 
 - **Wire the stubbed OpenAI provider.** `providers/openai.py` currently raises `NotImplementedError` and the factory falls back to vLLM when it's selected. Shape should mirror vLLM (`AsyncOpenAI` with a different base_url + key + model). The System-page button is already rendered disabled with "soon"; un-disable once the provider lands. Translation layer is not needed — OpenAI tool-calling is already OpenAI-shaped.
