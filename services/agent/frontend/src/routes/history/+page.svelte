@@ -144,11 +144,21 @@
 		return match ? match[1].trim() : content.trim();
 	}
 
+	function lastUserIndex(messages) {
+		if (!Array.isArray(messages)) return -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i]?.role === 'user') return i;
+		}
+		return -1;
+	}
+
 	function mapResumedMessages(raw) {
 		if (!Array.isArray(raw)) return [];
 		const now = Date.now();
+		const lastUser = lastUserIndex(raw);
 		const out = [];
-		for (const m of raw) {
+		for (let i = 0; i < raw.length; i++) {
+			const m = raw[i];
 			if (!m || typeof m !== 'object') continue;
 			const role = m.role;
 			const content = typeof m.content === 'string' ? m.content : '';
@@ -165,8 +175,27 @@
 					out.push({ role: 'user', content: text, events: [], timestamp: now });
 				}
 			} else if (role === 'assistant') {
+				// Mirror GLM-4.5-Air's chat_template.jinja: reasoning_content is
+				// only rendered for assistant messages newer than the most
+				// recent user message — those are the ones the model will
+				// actually see <think>…</think> for on the next turn. Older
+				// assistants get an empty <think></think> from the template
+				// regardless of what's stored, so we hide their reasoning here
+				// to keep the resumed view faithful to what the AI sees.
+				const events = [];
+				if (
+					i > lastUser &&
+					typeof m.reasoning_content === 'string' &&
+					m.reasoning_content.trim()
+				) {
+					events.push({
+						type: 'reasoning',
+						content: m.reasoning_content,
+						iteration: 1,
+					});
+				}
 				if (content.trim()) {
-					out.push({ role: 'assistant', content, events: [], timestamp: now });
+					out.push({ role: 'assistant', content, events, timestamp: now });
 				}
 				// assistant with empty content (tool-call-only step) is dropped
 				// — no live events array to drive ToolCallCard.
@@ -318,8 +347,10 @@
 						</div>
 					</div>
 				{:else if selectedMessages.length > 0}
+					{@const rawMessages = selectedMessages[0].messages}
+					{@const detailLastUser = lastUserIndex(rawMessages)}
 					<div class="message-list">
-						{#each selectedMessages[0].messages as msg}
+						{#each rawMessages as msg, idx}
 							{#if shouldRenderMessage(msg)}
 								{#if isSummaryMessage(msg)}
 									<div class="msg summary">
@@ -329,6 +360,15 @@
 								{:else}
 									<div class="msg" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'} class:tool={msg.role === 'tool'}>
 										<span class="msg-role">{msg.role}</span>
+										{#if msg.role === 'assistant' && idx > detailLastUser && typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()}
+											<details class="reasoning-card">
+												<summary class="reasoning-card-header">
+													<span class="reasoning-card-label">Reasoning</span>
+													<span class="reasoning-card-hint">click to view</span>
+												</summary>
+												<div class="reasoning-card-body">{msg.reasoning_content}</div>
+											</details>
+										{/if}
 										<div class="msg-content">
 											{#if typeof msg.content === 'string'}
 												{msg.content}
@@ -669,5 +709,58 @@
 		border-radius: 6px;
 		font-size: 11px;
 		overflow-x: auto;
+	}
+
+	.reasoning-card {
+		background: #15182a;
+		border: 1px solid #2d3148;
+		border-left: 3px solid #c4b5fd;
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin: 6px 0;
+		font-size: 12px;
+	}
+
+	.reasoning-card-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		cursor: pointer;
+		color: #c4b5fd;
+		font-weight: 600;
+		list-style: none;
+		user-select: none;
+	}
+
+	.reasoning-card-header::-webkit-details-marker {
+		display: none;
+	}
+
+	.reasoning-card-label {
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		font-size: 11px;
+	}
+
+	.reasoning-card-hint {
+		margin-left: auto;
+		color: #6b7280;
+		font-weight: 400;
+		font-size: 11px;
+		font-style: italic;
+	}
+
+	.reasoning-card[open] .reasoning-card-hint {
+		display: none;
+	}
+
+	.reasoning-card-body {
+		color: #c9cdd5;
+		line-height: 1.5;
+		margin-top: 8px;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		font-size: 12px;
 	}
 </style>

@@ -141,6 +141,8 @@ Deleting a flush only affects history. If the same session is currently live in 
 
 `/history`'s detail panel renders a stored flush's `messages`. When `metadata.rolling_summary` is set (any of the summarize-and-reset paths), the panel defaults to a **summary view** — a single rolling-summary card representing what the LLM saw on subsequent turns — and offers a "Show raw transcript" toggle to reveal the pre-reset message buffer for debugging. When `rolling_summary` is null (plain `lru_eviction` or `shutdown_flush`), no toggle appears and the panel renders the buffer directly as before.
 
+When an assistant message has `reasoning_content` and lives **after** the buffer's most recent `user` message, the raw view renders it as a collapsible "Reasoning" card above the assistant's content. This mirrors GLM-4.5-Air's `chat_template.jinja`: those are the assistant messages the model will see real `<think>…</think>` blocks for on the next turn, so the UI surfaces what the AI sees. Reasoning on assistants older than the last user message is hidden because the template auto-zeroes those to empty `<think></think>` regardless of what's stored. The same rule drives the resume → `/chat` path: `mapResumedMessages` synthesizes a `reasoning` event onto each in-window assistant message so `/chat`'s existing reasoning card kicks in.
+
 ## Implementation Details
 
 - Uses asyncio and asyncpg for async database operations
