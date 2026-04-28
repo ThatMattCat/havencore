@@ -135,6 +135,8 @@ The leading base system prompt is filtered out of `messages` before the response
 
 Deleting a flush only affects history. If the same session is currently live in the pool, the in-memory orchestrator is untouched — the next idle/size/LRU/shutdown flush will write a brand-new row. Conversely, deleting the last stored row for a session means a subsequent `POST /api/conversations/{session_id}/resume` finds nothing to hydrate and the pool falls through to minting a fresh session.
 
+`DELETE /api/conversations` (no path param) clears the whole `conversation_histories` table in one shot. The dashboard exposes this through a "Delete all" button at the top of `/history` with its own confirmation prompt. Same semantics as per-flush delete: the live pool is untouched and any active session simply writes a fresh row on its next flush.
+
 ### History detail view
 
 `/history`'s detail panel renders a stored flush's `messages`. When `metadata.rolling_summary` is set (any of the summarize-and-reset paths), the panel defaults to a **summary view** — a single rolling-summary card representing what the LLM saw on subsequent turns — and offers a "Show raw transcript" toggle to reveal the pre-reset message buffer for debugging. When `rolling_summary` is null (plain `lru_eviction` or `shutdown_flush`), no toggle appears and the panel renders the buffer directly as before.

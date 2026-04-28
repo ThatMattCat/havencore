@@ -49,8 +49,14 @@ def app(monkeypatch):
         ]
         return before - len(stored)
 
+    async def fake_delete_all():
+        n = len(stored)
+        stored.clear()
+        return n
+
     monkeypatch.setattr(conv_api.conversation_db, "get_conversation_history", fake_get)
     monkeypatch.setattr(conv_api.conversation_db, "delete_conversation_history", fake_delete)
+    monkeypatch.setattr(conv_api.conversation_db, "delete_all_conversations", fake_delete_all)
 
     app = FastAPI()
     app.include_router(conv_api.router, prefix="/api")
@@ -120,3 +126,24 @@ def test_delete_conversation_unknown_session_404s(app):
     r = client.delete("/api/conversations/does-not-exist?id=101")
     # The (session_id, id) pair doesn't match any row, so deleted=0 → 404.
     assert r.status_code == 404
+
+
+def test_delete_all_conversations_clears_table(app):
+    client = TestClient(app)
+    r = client.delete("/api/conversations")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": 2}
+
+    # Subsequent listings find nothing.
+    r = client.get("/api/conversations/sid-abc")
+    assert r.status_code == 404
+
+
+def test_delete_all_conversations_empty_returns_zero(app):
+    client = TestClient(app)
+    # First wipe.
+    client.delete("/api/conversations")
+    # Calling again on an already-empty table is a 200 with deleted=0.
+    r = client.delete("/api/conversations")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": 0}

@@ -181,6 +181,30 @@ class ConversationHistoryDB:
             logger.error(f"Failed to delete conversation history: {e}")
             return None
 
+    async def delete_all_conversations(self) -> Optional[int]:
+        """Delete every stored conversation flush.
+
+        Returns the number of rows deleted, or ``None`` on a database error.
+        Live pool sessions are unaffected — their next flush creates fresh
+        rows. Used by the dashboard's bulk-clear control.
+        """
+        if not self.pool:
+            logger.error("Database pool not initialized")
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                status = await conn.execute("DELETE FROM conversation_histories")
+            try:
+                deleted = int(status.rsplit(" ", 1)[-1])
+            except (ValueError, AttributeError):
+                deleted = 0
+            logger.info(f"Deleted all conversation histories ({deleted} rows)")
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to delete all conversation histories: {e}")
+            return None
+
     async def list_conversations(
         self,
         limit: int = 20,

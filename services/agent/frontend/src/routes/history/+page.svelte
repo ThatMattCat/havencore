@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
-	import { listConversations, getConversation, resumeConversation, deleteConversation, getConversationDeviceName } from '$lib/api';
+	import { listConversations, getConversation, resumeConversation, deleteConversation, deleteAllConversations, getConversationDeviceName } from '$lib/api';
 	import { setSessionId, messages as chatMessages, clearMessages } from '$lib/stores/chat';
 
 	let conversations = $state([]);
@@ -92,6 +92,26 @@
 
 	let resumingSid = $state(null);
 	let deletingId = $state(null);
+	let deletingAll = $state(false);
+
+	async function handleDeleteAll() {
+		if (!window.confirm('Delete ALL stored conversation history? This cannot be undone.')) {
+			return;
+		}
+		deletingAll = true;
+		try {
+			await deleteAllConversations();
+			conversations = [];
+			selectedConv = null;
+			selectedMessages = null;
+			offset = 0;
+			atEnd = true;
+		} catch (e) {
+			error = `Delete all failed: ${e.message || e}`;
+		} finally {
+			deletingAll = false;
+		}
+	}
 
 	async function handleDelete(conv, event) {
 		if (event) event.stopPropagation();
@@ -188,7 +208,19 @@
 </script>
 
 <div class="history-page">
-	<h1 class="page-title">Conversation History</h1>
+	<div class="page-header">
+		<h1 class="page-title">Conversation History</h1>
+		{#if conversations.length > 0}
+			<button
+				class="delete-all-btn"
+				onclick={handleDeleteAll}
+				disabled={deletingAll}
+				title="Delete every stored conversation"
+			>
+				{deletingAll ? 'Deleting…' : 'Delete all'}
+			</button>
+		{/if}
+	</div>
 
 	{#if error}
 		<div class="error-banner">{error}</div>
@@ -316,11 +348,40 @@
 </div>
 
 <style>
+	.page-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 20px;
+		gap: 12px;
+	}
+
 	.page-title {
 		font-size: 24px;
 		font-weight: 600;
-		margin-bottom: 20px;
 		color: #f0f0f0;
+	}
+
+	.delete-all-btn {
+		padding: 6px 14px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		color: #f87171;
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.delete-all-btn:hover:not(:disabled) {
+		background: #2a1a1f;
+		border-color: #7f1d1d;
+	}
+
+	.delete-all-btn:disabled {
+		opacity: 0.5;
+		cursor: wait;
 	}
 
 	.error-banner {

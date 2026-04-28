@@ -65,6 +65,20 @@ async def get_conversation(
     return {"conversation": history}
 
 
+@router.delete("/conversations")
+async def delete_all_conversations():
+    """Delete every stored conversation flush.
+
+    Irreversible. Live pool sessions are untouched — their next flush will
+    create fresh rows. The dashboard exposes this through a "Delete all"
+    button on `/history` that requires an explicit confirmation prompt.
+    """
+    deleted = await conversation_db.delete_all_conversations()
+    if deleted is None:
+        raise HTTPException(status_code=500, detail="Failed to delete conversations")
+    return {"deleted": deleted}
+
+
 @router.delete("/conversations/{session_id}")
 async def delete_conversation(
     session_id: str,

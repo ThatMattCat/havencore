@@ -123,6 +123,12 @@ export function deleteConversation(sessionId: string, flushId: number): Promise<
 	});
 }
 
+export function deleteAllConversations(): Promise<{ deleted: number }> {
+	return fetchJSON('/api/conversations', {
+		method: 'DELETE',
+	});
+}
+
 // --- Chat ---
 
 export interface ChatResponse {
