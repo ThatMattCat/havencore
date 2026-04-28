@@ -117,6 +117,12 @@ export function resumeConversation(sessionId: string): Promise<ResumeResponse> {
 	});
 }
 
+export function deleteConversation(sessionId: string, flushId: number): Promise<{ deleted: number }> {
+	return fetchJSON(`/api/conversations/${sessionId}?id=${flushId}`, {
+		method: 'DELETE',
+	});
+}
+
 // --- Chat ---
 
 export interface ChatResponse {

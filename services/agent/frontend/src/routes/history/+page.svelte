@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
-	import { listConversations, getConversation, resumeConversation, getConversationDeviceName } from '$lib/api';
+	import { listConversations, getConversation, resumeConversation, deleteConversation, getConversationDeviceName } from '$lib/api';
 	import { setSessionId, messages as chatMessages, clearMessages } from '$lib/stores/chat';
 
 	let conversations = $state([]);
@@ -91,6 +91,30 @@
 	}
 
 	let resumingSid = $state(null);
+	let deletingId = $state(null);
+
+	async function handleDelete(conv, event) {
+		if (event) event.stopPropagation();
+		const dname = getConversationDeviceName(conv);
+		const label = dname ? `"${dname}"` : conv.session_id.slice(-8);
+		const when = formatTime(conv.created_at);
+		if (!window.confirm(`Delete the ${label} conversation from ${when}? This cannot be undone.`)) {
+			return;
+		}
+		deletingId = conv.id;
+		try {
+			await deleteConversation(conv.session_id, conv.id);
+			conversations = conversations.filter((c) => c.id !== conv.id);
+			if (selectedConv?.id === conv.id) {
+				selectedConv = null;
+				selectedMessages = null;
+			}
+		} catch (e) {
+			error = `Delete failed: ${e.message || e}`;
+		} finally {
+			deletingId = null;
+		}
+	}
 
 	const USER_MESSAGE_RE = /### User Message\n([\s\S]*)/;
 
@@ -200,6 +224,15 @@
 							title="Resume this conversation in /chat"
 						>
 							{resumingSid === conv.session_id ? '…' : 'Resume'}
+						</button>
+						<button
+							class="delete-btn"
+							onclick={(e) => handleDelete(conv, e)}
+							disabled={deletingId === conv.id}
+							title="Delete this conversation"
+							aria-label="Delete conversation"
+						>
+							{deletingId === conv.id ? '…' : '×'}
 						</button>
 					</div>
 				{/each}
@@ -368,6 +401,29 @@
 	}
 
 	.resume-btn:disabled {
+		opacity: 0.5;
+		cursor: wait;
+	}
+
+	.delete-btn {
+		padding: 0 10px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		color: #9ca3af;
+		font-size: 16px;
+		line-height: 1;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s, color 0.15s;
+	}
+
+	.delete-btn:hover:not(:disabled) {
+		background: #2a1a1f;
+		border-color: #7f1d1d;
+		color: #f87171;
+	}
+
+	.delete-btn:disabled {
 		opacity: 0.5;
 		cursor: wait;
 	}

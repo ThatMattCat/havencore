@@ -65,6 +65,27 @@ async def get_conversation(
     return {"conversation": history}
 
 
+@router.delete("/conversations/{session_id}")
+async def delete_conversation(
+    session_id: str,
+    id: int = Query(..., description="The flush row id to delete"),
+):
+    """Delete a single stored flush row.
+
+    The `(session_id, id)` pair is required and must match — a mismatched pair
+    deletes nothing and 404s. Granularity is per-flush because /history lists
+    one row per flush; bulk session deletion is not exposed here. If the
+    session is currently live in the pool, the in-memory orchestrator is
+    untouched — the next flush will create a new row.
+    """
+    deleted = await conversation_db.delete_conversation_history(session_id, id)
+    if deleted is None:
+        raise HTTPException(status_code=500, detail="Failed to delete conversation")
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"deleted": deleted}
+
+
 @router.post("/conversations/{session_id}/resume")
 async def resume_conversation(session_id: str, req: Request):
     """Hydrate a stored session into the live pool so /chat can continue it.

@@ -129,6 +129,12 @@ The endpoint returns the post-hydrate orchestrator messages alongside the sessio
 
 The leading base system prompt is filtered out of `messages` before the response is sent (it's not user-facing); a `[Prior conversation summary]` system message — the rolling summary the model sees on subsequent turns — is preserved. The dashboard's "Resume" button on `/history` consumes this payload directly: it clears the chat transcript, populates the messages store with the filtered list (rolling summary rendered as a collapsible "Conversation summarized" card, tail user/assistant pairs as normal bubbles), persists the returned `session_id`, and navigates to `/chat`. The user lands on a transcript that mirrors what the model will see on the very next turn.
 
+### Deleting a flush
+
+`DELETE /api/conversations/{session_id}?id=<flush_id>` removes a single stored row. The `(session_id, id)` pair is required and must match; a mismatched pair 404s. The `/history` UI exposes this as a per-row delete button (`×`) with a browser-native confirmation prompt — the row disappears from the list on success. Granularity is per-flush, matching the `/history` list shape; bulk per-`session_id` deletion is not exposed.
+
+Deleting a flush only affects history. If the same session is currently live in the pool, the in-memory orchestrator is untouched — the next idle/size/LRU/shutdown flush will write a brand-new row. Conversely, deleting the last stored row for a session means a subsequent `POST /api/conversations/{session_id}/resume` finds nothing to hydrate and the pool falls through to minting a fresh session.
+
 ### History detail view
 
 `/history`'s detail panel renders a stored flush's `messages`. When `metadata.rolling_summary` is set (any of the summarize-and-reset paths), the panel defaults to a **summary view** — a single rolling-summary card representing what the LLM saw on subsequent turns — and offers a "Show raw transcript" toggle to reveal the pre-reset message buffer for debugging. When `rolling_summary` is null (plain `lru_eviction` or `shutdown_flush`), no toggle appears and the panel renders the buffer directly as before.

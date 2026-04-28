@@ -1,4 +1,4 @@
-"""Tests for GET /api/conversations/{session_id} with optional ?id= flush filter."""
+"""Tests for /api/conversations/{session_id} — GET (with optional ?id=) and DELETE."""
 from __future__ import annotations
 
 import pytest
@@ -13,6 +13,7 @@ def app(monkeypatch):
     stored = [
         {
             "id": 101,
+            "session_id": "sid-abc",
             "messages": [
                 {"role": "system", "content": "sys"},
                 {"role": "user", "content": "hello from flush-1"},
@@ -22,6 +23,7 @@ def app(monkeypatch):
         },
         {
             "id": 102,
+            "session_id": "sid-abc",
             "messages": [
                 {"role": "system", "content": "sys"},
                 {"role": "user", "content": "hello from flush-2"},
@@ -32,13 +34,23 @@ def app(monkeypatch):
     ]
 
     async def fake_get(session_id, limit=100, flush_id=None):
-        if session_id != "sid-abc":
+        rows = [r for r in stored if r["session_id"] == session_id]
+        if not rows:
             return []
         if flush_id is None:
-            return sorted(stored, key=lambda r: r["created_at"], reverse=True)
-        return [r for r in stored if r["id"] == flush_id]
+            return sorted(rows, key=lambda r: r["created_at"], reverse=True)
+        return [r for r in rows if r["id"] == flush_id]
+
+    async def fake_delete(session_id, flush_id):
+        before = len(stored)
+        stored[:] = [
+            r for r in stored
+            if not (r["session_id"] == session_id and r["id"] == flush_id)
+        ]
+        return before - len(stored)
 
     monkeypatch.setattr(conv_api.conversation_db, "get_conversation_history", fake_get)
+    monkeypatch.setattr(conv_api.conversation_db, "delete_conversation_history", fake_delete)
 
     app = FastAPI()
     app.include_router(conv_api.router, prefix="/api")
@@ -72,4 +84,39 @@ def test_get_conversation_with_mismatched_id_404s(app):
 def test_get_conversation_unknown_session_404s(app):
     client = TestClient(app)
     r = client.get("/api/conversations/does-not-exist")
+    assert r.status_code == 404
+
+
+def test_delete_conversation_removes_one_flush(app):
+    client = TestClient(app)
+    r = client.delete("/api/conversations/sid-abc?id=101")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": 1}
+
+    # The remaining flush is still fetchable; the deleted one 404s.
+    r = client.get("/api/conversations/sid-abc")
+    assert r.status_code == 200
+    assert [row["id"] for row in r.json()["conversation"]] == [102]
+
+    r = client.get("/api/conversations/sid-abc?id=101")
+    assert r.status_code == 404
+
+
+def test_delete_conversation_requires_id(app):
+    client = TestClient(app)
+    r = client.delete("/api/conversations/sid-abc")
+    # Missing required ?id= → FastAPI returns 422 (validation error).
+    assert r.status_code == 422
+
+
+def test_delete_conversation_mismatched_id_404s(app):
+    client = TestClient(app)
+    r = client.delete("/api/conversations/sid-abc?id=9999")
+    assert r.status_code == 404
+
+
+def test_delete_conversation_unknown_session_404s(app):
+    client = TestClient(app)
+    r = client.delete("/api/conversations/does-not-exist?id=101")
+    # The (session_id, id) pair doesn't match any row, so deleted=0 → 404.
     assert r.status_code == 404
