@@ -41,10 +41,18 @@ needs `--enable-expert-parallel` when sharded, and `--trust-remote-code`
 for the HuggingFace modeling files. `--reasoning-parser glm45` splits the
 model's `<think>…</think>` chain-of-thought into a separate `reasoning`
 field on the response so `message.content` stays clean for voice
-satellites; the agent surfaces that reasoning as a dashboard-only
-`REASONING` event on `/ws/chat` (filtered out of `/api/chat` and
-`/v1/chat/completions`). `--tool-call-parser glm45` wires native
-function-calling on the same model.
+satellites; the agent surfaces that reasoning as a `REASONING` event on
+`/ws/chat` (filtered out of `/api/chat`'s `events[]` and naturally absent
+from `/v1/chat/completions`) and also normalizes it onto the assistant
+message as `reasoning_content`. GLM-4.5-Air's
+[`chat_template.jinja`](https://huggingface.co/zai-org/GLM-4.5-Air/blob/main/chat_template.jinja)
+reads that field and renders `<think>…</think>` only for assistant
+messages newer than the most recent user message — i.e. between tool calls
+within the current in-progress turn — so the model can see its own prior
+reasoning before the next iteration. Older completed turns get an empty
+`<think></think>` from the template regardless of what's stored.
+`--tool-call-parser glm45` wires native function-calling on the same
+model.
 
 ## Command-line options
 

@@ -445,8 +445,12 @@ command: >
 `--reasoning-parser glm45` splits the model's `<think>…</think>`
 chain-of-thought into a separate `reasoning` field on the response,
 keeping `message.content` clean for voice satellites. The agent surfaces
-the CoT as a dashboard-only `REASONING` event on `/ws/chat` — see
-[Agent → WebSocket event schema](api-reference.md#websockets).
+the CoT as a `REASONING` event on `/ws/chat` (dashboard-only on the
+wire) and also normalizes it onto the assistant message as
+`reasoning_content` so GLM-4.5-Air's chat template can render
+`<think>…</think>` for in-progress agentic tool-call iterations — see
+[Agent → WebSocket event schema](api-reference.md#websockets) and
+[vLLM service docs](services/vllm/README.md) for the lifecycle.
 
 **Key Parameters**:
 - `--model`: HuggingFace model path

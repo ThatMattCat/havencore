@@ -601,13 +601,24 @@ class AgentOrchestrator:
                 if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls == []:
                     assistant_message.tool_calls = None
                 dumped_message = assistant_message.model_dump()
-                # Pydantic's model_extra is included in model_dump() by default,
-                # so a reasoning field would otherwise ride along into history and
-                # get re-sent to the LLM on every subsequent turn. vLLM's glm45
-                # parser uses ``reasoning``; other parsers/docs use
-                # ``reasoning_content``. Strip both defensively.
+                # Normalize reasoning into the single field GLM-4.5-Air's
+                # chat_template.jinja reads (``reasoning_content``). vLLM's
+                # glm45 parser writes the legacy alias ``reasoning``; drop it.
+                # The template renders <think>…</think> only for assistant
+                # messages newer than the most recent user message — i.e. the
+                # in-progress agentic tool-call loop, where the model expects
+                # to see its own prior reasoning before the next call. For
+                # already-completed turns it auto-emits empty <think></think>
+                # regardless of what's stored, so retaining the field across
+                # turns is harmless.
                 dumped_message.pop("reasoning", None)
-                dumped_message.pop("reasoning_content", None)
+                combined_reasoning = "\n\n".join(
+                    p.strip() for p in reasoning_parts if p and p.strip()
+                )
+                if combined_reasoning:
+                    dumped_message["reasoning_content"] = combined_reasoning
+                else:
+                    dumped_message.pop("reasoning_content", None)
                 self.messages.append(dumped_message)
 
                 # Execute tool calls

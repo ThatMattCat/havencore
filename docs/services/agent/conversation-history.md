@@ -35,6 +35,15 @@ Because the id is externally stable, `get_conversation_history(session_id)` can 
 
 ## Database Schema
 
+Assistant message dicts inside `conversation_data` may carry a
+`reasoning_content` field alongside the standard `role` / `content` /
+`tool_calls` keys. This is the chain-of-thought captured from
+reasoning-capable models (e.g. GLM-4.5-Air via vLLM's `--reasoning-parser
+glm45`); the chat template reads it to render `<think>…</think>` for
+in-turn iterations and auto-zeroes it for completed prior turns. Treat it
+as opaque on the SQL side — see
+[vLLM service docs](../vllm/README.md) for the lifecycle.
+
 The conversation histories are stored in the `conversation_histories` table with the following structure:
 
 ```sql

@@ -1,11 +1,19 @@
 """Tests for REASONING event surfacing and the defensive <think>...</think> strip.
 
 Covers:
-- Provider-surfaced ``reasoning_content`` → REASONING event, cleaned history.
+- Provider-surfaced ``reasoning_content`` → REASONING event, persisted as
+  ``reasoning_content`` on the stored assistant message (the field GLM-4.5-Air's
+  chat_template.jinja reads when rendering <think>…</think> for assistant
+  messages within the current in-progress turn).
 - Raw ``<think>…</think>`` in content (vLLM parser miss) → defensive strip
-  extracts reasoning, cleans content, yields REASONING event.
-- Both sources present → concatenated in the REASONING event.
-- Neither present → no REASONING event (no regression for Qwen-style models).
+  extracts reasoning, cleans content, yields REASONING event, and folds the
+  salvaged reasoning into the same ``reasoning_content`` field.
+- Both sources present → concatenated in the REASONING event and on the
+  persisted message.
+- Neither present → no REASONING event (no regression for Qwen-style models)
+  and no empty ``reasoning_content`` field added.
+- Legacy ``reasoning`` alias (vLLM glm45 parser's name) → never persisted; we
+  normalize to ``reasoning_content`` so the chat template can find it.
 - Provider lacking ``pop_last_reasoning`` → no crash (AttributeError guard).
 - VLLMProvider._capture_reasoning unit: reads model_extra and reasoning_content
   attribute, and pop clears state after one read.
@@ -261,12 +269,17 @@ async def test_reasoning_from_provider_surfaced_as_event():
     done = [e for e in events if e.type == EventType.DONE][0]
     assert done.data["content"] == "The sky is blue due to Rayleigh scattering."
 
-    # Persisted history contains the assistant turn WITHOUT reasoning fields
-    # (both the glm45-style ``reasoning`` and the older ``reasoning_content``
-    # must be scrubbed before append so they never ride back to the LLM).
+    # Persisted history keeps reasoning under ``reasoning_content`` (the field
+    # GLM-4.5-Air's chat_template.jinja reads). The legacy ``reasoning`` alias
+    # is normalized away. The chat template only renders this back into the
+    # prompt for assistant messages newer than the most recent user message
+    # (in-progress agentic turn); for completed prior turns the template
+    # auto-emits empty <think></think>, so retaining it is harmless.
     stored_assistant = [m for m in orch.messages if m.get("role") == "assistant"][0]
     assert "reasoning" not in stored_assistant
-    assert "reasoning_content" not in stored_assistant
+    assert stored_assistant.get("reasoning_content") == (
+        "I considered Mie vs Rayleigh; picked Rayleigh."
+    )
     assert stored_assistant["content"] == "The sky is blue due to Rayleigh scattering."
 
 
@@ -290,6 +303,9 @@ async def test_defensive_strip_pulls_reasoning_from_raw_content():
     stored_assistant = [m for m in orch.messages if m.get("role") == "assistant"][0]
     assert stored_assistant["content"] == "It's sunny outside."
     assert "<think>" not in stored_assistant["content"]
+    # Salvaged reasoning is folded into reasoning_content so the chat template
+    # has a single canonical field to read.
+    assert stored_assistant.get("reasoning_content") == "checking weather tool isn't needed"
 
 
 async def test_reasoning_from_both_sources_combined():
@@ -313,6 +329,12 @@ async def test_reasoning_from_both_sources_combined():
     done = [e for e in events if e.type == EventType.DONE][0]
     assert done.data["content"] == "done."
 
+    # Both pieces are also persisted under reasoning_content for the template.
+    stored_assistant = [m for m in orch.messages if m.get("role") == "assistant"][0]
+    persisted = stored_assistant.get("reasoning_content", "")
+    assert "parser-extracted thought" in persisted
+    assert "leftover thought" in persisted
+
 
 async def test_no_reasoning_yields_no_reasoning_event():
     # Baseline: Qwen-style model, clean content, no reasoning anywhere.
@@ -325,6 +347,10 @@ async def test_no_reasoning_yields_no_reasoning_event():
     assert not any(e.type == EventType.REASONING for e in events)
     done = [e for e in events if e.type == EventType.DONE][0]
     assert done.data["content"] == "just a plain answer"
+    # No reasoning anywhere → don't add an empty reasoning_content field.
+    stored_assistant = [m for m in orch.messages if m.get("role") == "assistant"][0]
+    assert "reasoning_content" not in stored_assistant
+    assert "reasoning" not in stored_assistant
 
 
 async def test_provider_without_pop_last_reasoning_does_not_crash():
@@ -353,3 +379,38 @@ async def test_reasoning_event_arrives_before_done():
     reasoning_idx = types_in_order.index(EventType.REASONING)
     done_idx = types_in_order.index(EventType.DONE)
     assert reasoning_idx < done_idx
+
+
+async def test_legacy_reasoning_field_normalized_to_reasoning_content():
+    """vLLM's glm45 parser surfaces CoT under ``reasoning`` (Pydantic
+    model_extra), so model_dump() yields a dict like
+    ``{"role": "assistant", "content": "...", "reasoning": "..."}``. GLM-4.5-Air's
+    chat_template.jinja reads ``m.reasoning_content`` instead. The orchestrator
+    must normalize: drop the legacy alias, write the value under
+    ``reasoning_content`` so the template renders <think>…</think> on the next
+    in-turn iteration."""
+    msg = MagicMock()
+    msg.content = "weather is fine"
+    msg.tool_calls = None
+
+    def _dump():
+        # Simulates a real vLLM response where the parser populated
+        # model_extra["reasoning"], which then rides along through model_dump.
+        return {
+            "role": "assistant",
+            "content": msg.content,
+            "reasoning": "checking the weather tool",
+        }
+
+    msg.model_dump = _dump
+    provider = _FakeProvider(
+        response=_mk_response(msg),
+        reasoning="checking the weather tool",
+    )
+    orch = _build_orch(provider)
+
+    await _run_once(orch, "weather?")
+
+    stored = [m for m in orch.messages if m.get("role") == "assistant"][0]
+    assert "reasoning" not in stored
+    assert stored.get("reasoning_content") == "checking the weather tool"
