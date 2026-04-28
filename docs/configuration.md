@@ -253,6 +253,18 @@ SESSION_SUMMARY_MAX_TOKENS=400       # cap on the recap length
 SESSION_SUMMARY_TAIL_EXCHANGES=2     # raw user/assistant pairs kept after reset
 SESSION_SUMMARY_LLM_TIMEOUT_SEC=15   # fall back to tail-only if the call hangs
 
+# Context-size summarization: in addition to the idle sweep, the pool runs
+# summarize-and-reset whenever a session's serialized message bytes exceed
+# the active provider's context budget. Threshold = max_model_len * fraction
+# (vLLM reports max_model_len via /v1/models; Anthropic uses a static map).
+# Bumping --max-model-len in compose flows through automatically.
+CONVERSATION_CONTEXT_LIMIT_FRACTION=0.75
+# Optional absolute override in tokens (0 = unset, fraction-of-max wins).
+# Set > 0 to pin a specific ceiling regardless of provider — useful for
+# benchmarking across providers with very different windows or for forcing
+# an earlier compaction than the fraction would.
+CONVERSATION_CONTEXT_LIMIT_TOKENS=0
+
 # Cap on tool-result text before it's summarized back to the LLM
 TOOL_RESULT_MAX_CHARS=8000
 ```

@@ -8,13 +8,13 @@ HavenCore stores conversation histories to PostgreSQL whenever a pooled session'
 
 - **Automatic Storage**: The agent flushes conversations to PostgreSQL before they are dropped or reset. The `metadata.reset_reason` field records which trigger fired.
 - **Rich Metadata**: Each stored conversation includes metadata such as:
-  - Reset reason — one of `idle_timeout_summarize` (idle sweep; see below), `lru_eviction` (pool at capacity), or `shutdown_flush` (agent stopping)
+  - Reset reason — one of `idle_timeout_summarize` (idle sweep; see below), `context_size_summarize` (size sweep; see below), `lru_eviction` (pool at capacity), `lru_eviction_size` (oversized eviction routed through summarize-and-reset), or `shutdown_flush` (agent stopping)
   - Message count
   - Last query timestamp
   - Agent name
   - `idle_timeout_override` — the per-session window in seconds, if the client set one; `null` otherwise
   - `device_name` — human-readable label of the satellite/client driving the session (e.g. `"Kitchen Speaker"`); `null` if the client never sent one
-  - `rolling_summary` — compact recap written by the summarize-on-timeout path (idle sweeps only; `null` on LRU/shutdown flushes or when the summary LLM call fails)
+  - `rolling_summary` — compact recap written by any summarize-and-reset path (idle sweep, size sweep, or oversized-eviction bypass; `null` on plain LRU/shutdown flushes or when the summary LLM call fails)
   - `tail_exchanges_kept` — how many user/assistant pairs were carried forward
   - Trace ID for debugging
   - Storage timestamp
@@ -59,7 +59,7 @@ The PostgreSQL connection is configured via environment variables:
 
 ## Storage Triggers
 
-A session is flushed to PostgreSQL whenever its messages would be lost. Three triggers can fire:
+A session is flushed to PostgreSQL whenever its messages would be lost. Four triggers can fire:
 
 1. **Idle sweep (summarize-and-continue)** — a 30-second background task in `SessionOrchestratorPool` looks for sessions whose `last_query_time` is older than their effective idle window (`orch.effective_timeout()` — the per-session override, or `CONVERSATION_TIMEOUT` default `90s`). For each expired session it acquires the per-session lock and runs `_summarize_and_reset(reason="idle_timeout_summarize")`:
    - persist the full prior history to Postgres (with `rolling_summary` and `idle_timeout_override` in metadata),
@@ -71,10 +71,13 @@ A session is flushed to PostgreSQL whenever its messages would be lost. Three tr
    When a sweep-driven compaction fires, the pool publishes a `{"type":"summary_reset","reason":"idle_timeout_summarize","summary":...}` frame over its per-session pub/sub queue, which any connected `/ws/chat` client drains alongside its normal receive loop. Compactions detected at turn start (via `_check_session_timeout`) are surfaced the same way, emitted inline as a `SUMMARY_RESET` event at the top of `run()`. Both paths carry identical shape; the Chat UI renders an expandable "Conversation summarized" marker so the user sees when (and what) context was compressed instead of a silent history rewrite.
 
    A session is only eligible for summarize-reset once per user-active period: the sweep gates on whether a user turn has happened since the last reset. Without that gate, the post-reset `last_query_time` would still appear expired on the very next sweep tick and the session would be re-summarized every interval forever.
-2. **LRU eviction** — when the pool hits `max_size` (default 64) and a new session is admitted, the least-recently-used entry is flushed and removed from memory. Its `session_id` persists in the DB and can be cold-resumed later.
-3. **Shutdown flush** — on agent shutdown (restart, stop, SIGTERM), the pool iterates every live session and flushes it before the process exits. Every non-empty session is guaranteed to be persisted across restarts.
+2. **Context-size sweep (summarize-and-continue)** — the same sweep + per-turn check that handles idle also gates on token budget. The threshold is computed per-orchestrator from the active provider's `max_model_len` (vLLM reports it via `/v1/models`; Anthropic uses a static prefix-keyed map; see [`configuration.md`](../../configuration.md#agent-runtime-tuning) for the env vars). When a session's serialized message bytes exceed `CONVERSATION_CONTEXT_LIMIT_FRACTION × max_model_len` — or the absolute `CONVERSATION_CONTEXT_LIMIT_TOKENS` override when that is > 0 — `_summarize_and_reset(reason="context_size_summarize")` runs the same persist-and-reinitialize path as the idle trigger. The corresponding `summary_reset` frame carries `reason: "context_size_summarize"`.
 
-In all three cases, sessions with only the system prompt (no real turns) are skipped — the threshold is `> 1` message.
+   Size and idle are independent axes. A dashboard session running with `idle_timeout=-1` ("never auto-summarize") will never qualify on idle but **will** size-summarize once it crosses the budget — unbounded message growth would otherwise blow the context window regardless of the idle policy. The size check is skipped on autonomy turns (single-shot orchestrators flip `context_size_check_enabled = False`) and silently no-ops when the active provider can't report a `max_model_len` and no absolute override is set.
+3. **LRU eviction** — when the pool hits `max_size` (default 64) and a new session is admitted, the least-recently-used entry is flushed and removed from memory. Its `session_id` persists in the DB and can be cold-resumed later. If the evicted session is over the size budget at flush time, `_flush_one` routes it through `_summarize_and_reset(reason="lru_eviction_size")` instead of writing the raw bloated buffer — otherwise cold-resume would just replay the bloat on the next visit.
+4. **Shutdown flush** — on agent shutdown (restart, stop, SIGTERM), the pool iterates every live session and flushes it before the process exits. Every non-empty session is guaranteed to be persisted across restarts. The same oversized-buffer bypass applies — an oversized session at shutdown is summarized rather than written raw.
+
+In all four cases, sessions with only the system prompt (no real turns) are skipped — the threshold is `> 1` message.
 
 ### Per-session idle timeout override
 
@@ -85,7 +88,7 @@ Clients can widen or tighten the idle window for a single session without touchi
 
 The value is clamped to `[CONVERSATION_TIMEOUT_MIN, CONVERSATION_TIMEOUT_MAX]` (defaults 10 and 3600). Bad values are logged and ignored. The override is stored on the live orchestrator and persisted into `metadata.idle_timeout_override` so that cold-resume via `POST /api/conversations/{session_id}/resume` rehydrates the same window.
 
-The sentinel value `-1` means "never auto-summarize" — it bypasses the clamp and causes both the pool's idle sweep and `AgentOrchestrator._check_session_timeout()` (the turn-start check) to skip this session. The dashboard sends `-1` on every WS open so an interactive tab lives until the user hits "New Chat" or the pool LRU-evicts it; satellites/pucks omit the field and get the global default. A `-1` session still flushes to Postgres via LRU eviction or shutdown, just without a `rolling_summary` — `reset_reason` will be `lru_eviction` or `shutdown_flush`, not `idle_timeout_summarize`.
+The sentinel value `-1` means "never auto-summarize on idle" — it bypasses the clamp and causes both the pool's idle sweep and `AgentOrchestrator._check_session_timeout()` (the turn-start check) to skip this session. The dashboard sends `-1` on every WS open so an interactive tab lives until the user hits "New Chat" or the pool LRU-evicts it; satellites/pucks omit the field and get the global default. Note that `-1` only opts out of the **idle** axis — the context-size sweep still applies, so an unattended dashboard tab that grows past the token budget will still be summarized (with `reset_reason = "context_size_summarize"`). A `-1` session that stays under the size budget for its whole lifetime flushes via LRU eviction or shutdown without a `rolling_summary`.
 
 ### Device attribution
 
@@ -102,7 +105,24 @@ The dashboard tab is itself a client and self-identifies the same way. The user 
 
 ### Cold resume
 
-A stored `session_id` can be reloaded into the live pool via `POST /api/conversations/{session_id}/resume`. The dashboard's "Resume" button on `/history` calls this endpoint, sets the returned id in `sessionStorage`, and navigates back to `/chat`. The pool rehydrates the orchestrator from the latest stored row, re-prepends the L4 memory block via `prepare()` (not `initialize()`, which would clobber the restored messages), and the next turn continues the conversation.
+A stored `session_id` can be reloaded into the live pool via `POST /api/conversations/{session_id}/resume`. The pool rehydrates the orchestrator from the latest stored row, re-prepends the L4 memory block via `prepare()` (not `initialize()`, which would clobber the restored messages), and the next turn continues the conversation.
+
+The endpoint returns the post-hydrate orchestrator messages alongside the session id:
+
+```json
+{
+  "session_id": "…",
+  "resumed": true,
+  "message_count": 23,
+  "messages": [ … ]
+}
+```
+
+The leading base system prompt is filtered out of `messages` before the response is sent (it's not user-facing); a `[Prior conversation summary]` system message — the rolling summary the model sees on subsequent turns — is preserved. The dashboard's "Resume" button on `/history` consumes this payload directly: it clears the chat transcript, populates the messages store with the filtered list (rolling summary rendered as a collapsible "Conversation summarized" card, tail user/assistant pairs as normal bubbles), persists the returned `session_id`, and navigates to `/chat`. The user lands on a transcript that mirrors what the model will see on the very next turn.
+
+### History detail view
+
+`/history`'s detail panel renders a stored flush's `messages`. When `metadata.rolling_summary` is set (any of the summarize-and-reset paths), the panel defaults to a **summary view** — a single rolling-summary card representing what the LLM saw on subsequent turns — and offers a "Show raw transcript" toggle to reveal the pre-reset message buffer for debugging. When `rolling_summary` is null (plain `lru_eviction` or `shutdown_flush`), no toggle appears and the panel renders the buffer directly as before.
 
 ## Implementation Details
 
@@ -123,12 +143,17 @@ FROM conversation_histories
 ORDER BY created_at DESC 
 LIMIT 10;
 
--- Get conversations closed by the idle sweep (summarize-and-continue)
+-- Get conversations closed by any summarize-and-continue path
 SELECT session_id, created_at,
-       metadata->>'rolling_summary' AS summary,
+       metadata->>'reset_reason'         AS reason,
+       metadata->>'rolling_summary'      AS summary,
        metadata->>'idle_timeout_override' AS override
 FROM conversation_histories
-WHERE metadata->>'reset_reason' = 'idle_timeout_summarize'
+WHERE metadata->>'reset_reason' IN (
+        'idle_timeout_summarize',
+        'context_size_summarize',
+        'lru_eviction_size'
+      )
 ORDER BY created_at DESC
 LIMIT 20;
 
