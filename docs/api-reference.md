@@ -321,6 +321,22 @@ curl http://localhost/health
 | STT | `GET http://localhost:6001/health` | Speech-to-text service |
 | LLM | `GET http://localhost:8000/health` | LLM backend status |
 
+### Satellite OTA firmware
+
+Static blobs served straight from disk by nginx (not the agent), on the
+same gateway port as the rest of the API. Plain HTTP, no auth, LAN-only —
+the satellite firmware's "Pull" button GETs `satellite.bin` and streams
+it into `esp_https_ota`.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/firmware/satellite.bin` | Whole-file firmware image (`application/octet-stream`). Whole-file GETs only — no range support needed. |
+| `GET` | `/firmware/satellite.json` | Optional version sidecar (`application/json`): `{"version", "size", "sha256"}`. Satellite ignores this today; reserved for future version-skip logic. |
+
+Bare `/firmware/` returns 403 (autoindex disabled). Upload path and the
+build-host scp/rsync recommendation are documented in
+[`services/nginx/README.md`](services/nginx/README.md#satellite-ota-firmware-firmware).
+
 ### MCP Management APIs
 
 #### GET /mcp/status
