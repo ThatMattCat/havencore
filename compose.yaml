@@ -24,6 +24,8 @@ services:
       - "80:80"
     volumes:
       - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Satellite OTA blobs — host-side scp target, served read-only at /firmware/
+      - ./volumes/firmware:/usr/share/havencore/firmware:ro
     depends_on:
       agent:
         condition: service_healthy
