@@ -13,13 +13,22 @@ Forward-looking items that aren't in-flight. Each bullet is a seed for a later p
 
 ## Agent tool surface — additions
 
-- **Todo / shopping list tool over HA's `todo.*` services.** *Deferred until the Android companion app exists* — the LLM-facing tool and the human-facing list display are joint work, no point shipping one without the other. Ship them in the same pass: dedicated tool (or small tool family) in `mcp_homeassistant_tools/` with list-name + item-text params over `todo.add_item` / `todo.remove_item` / `todo.get_items`, alongside the app screen that renders/checks-off the same lists. Check which `todo.*` list entities exist in the target HA instance before committing to the param shape.
+- **Todo / shopping list tool over HA's `todo.*` services.** *Coordinate with the companion app's list-screen phase* — the LLM-facing tool and the human-facing list display are joint work, no point shipping one without the other. Ship them in the same pass: dedicated tool (or small tool family) in `mcp_homeassistant_tools/` with list-name + item-text params over `todo.add_item` / `todo.remove_item` / `todo.get_items`, alongside the app screen that renders/checks-off the same lists. Check which `todo.*` list entities exist in the target HA instance before committing to the param shape.
 - **`web_quick_answer` — additive convenience over `brave_search` + `fetch`.** Keep both primitives; add a convenience tool that runs a search and auto-fetches the top result's body in one call. Saves a round trip on the common "look something up" path, which matters on a local model. Not a replacement — when the model wants result #3 or wants to inspect titles before fetching, it still uses the primitives.
 - **Direct CalDav access for calendar edit/delete.** `ha_create_calendar_event` works against HA's CalDav integration, but `ha_update_calendar_event` / `ha_delete_calendar_event` are currently hidden because HA's CalDav integration doesn't declare the `UPDATE_EVENT` / `DELETE_EVENT` features — the WS commands always fail. The underlying CalDav protocol fully supports PUT/DELETE on events by `uid`; the limitation is HA's wrapper. Path forward: bypass HA and talk to the CalDav server directly via the [`caldav` Python lib](https://github.com/python-caldav/caldav), with URL + creds added to the agent's env (likely the same ones HA already uses). Handler methods `_update_calendar_event` / `_delete_calendar_event` and their dispatch branches in `mcp_homeassistant_tools/mcp_server.py` are kept as dead code so re-enabling is just a Tool() restore once the backing transport is swapped. Decide alongside the Android companion app — that work also has to pick a calendar transport, and using one shared CalDav client would be cleanest.
 
 ## Android companion app
 
-- **Native Android app as the user-facing mobile surface for HavenCore.** Complements the satellite firmware on home hardware. Native Kotlin (no Flutter/Tauri/cross-platform) — iOS is explicitly out of scope for now. Initial scoping seeds: (1) display HA todo/shopping lists with check-off + add-item (consumes the deferred `todo.*` MCP work above); (2) registers as the Android default-assistant app so long-pressing home/power-button or "Hey Google" replacement routes voice to Selene's `/v1/audio/transcriptions` → agent → TTS pipeline; (3) push-receiver for reminder/autonomy notifications (today they go via Signal — phone-native push would feel less like a workaround); (4) optional "talk now" button that streams mic audio over the existing `/ws/chat` flow with the same `session_id` continuity the dashboard gets. Open questions: whether to live in this monorepo or a sibling repo like `havencore-satellite-firmware`, and how the app authenticates back to the agent (LAN-only vs. external relay through nginx + auth). Probably stretch-goal-class once shape is clearer.
+In flight in the sibling repo
+[`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app)
+— native Kotlin, LAN-only for v1. Surfaces being delivered there:
+in-app chat over `/ws/chat`, registration as Android's default-assistant app
+(`VoiceInteractionService`), push notifications via UnifiedPush + ntfy, and
+the todo/shopping-list view that pairs with the deferred `todo.*` MCP work
+above. iOS is explicitly out of scope. Server-side changes the app needs
+(e.g. a push registration endpoint and an `NtfyNotifier` alongside
+`SignalNotifier`) land in this repo when their phase reaches them; consult
+the companion repo for the current phase.
 
 ## Face recognition — deferred polish
 

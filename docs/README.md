@@ -37,6 +37,14 @@ Each service has its own folder under [`services/`](services/README.md):
 - [Home Assistant](integrations/home-assistant.md) — end-user setup and voice examples
 - [Media Control](integrations/media-control.md) — Plex, Music Assistant, and Home Assistant for TV/speaker playback
 
+## Related repositories
+
+HavenCore's clients live in their own repos so they can ship and version
+independently from the agent stack:
+
+- [`havencore-satellite-firmware`](https://github.com/ThatMattCat/havencore-satellite-firmware) — ESP-IDF firmware for ESP32-S3-BOX-3 voice satellites (wake-word, mic capture, OTA via the agent's `/firmware/` route).
+- [`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app) — native Kotlin Android app: in-app chat, voice/assistant-slot, and push notifications. Under active development; consult its own README for current scope.
+
 ## Project overview
 
 HavenCore is a fully containerized, self-hosted AI assistant system:

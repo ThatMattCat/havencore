@@ -170,4 +170,5 @@ done — the rest of the list is unchanged in order, just shifted up.
 
 - GPU budget is the real constraint. vLLM (`-tp 4`) spans all four GPUs at `--gpu-memory-utilization 0.77`; face-recognition co-tenants GPU 3 with vLLM (small ~600 MB resident model). ComfyUI and embeddings co-tenant on the lower GPUs. iav-to-text is currently shelved (see [todo.md](todo.md#replace-iav-to-text-imagevision-analysis)) — its slot is what face-rec moved into. A neural-avatar talking head would still need new headroom. Live2D sidesteps this.
 - Satellite firmware lives in a separate repo (`havencore-satellite-firmware`); anything touching audio capture, wake-word, or on-device embeddings straddles both repos.
+- The Android companion app lives in a separate repo (`havencore-companion-app`); anything touching mobile chat, the default-assistant slot, or push notifications straddles both repos.
 - Multi-user / speaker-aware memory is already flagged in the autonomy v2 direction — speaker ID (#1) is effectively the prerequisite for that roadmap, not a side quest.
