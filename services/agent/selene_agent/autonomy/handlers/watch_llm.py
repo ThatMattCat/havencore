@@ -215,6 +215,38 @@ def _signature_hash(item_id: str, sig: str) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _deterministic_signature(sensor_event: Dict[str, Any]) -> Optional[str]:
+    """Derive a stable dedup signature from a normalized sensor_event.
+
+    Shape: ``{domain}:{kind}:{zone}:{subject_key}`` where ``subject_key`` is
+    the subject identity (e.g. resident name) when known, else the subject
+    type (e.g. ``person``, ``unknown``). Returns None when domain/kind are
+    missing — caller should fall back to the LLM-emitted signature.
+
+    Why we override the LLM here: the engine's signature cooldown only fires
+    when repeat events hash to the same key, but the LLM's free-form
+    ``signature`` field drifts across near-identical events ("backyard_motion"
+    vs "person_backyard_evening"), defeating dedup. The sensor_event already
+    carries zone + subject after enrichment; using those directly keeps
+    cooldown stable per (zone, subject) without depending on LLM consistency.
+    """
+    domain = str(sensor_event.get("domain") or "").strip()
+    kind = str(sensor_event.get("kind") or "").strip()
+    if not domain or not kind:
+        return None
+    zone = str(sensor_event.get("zone") or "no_zone").strip() or "no_zone"
+    subj = sensor_event.get("subject") or {}
+    if isinstance(subj, dict):
+        subject_key = (
+            str(subj.get("identity") or "").strip()
+            or str(subj.get("type") or "").strip()
+            or "unknown"
+        )
+    else:
+        subject_key = "unknown"
+    return f"{domain}:{kind}:{zone}:{subject_key}"
+
+
 def _anyone_home(presence_payload: Any) -> Optional[bool]:
     """Return True if any person.* entity is in state 'home', False if at
     least one is known to be away and none home, None if presence data is
@@ -327,7 +359,14 @@ async def handle(
     if severity not in _VALID_SEVERITY:
         severity = "none"
     summary_text = str(parsed.get("summary") or "").strip()
-    signature = str(parsed.get("signature") or "").strip() or "unnamed"
+    llm_signature = str(parsed.get("signature") or "").strip() or "unnamed"
+    sensor_event = event.get("sensor_event") if isinstance(event, dict) else None
+    deterministic = (
+        _deterministic_signature(sensor_event)
+        if isinstance(sensor_event, dict)
+        else None
+    )
+    signature = deterministic or llm_signature
     sig_hash = _signature_hash(item["id"], signature)
 
     llm_channel = str(parsed.get("channel") or "").strip().lower() or None
@@ -387,7 +426,6 @@ async def handle(
     # Snapshot attachment passthrough — only when the source event carries a
     # synthesized URL and the channel actually supports binary attachments.
     attachments: Optional[List[str]] = None
-    sensor_event = event.get("sensor_event") if isinstance(event, dict) else None
     snapshot_url = (
         sensor_event.get("snapshot_url") if isinstance(sensor_event, dict) else None
     )
@@ -407,7 +445,7 @@ async def handle(
         "summary": (summary_text or "unusual event")[:200],
         "severity": severity,
         "signature_hash": sig_hash,
-        "signature_raw": signature,
+        "signature_raw": llm_signature,
         "notified_via": None,
         "messages": result.messages,
         "metrics": result.metrics,

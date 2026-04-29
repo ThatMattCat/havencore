@@ -179,6 +179,13 @@ the LLM's choice:
 - Quiet hours are evaluated *before* the handler runs, so a `speaker` choice
   during quiet hours never reaches the speaker; the run is deferred or
   dropped per the agenda item's `quiet_hours.policy`.
+- The dedup `signature` for cooldown is **derived from the normalized
+  `sensor_event`** (`{domain}:{kind}:{zone}:{subject_identity_or_type}`)
+  rather than the LLM's `signature` field — so repeat detections of the
+  same person in the same zone reliably hash to the same key regardless of
+  how the LLM phrases its output. The LLM-emitted `signature` is preserved
+  on the run as `signature_raw` for observability and is the fallback when
+  the trigger has no `sensor_event` (generic webhooks).
 
 ## Default seeded items
 
@@ -187,9 +194,9 @@ The agent seeds four `watch_llm` agenda items at first startup
 
 | name | enabled | trigger topic | notes |
 |------|---------|---------------|-------|
-| `face_identified_triage` | ✅ | `haven/face/identified` | Known-resident path. Usually nominal unless context is off (late hour while away, etc.). |
-| `face_unknown_triage`    | ✅ | `haven/face/unknown`    | Face detected but not matched — primary stranger-at-the-door path. |
-| `face_no_face_triage`    | ✅ | `haven/face/no_face`    | Person sensor tripped, no face visible. Higher severity floor (`med`) since these are noisier (wildlife, shadows). |
+| `face_identified_triage` | ✅ | `haven/face/identified` | Known-resident path. Usually nominal unless context is off (late hour while away, etc.). Default `cooldown_min=30`. |
+| `face_unknown_triage`    | ✅ | `haven/face/unknown`    | Face detected but not matched — primary stranger-at-the-door path. Default `cooldown_min=15` (kept short — high signal). |
+| `face_no_face_triage`    | ✅ | `haven/face/no_face`    | Person sensor tripped, no face visible. Higher severity floor (`med`) since these are noisier (wildlife, shadows). Default `cooldown_min=45`. |
 | `vehicle_event_triage`   | ❌ | `haven/vehicles/+`      | Off by default; flip on once an LPR / vehicle source publishes. |
 
 Both are `created_by='system_camera'`. Re-running the seed only inserts

@@ -127,7 +127,7 @@ across restarts so a manual pause survives.
 | `status` | text | `ok` / `error` / `skipped_cooldown` / `skipped_killswitch` / `rate_limited` |
 | `summary` | text | one-line human summary (e.g. `nominal`, `garage open >10min`) |
 | `severity` | text | `none` / `low` / `med` / `high` (anomaly-only) |
-| `signature_hash` | text | stable sha1(first 16) of the LLM's signature slug — drives cooldown dedup |
+| `signature_hash` | text | stable sha1(first 16) of the dedup signature — drives cooldown. For triggers carrying a normalized `sensor_event` (camera/face/etc.) the signature is derived deterministically as `{domain}:{kind}:{zone}:{subject}`; otherwise it's the LLM-emitted slug |
 | `notified_via` | text | `email` / `ha_push` / null |
 | `messages` | jsonb | full message trace from the turn |
 | `metrics` | jsonb | `{llm_ms, tool_ms_total, total_ms, iterations, tool_calls, autonomy_level, tools_allowed}` |
@@ -213,10 +213,16 @@ Non-negotiable v1 behavior:
    Scheduled dispatches above the cap are recorded as `status='rate_limited'`
    and not executed. Manual `/trigger` calls bypass this cap intentionally
    (operator override).
-3. **Per-signature cooldown** — for `anomaly_sweep`, the LLM emits a stable
-   `signature` slug; the engine hashes it and refuses to re-notify within
-   `AUTONOMY_ANOMALY_COOLDOWN_MIN` minutes unless severity escalates
-   (`low` → `med` → `high`). The cooldown skip still writes a run row.
+3. **Per-signature cooldown** — for `anomaly_sweep`, `watch`, and
+   `watch_llm`, the engine hashes a dedup signature and refuses to
+   re-notify within `cooldown_min` (per-item, defaults to
+   `AUTONOMY_ANOMALY_COOLDOWN_MIN`) unless severity escalates
+   (`low` → `med` → `high`). For `anomaly_sweep` the signature is the LLM's
+   `signature` slug; for `watch_llm` triggers carrying a normalized
+   `sensor_event` (camera/face/etc.), the signature is derived
+   deterministically from `{domain}:{kind}:{zone}:{subject}` so repeat
+   detections hash to the same key regardless of how the LLM phrases its
+   output. The cooldown skip still writes a run row.
 4. **Hard tool allow-list** — enforced at turn construction; not trusted to
    LLM judgment.
 5. **Session isolation** — each autonomous turn uses a fresh

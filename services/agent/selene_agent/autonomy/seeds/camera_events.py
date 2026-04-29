@@ -53,7 +53,7 @@ SEEDS = [
             },
             "notify": {"channel": "signal"},
             "severity_floor": "low",
-            "cooldown_min": 10,
+            "cooldown_min": 30,
             "attach_snapshot": True,
             "event_rate_limit": "20/min",
         },
@@ -76,7 +76,7 @@ SEEDS = [
             },
             "notify": {"channel": "signal"},
             "severity_floor": "low",
-            "cooldown_min": 10,
+            "cooldown_min": 15,
             "attach_snapshot": True,
             "event_rate_limit": "20/min",
         },
@@ -111,7 +111,7 @@ SEEDS = [
             # No-face events are inherently noisy — wildlife, shadows. Set a
             # higher floor so only escalated severity actually pages.
             "severity_floor": "med",
-            "cooldown_min": 15,
+            "cooldown_min": 45,
             "attach_snapshot": True,
             "event_rate_limit": "10/min",
         },
