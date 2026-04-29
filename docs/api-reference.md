@@ -133,9 +133,10 @@ HavenCore supports tool calling for external integrations:
 Tools are grouped into MCP servers. Each server has its own reference
 doc with the full tool list, arguments, config, and troubleshooting.
 
-- **Home Assistant** — 19 tools (domain state / services, light & climate
+- **Home Assistant** — 20 tools (domain state / services, light & climate
   helpers, scenes, scripts, automations, notifications, areas, presence,
-  timers, Jinja templates, history, calendar, media transport). See
+  timers, Jinja templates, history, calendar (read + create), media
+  transport). See
   [MCP Home Assistant](services/agent/tools/home-assistant.md).
 - **Plex** — library search + cloud-relay playback
   (`plex_search`, `plex_list_recent`, `plex_list_on_deck`,

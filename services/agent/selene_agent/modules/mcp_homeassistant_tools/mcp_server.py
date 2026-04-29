@@ -719,7 +719,63 @@ class HomeAssistantMCPServer:
                         },
                         "required": ["calendar_entity"]
                     }
-                )
+                ),
+                Tool(
+                    name="ha_create_calendar_event",
+                    description=(
+                        "Create a new event on a Home Assistant calendar entity. Requires a "
+                        "writable calendar (Local Calendar always works; Google requires "
+                        "read-write OAuth; many integrations are read-only and will return an "
+                        "error). Provide EITHER timed event fields (start_date_time + "
+                        "end_date_time, ISO 8601 with offset, e.g. '2026-05-01T14:00:00-04:00') "
+                        "OR all-day fields (start_date + end_date, ISO date YYYY-MM-DD; end_date "
+                        "is exclusive). Do not mix the two pairs. Times are interpreted in HA's "
+                        "configured timezone if no offset is given."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "calendar_entity": {
+                                "type": "string",
+                                "description": "Calendar entity ID (e.g. 'calendar.family')"
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "Event title"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional event description / notes"
+                            },
+                            "location": {
+                                "type": "string",
+                                "description": "Optional event location"
+                            },
+                            "start_date_time": {
+                                "type": "string",
+                                "description": "Timed event start, ISO 8601 (e.g. '2026-05-01T14:00:00-04:00'). Pair with end_date_time."
+                            },
+                            "end_date_time": {
+                                "type": "string",
+                                "description": "Timed event end (exclusive), ISO 8601. Pair with start_date_time."
+                            },
+                            "start_date": {
+                                "type": "string",
+                                "description": "All-day event start, YYYY-MM-DD. Pair with end_date."
+                            },
+                            "end_date": {
+                                "type": "string",
+                                "description": "All-day event end (exclusive), YYYY-MM-DD. For a one-day event, set this to the day AFTER start_date."
+                            }
+                        },
+                        "required": ["calendar_entity", "summary"]
+                    }
+                ),
+                # ha_update_calendar_event / ha_delete_calendar_event are intentionally hidden:
+                # the HA CalDav integration doesn't declare UPDATE_EVENT/DELETE_EVENT features
+                # so the WS commands always return "not supported" against our calendar.
+                # Handler methods + dispatch are kept so re-enabling is a Tool() restore away —
+                # see todo.md "Direct CalDav access" for the proper fix.
             ])
 
             # Media Player Control Tools
@@ -905,6 +961,18 @@ class HomeAssistantMCPServer:
                         arguments.get("calendar_entity"),
                         arguments.get("days", 7),
                     )
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_create_calendar_event":
+                    result = await self._create_calendar_event(arguments)
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_update_calendar_event":
+                    result = await self._update_calendar_event(arguments)
+                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+                elif name == "ha_delete_calendar_event":
+                    result = await self._delete_calendar_event(arguments)
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
                 # Media Player Control Operations
@@ -1526,6 +1594,8 @@ class HomeAssistantMCPServer:
         events: List[Dict[str, Any]] = []
         for ev in data or []:
             events.append({
+                "uid": ev.get("uid"),
+                "recurrence_id": ev.get("recurrence_id"),
                 "start": _extract_when(ev.get("start")),
                 "end": _extract_when(ev.get("end")),
                 "summary": ev.get("summary"),
@@ -1537,6 +1607,144 @@ class HomeAssistantMCPServer:
             "days": days,
             "events": events,
         }
+
+    @staticmethod
+    def _resolve_event_dates(args: Dict[str, Any]) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+        """Pick exactly one date pair from args.
+
+        Returns (date_fields, error). On success, date_fields is a dict with either
+        {start_date_time, end_date_time} or {start_date, end_date} (verbatim from input).
+        """
+        sdt = args.get("start_date_time")
+        edt = args.get("end_date_time")
+        sd = args.get("start_date")
+        ed = args.get("end_date")
+        timed_provided = bool(sdt or edt)
+        allday_provided = bool(sd or ed)
+        if timed_provided and allday_provided:
+            return None, "Provide either start_date_time+end_date_time OR start_date+end_date, not both"
+        if timed_provided:
+            if not (sdt and edt):
+                return None, "Both start_date_time and end_date_time are required for a timed event"
+            return {"start_date_time": sdt, "end_date_time": edt}, None
+        if allday_provided:
+            if not (sd and ed):
+                return None, "Both start_date and end_date are required for an all-day event"
+            return {"start_date": sd, "end_date": ed}, None
+        return None, "Provide a start/end date pair (timed or all-day)"
+
+    async def _create_calendar_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        calendar_entity = args.get("calendar_entity")
+        summary = args.get("summary")
+        if not calendar_entity:
+            return {"success": False, "error": "calendar_entity is required"}
+        if not summary:
+            return {"success": False, "error": "summary is required"}
+        date_fields, err = self._resolve_event_dates(args)
+        if err:
+            return {"success": False, "error": err}
+        service_data: Dict[str, Any] = {"summary": summary, **date_fields}
+        if args.get("description"):
+            service_data["description"] = args["description"]
+        if args.get("location"):
+            service_data["location"] = args["location"]
+        try:
+            await self.ha_client.execute_service(
+                calendar_entity, "create_event", domain="calendar", **service_data
+            )
+        except EntityNotFoundError as e:
+            return {"success": False, "error": f"Entity not found: {e}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "calendar_entity": calendar_entity,
+            "summary": summary,
+            **date_fields,
+        }
+
+    @staticmethod
+    def _build_ws_event_payload(args: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Build the 'event' object for calendar/event/update WS commands.
+
+        WS uses RFC5545 names dtstart/dtend (unlike the create_event service which uses
+        start_date_time/end_date_time). Translate here so callers use one consistent shape.
+        """
+        date_fields, err = HomeAssistantMCPServer._resolve_event_dates(args)
+        if err:
+            return None, err
+        event: Dict[str, Any] = {"summary": args["summary"]}
+        if "start_date_time" in date_fields:
+            event["dtstart"] = date_fields["start_date_time"]
+            event["dtend"] = date_fields["end_date_time"]
+        else:
+            event["dtstart"] = date_fields["start_date"]
+            event["dtend"] = date_fields["end_date"]
+        if args.get("description"):
+            event["description"] = args["description"]
+        if args.get("location"):
+            event["location"] = args["location"]
+        if args.get("rrule"):
+            event["rrule"] = args["rrule"]
+        return event, None
+
+    async def _update_calendar_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        calendar_entity = args.get("calendar_entity")
+        uid = args.get("uid")
+        if not calendar_entity:
+            return {"success": False, "error": "calendar_entity is required"}
+        if not uid:
+            return {"success": False, "error": "uid is required (get one from ha_get_calendar_events)"}
+        if not args.get("summary"):
+            return {"success": False, "error": "summary is required"}
+        event, err = self._build_ws_event_payload(args)
+        if err:
+            return {"success": False, "error": err}
+        command: Dict[str, Any] = {
+            "type": "calendar/event/update",
+            "entity_id": calendar_entity,
+            "uid": uid,
+            "event": event,
+        }
+        if args.get("recurrence_id"):
+            command["recurrence_id"] = args["recurrence_id"]
+        if args.get("recurrence_range"):
+            command["recurrence_range"] = args["recurrence_range"]
+        try:
+            frame = await self.ha_client._ws_call(command)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not frame.get("success", False):
+            err_obj = frame.get("error") or {}
+            msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+            return {"success": False, "error": msg or "HA rejected the update"}
+        return {"success": True, "calendar_entity": calendar_entity, "uid": uid}
+
+    async def _delete_calendar_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        calendar_entity = args.get("calendar_entity")
+        uid = args.get("uid")
+        if not calendar_entity:
+            return {"success": False, "error": "calendar_entity is required"}
+        if not uid:
+            return {"success": False, "error": "uid is required (get one from ha_get_calendar_events)"}
+        command: Dict[str, Any] = {
+            "type": "calendar/event/delete",
+            "entity_id": calendar_entity,
+            "uid": uid,
+        }
+        if args.get("recurrence_id"):
+            command["recurrence_id"] = args["recurrence_id"]
+        if args.get("recurrence_range"):
+            command["recurrence_range"] = args["recurrence_range"]
+        try:
+            frame = await self.ha_client._ws_call(command)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not frame.get("success", False):
+            err_obj = frame.get("error") or {}
+            msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+            return {"success": False, "error": msg or "HA rejected the delete"}
+        return {"success": True, "calendar_entity": calendar_entity, "uid": uid}
 
     # Media Player Control Methods
     async def _control_media_player(self, action: str, device: Optional[str] = None, value: Optional[Union[int, str, bool]] = None) -> Dict[str, Any]:

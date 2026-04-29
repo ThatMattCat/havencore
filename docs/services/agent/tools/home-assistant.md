@@ -79,7 +79,19 @@ here.
 | `ha_cancel_timer(entity_id)` | `timer.cancel` | |
 | `ha_evaluate_template(template)` | `POST /api/template` (text response) | Server-side Jinja2 render. Uses `_post_text` on the client since HA returns raw text here, not JSON. |
 | `ha_get_entity_history(entity_id, hours?)` | `GET /api/history/period/<start>?filter_entity_id=<id>` | `hours` clamped to `[1, 168]` (one week). Dense series are downsampled to ~200 points. Returns `{entity_id, hours, total_points, points[], sampled?}`. Each point is `{state, last_changed, attributes?}` — attributes use the same curated-per-domain projection as `ha_list_entities`. Note: which attributes actually appear depends on HA's own recorder configuration — HA's default recorder commonly stores only `friendly_name`, so to get e.g. `brightness` / `rgb_color` preserved in history you need to expand the recorder `attributes` include list in `configuration.yaml` (see [HA recorder docs](https://www.home-assistant.io/integrations/recorder/)). `attributes` is omitted when HA didn't record anything projectable for a point. |
-| `ha_get_calendar_events(calendar_entity, days?)` | `GET /api/calendars/<entity>?start=…&end=…` | `days` clamped to `[1, 31]`. Normalizes `start`/`end` from `{dateTime, date}` dicts to flat values. |
+| `ha_get_calendar_events(calendar_entity, days?)` | `GET /api/calendars/<entity>?start=…&end=…` | `days` clamped to `[1, 31]`. Normalizes `start`/`end` from `{dateTime, date}` dicts to flat values. Also surfaces `uid` + `recurrence_id` (currently informational — see note below). |
+| `ha_create_calendar_event(calendar_entity, summary, …)` | `calendar.create_event` service via `POST /api/services/calendar/create_event` | Validates exactly one of (`start_date_time`+`end_date_time`) or (`start_date`+`end_date`). Field names match HA's service API verbatim. |
+
+> **Note — edit / delete are not exposed.** Handler methods
+> `_update_calendar_event` / `_delete_calendar_event` exist and are wired
+> to dispatch, but their `Tool()` definitions are commented out in the
+> tool list. HA's CalDav integration does not declare `UPDATE_EVENT` /
+> `DELETE_EVENT` features, so the WS commands `calendar/event/update` /
+> `calendar/event/delete` always return "not supported" against our
+> setup. Re-enabling these tools requires either (a) switching to a
+> calendar integration that supports the features (Local Calendar
+> does, but it's HA-internal-only), or (b) bypassing HA and talking to
+> the CalDav server directly — see the `docs/todo.md` follow-up.
 
 ### Media player transport
 

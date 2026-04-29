@@ -99,7 +99,7 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 
 | MCP server | Tools | Doc |
 |------------|-------|-----|
-| Home Assistant | 18 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar, media transport | [tools/home-assistant.md](tools/home-assistant.md) |
+| Home Assistant | 20 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar (read + create), media transport | [tools/home-assistant.md](tools/home-assistant.md) |
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
 | Music Assistant | 7 — audio-only playback router for speakers, Chromecasts, and Google Homes (search / players / queue / play / announcement / transport). | [tools/music-assistant.md](tools/music-assistant.md) |
 | General Tools | Up to 7 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |

@@ -156,6 +156,7 @@ style questions and to summarize who's home.
 | `ha_evaluate_template(template)` | Renders a Jinja2 template server-side via `POST /api/template`. Use for compound checks (`"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}"`) or anything with `now()` / `states()`. |
 | `ha_get_entity_history(entity_id, hours?)` | Recent state history (last N hours, capped at 168 = one week). Dense series are sampled down to ~200 points. |
 | `ha_get_calendar_events(calendar_entity, days?)` | Upcoming events from a `calendar.*` entity (next N days, capped at 31). |
+| `ha_create_calendar_event(calendar_entity, summary, …)` | Create a new event. Provide either `start_date_time`+`end_date_time` (ISO 8601) or `start_date`+`end_date` (all-day, `YYYY-MM-DD`, end exclusive). Optional `description`, `location`. |
 
 **Voice examples**:
 
@@ -164,12 +165,21 @@ style questions and to summarize who's home.
   `entity_id="cover.garage"`, `hours=24`.
 - "What's on the family calendar this week?" → `ha_get_calendar_events`
   with `calendar_entity="calendar.family"`, `days=7`.
+- "Schedule a dentist appointment next Tuesday at 10am" →
+  `ha_create_calendar_event(calendar.family, summary="Dentist",
+  start_date_time="2026-05-05T10:00:00-04:00",
+  end_date_time="2026-05-05T11:00:00-04:00")`.
 - "Is the back door open and Matt home?" → `ha_evaluate_template` with
   a Jinja expression.
 
 **Prerequisites**: `ha_set_timer` requires timer helpers defined in HA
 (they're not dynamic — add them in `configuration.yaml` or the UI).
 `ha_get_calendar_events` requires at least one calendar integration.
+`ha_create_calendar_event` requires a calendar integration that
+declares the `CREATE_EVENT` feature — CalDav and Local Calendar both do.
+**Edit / delete are not currently exposed**: HA's CalDav integration
+doesn't declare `UPDATE_EVENT` / `DELETE_EVENT`, so the underlying WS
+commands always fail. See `docs/todo.md` for the direct-CalDav follow-up.
 
 ### Media player control
 

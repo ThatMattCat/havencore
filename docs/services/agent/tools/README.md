@@ -6,7 +6,7 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 
 | Server | Module | Tools | Doc |
 |--------|--------|-------|-----|
-| Home Assistant | `mcp_homeassistant_tools` | 18 — REST/WS control, registry, presence, timer/template/history/calendar, media transport | [home-assistant.md](home-assistant.md) |
+| Home Assistant | `mcp_homeassistant_tools` | 20 — REST/WS control, registry, presence, timer/template/history/calendar (read + create), media transport | [home-assistant.md](home-assistant.md) |
 | Plex | `mcp_plex_tools` | 5 — library search + cloud-relay playback | [plex.md](plex.md) |
 | Music Assistant | `mcp_music_assistant_tools` | 7 — audio search, player enumeration, queue-aware playback / announcement / transport on speakers + Chromecasts | [music-assistant.md](music-assistant.md) |
 | General Tools | `mcp_general_tools` | Up to 7 (credential-gated) — weather, Brave, Wolfram, Wikipedia, ComfyUI, Signal messaging, multimodal vision | [general.md](general.md) |
