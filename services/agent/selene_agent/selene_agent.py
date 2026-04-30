@@ -46,6 +46,7 @@ from selene_agent.api.face import router as face_router
 from selene_agent.api.cameras import router as cameras_router
 from selene_agent.api.agent import router as agent_router
 from selene_agent.api.logs import ws_router as logs_ws_router
+from selene_agent.api.push import router as push_router
 from selene_agent.utils import log_stream
 from selene_agent.utils.metrics_db import metrics_db
 from selene_agent.autonomy.engine import AutonomyEngine
@@ -168,6 +169,8 @@ async def lifespan(app: FastAPI):
         await metrics_db.ensure_schema()
         from selene_agent.utils import agent_state
         await agent_state.ensure_schema()
+        from selene_agent.utils.push_db import push_db
+        await push_db.ensure_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
 
@@ -321,6 +324,7 @@ app.include_router(memory_router, prefix="/api")
 app.include_router(face_router, prefix="/api")
 app.include_router(cameras_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
+app.include_router(push_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")
 app.include_router(autonomy_ws_router, prefix="/ws")
