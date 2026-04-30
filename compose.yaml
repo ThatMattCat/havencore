@@ -401,9 +401,17 @@ services:
   # UnifiedPush server for companion-app push notifications. The ntfy
   # Android app (the user's UnifiedPush distributor) holds a long-lived
   # WebSocket here; the agent's NtfyFanoutNotifier POSTs autonomy
-  # payloads to per-device endpoint URLs that resolve back through the
-  # mapped 8585 port. LAN-only, no auth — fine for a self-hosted
-  # household stack. See docs/integrations/companion-app.md.
+  # payloads to per-device endpoint URLs.
+  #
+  # Canonical URL is http://<HOST_IP_ADDRESS>:8585 — the phone-side
+  # ntfy app uses it as its server URL and ntfy itself emits it as the
+  # base of every generated UnifiedPush endpoint. ntfy refuses
+  # sub-path hosting (its web UI uses absolute asset paths), so nginx
+  # provides only a 301 from /ntfy → :8585 as a memorability
+  # shortcut for humans typing in browsers.
+  #
+  # LAN-only, no auth — fine for a self-hosted household stack. See
+  # docs/integrations/companion-app.md.
   ntfy:
     image: binwiederhier/ntfy:latest
     container_name: ntfy

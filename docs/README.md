@@ -31,6 +31,7 @@ Each service has its own folder under [`services/`](services/README.md):
 - [Embeddings](services/embeddings/README.md) — text-embeddings-inference
 - [Nginx](services/nginx/README.md) — API gateway
 - [Mosquitto](services/mosquitto/README.md) — MQTT broker
+- ntfy — UnifiedPush server for companion-app push notifications. No dedicated service README; the [companion-app integration](integrations/companion-app.md) doc covers setup, ports, and the redirect convenience at `/ntfy` → `:8585`
 
 ## Integrations
 

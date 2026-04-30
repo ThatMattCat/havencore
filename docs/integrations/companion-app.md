@@ -145,29 +145,41 @@ The phone-side steps live in the
 [`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app)
 README. Agent-side setup is minimal:
 
-1. **Run an ntfy server.** Two options:
-   - **Self-hosted** (recommended): bring up `binwiederhier/ntfy` next
-     to HavenCore. Default no-auth config is fine for a LAN-only
-     deployment.
-   - **Public ntfy.sh**: works without any setup — fine for testing,
-     not recommended for sensitive notifications since topic names
-     are guessable URLs.
+1. **Run an ntfy server.** The `compose.yaml` ships a `ntfy` service
+   on port `8585` (`binwiederhier/ntfy`, no auth, LAN-only). Brought
+   up automatically with the rest of the stack:
+   ```bash
+   docker compose up -d ntfy
+   ```
+   The web UI is at `http://<HOST_IP_ADDRESS>:8585/`. Nginx also
+   provides a memorability redirect — `http://<HOST_IP_ADDRESS>/ntfy`
+   (and `/ntfy/`) bounces to `:8585`. Note that ntfy refuses
+   sub-path hosting, so all real traffic (phone-side ntfy app,
+   UnifiedPush endpoints, agent publishes) uses the `:8585` URL
+   directly; the `/ntfy` redirect is humans-typing-in-browsers only.
+   - Public ntfy.sh works as an alternative without any setup — fine
+     for testing, not recommended for sensitive notifications since
+     topic names are guessable URLs.
 2. **(Optional) Set `NTFY_PUBLISH_TOKEN` in `.env`** if you've
    configured your ntfy server to require bearer auth on publish.
-   Skip if your ntfy is no-auth.
-3. **Restart the agent stack** so the agent picks up the new env var
-   (config is read on container start; volume-mounted code reloads on
-   `docker compose restart agent`).
-4. **Install ntfy on the phone**, point it at your server's URL, and
-   exempt the ntfy app from battery optimization (it must hold the
-   socket — Samsung/OEM devices aggressively kill background apps
-   that aren't exempt).
+   Skip if your ntfy is no-auth (the default for the shipped service).
+3. **Restart the agent stack** if you changed `NTFY_PUBLISH_TOKEN`
+   (env vars are read at container start; volume-mounted code reloads
+   on `docker compose restart agent`).
+4. **Install ntfy on the phone** (F-Droid, Play Store, or
+   `https://ntfy.sh/app`), open ntfy → ⋮ → **Settings** → **Default
+   server** → enter `http://<HOST_IP_ADDRESS>:8585` (plain http; the
+   app warns, accept). Then exempt the ntfy app from battery
+   optimization (Samsung/OEM devices aggressively kill background
+   apps that aren't exempt — without this the WebSocket gets killed
+   and pushes stop arriving when the phone idles).
 5. **In the companion app's Settings**, toggle "Enable notifications".
    The app calls `UnifiedPush.registerApp(ctx)`, the distributor
-   returns an endpoint URL, and the app POSTs it to the agent's
-   `/api/push/register`. Confirm in the agent log:
+   returns an endpoint URL like `http://<HOST_IP_ADDRESS>:8585/UPxxxx`,
+   and the app POSTs it to the agent's `/api/push/register`. Confirm
+   in the agent log:
    ```
-   [push] registered device=<uuid> label='<phone>' endpoint=<https://...>
+   [push] registered device=<uuid> label='<phone>' endpoint=http://<HOST_IP_ADDRESS>:8585/UPxxxx
    ```
 6. **Verify with a manual fanout** (no autonomy fire required):
    ```bash

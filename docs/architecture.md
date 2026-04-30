@@ -134,6 +134,15 @@ conversation_histories (
 
 Uses the existing Postgres + Qdrant + Mosquitto + HA primitives rather than introducing new infrastructure. See [Face Recognition](services/face-recognition/README.md) for full reference.
 
+### 10. ntfy (UnifiedPush — Port 8585)
+**Purpose**: Inbound push delivery to the companion Android app
+- `binwiederhier/ntfy` server, no auth, LAN-only
+- The phone-side ntfy app holds a long-lived WebSocket and acts as the user's UnifiedPush distributor
+- The agent's `NtfyFanoutNotifier` (autonomy engine) POSTs payloads to per-device endpoint URLs registered via `/api/push/register`
+- Memorability redirect: `http://<host>/ntfy` → `http://<host>:8585` via nginx (ntfy refuses sub-path hosting, so this is a 301, not a reverse proxy)
+
+See [Companion App integration](integrations/companion-app.md) for the wire format, registration flow, and setup checklist.
+
 ## Data Flow Architecture
 
 ### 1. Voice Interaction Flow
