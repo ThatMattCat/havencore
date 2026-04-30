@@ -313,6 +313,7 @@ AUTONOMY_TURN_TIMEOUT_SEC=60
 # Notification targets
 AUTONOMY_BRIEFING_NOTIFY_TO=""          # Signal recipient for the morning briefing
 AUTONOMY_HA_NOTIFY_TARGET=""            # e.g. notify.mobile_app_pixel_8
+NTFY_PUBLISH_TOKEN=""                   # optional bearer token for self-hosted ntfy with auth (companion-app push)
 
 # Handler inputs
 AUTONOMY_BRIEFING_CAMERA_ENTITIES=""    # comma-separated camera entity_ids
@@ -326,6 +327,13 @@ Notes:
   `docs/services/agent/tools/general.md` for the one-time QR-link setup.
 - `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
   `mobile_app_<device>`; the leading `notify.` is stripped.
+- `NTFY_PUBLISH_TOKEN` is the **bearer token the agent presents** when
+  POSTing to a registered ntfy/UnifiedPush endpoint. Empty (default) is
+  correct for self-hosted ntfy with no auth — the most common LAN setup.
+  Set it only if your ntfy server requires bearer auth on publish; the
+  user's *distributor* (the ntfy Android app) handles its own server-side
+  auth separately. See the
+  [companion-app integration](integrations/companion-app.md) walkthrough.
 
 ### Memory retrieval & agent phase
 

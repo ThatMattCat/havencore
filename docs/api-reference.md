@@ -477,6 +477,34 @@ end-to-end flow.
 | `PUT`    | `/api/cameras/{entity}/zone` | Upsert. Body: `{zone: string, zone_label?: string, notes?: string}`. `entity` is the HA camera entity_id (e.g. `camera.front_duo_3_clear`); the path uses FastAPI's `:path` converter so `.` is preserved |
 | `DELETE` | `/api/cameras/{entity}/zone` | Clear the assignment. Returns `{camera_entity, deleted: bool}` |
 
+### Push registration (companion-app)
+
+`/api/push/register` is the agent's inbound registration surface for
+[UnifiedPush](https://unifiedpush.org/) endpoints — used by the
+[`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app)
+to deliver autonomy briefings, anomaly alerts, and ad-hoc agent
+messages to a phone without keeping a WebSocket open. Endpoints are
+self-contained URLs produced by the user's distributor (typically the
+ntfy Android app), and the agent stores them verbatim — there is no
+agent-side ntfy server URL config. See the
+[companion-app integration](integrations/companion-app.md) walkthrough
+for the end-to-end flow and setup checklist.
+
+LAN-only stack — these routes are unauthenticated like the rest of
+`/api/*`. Backed by the `push_devices` Postgres table.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/push/register` | Upsert a device. Body: `{device_id: <uuid>, device_label: string, endpoint: string, platform?: "android"}`. `endpoint` must be `http(s)://...`. Always upserts on `device_id` (no 409 path in v1) — re-registering with a rotated endpoint replaces the prior row. Returns `{"ok": true}`. 400s on malformed `device_id` (must be UUID) or non-`http(s)` endpoint |
+| `DELETE` | `/api/push/register/{device_id}` | Remove a registered device. Returns `{"ok": true}` on success or 404 `{"detail": "device not registered"}` if the row doesn't exist (companion app treats 404 as success) |
+| `GET`  | `/api/push/register` | List all registered devices: `{devices: [{device_id, device_label, endpoint, platform, registered_at, last_seen_at}, ...]}`. Used for debugging — there is no dashboard UI for it in v1 |
+
+When the autonomy engine fires with `_notify_channel = "ntfy"`, the
+`NtfyFanoutNotifier` reads this table at send-time and POSTs the
+[wire-format envelope](integrations/companion-app.md#wire-format) to
+every registered endpoint. Devices added between dispatches are picked
+up on the next fire without an engine restart.
+
 ### WebSockets
 
 | URL | Direction | Purpose |

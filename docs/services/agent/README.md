@@ -6,7 +6,7 @@ The core AI agent — Python + FastAPI + a built-in SvelteKit dashboard, all ser
 
 - [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, Music Assistant, general, Qdrant, MQTT, GitHub, plus a tool-development guide.
 - [Conversation history](conversation-history.md) — how timed-out conversations get persisted to Postgres.
-- [Autonomy engine](autonomy/README.md) — proactive background behaviors that wake on a schedule or in response to live MQTT/webhook events, run a tier-filtered autonomous turn, and notify via Signal, HA push, or speaker. Includes scheduled briefing + anomaly sweep, user-programmable reminders / watches / routines, the supervised act tier, and the [camera/sensor event pipeline](autonomy/cameras.md) that wires face-recognition (and future vehicle/motion/doorbell sources) through `watch_llm` for proactive notifications.
+- [Autonomy engine](autonomy/README.md) — proactive background behaviors that wake on a schedule or in response to live MQTT/webhook events, run a tier-filtered autonomous turn, and notify via Signal, HA push, speaker, or [companion-app push](../../integrations/companion-app.md) (UnifiedPush + ntfy). Includes scheduled briefing + anomaly sweep, user-programmable reminders / watches / routines, the supervised act tier, and the [camera/sensor event pipeline](autonomy/cameras.md) that wires face-recognition (and future vehicle/motion/doorbell sources) through `watch_llm` for proactive notifications.
 - [Revamp 2026](revamp-2026.md) — architectural notes on the April 2026 rewrite (Gradio removal, async FastAPI, dashboard, streaming).
 
 ## Responsibilities
@@ -32,6 +32,7 @@ Response ← JSON ← Agent Logic ← Tool Results ← API Responses
 - `selene_agent/providers/` — pluggable LLM provider seam (`vllm`, `anthropic`, `openai` stub). Every agent call goes through `provider_getter() -> LLMProvider`, a closure over `app.state.provider` that resolves live on each turn so the dashboard System-page toggle takes effect without a session rebuild. `/v1/chat/completions` is pinned to vLLM regardless of the toggle. See [LLM provider toggle](#llm-provider-toggle) below.
 - `selene_agent/utils/mcp_client_manager.py` — MCP client that discovers and executes tools from MCP servers, with a `UnifiedTool` abstraction.
 - `selene_agent/utils/conversation_db.py` — PostgreSQL conversation persistence. See [Conversation history](conversation-history.md).
+- `selene_agent/utils/push_db.py` — `push_devices` table (UnifiedPush endpoints registered by the [companion app](../../integrations/companion-app.md)). Read by `NtfyFanoutNotifier` at autonomy send-time so the agent can wake the user's phone with autonomy briefings, anomaly alerts, and reminders without a long-lived WebSocket. Same asyncpg pool as `conversation_db`; schema initialized in lifespan. CRUD surface at `/api/push/register`.
 
 ### Session identity on the wire
 

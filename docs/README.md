@@ -36,6 +36,7 @@ Each service has its own folder under [`services/`](services/README.md):
 
 - [Home Assistant](integrations/home-assistant.md) — end-user setup and voice examples
 - [Media Control](integrations/media-control.md) — Plex, Music Assistant, and Home Assistant for TV/speaker playback
+- [Companion App (push notifications)](integrations/companion-app.md) — UnifiedPush + ntfy: how the agent wakes the phone with autonomy briefings, anomaly alerts, and reminders
 
 ## Related repositories
 

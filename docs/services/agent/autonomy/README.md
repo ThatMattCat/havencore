@@ -58,8 +58,10 @@ FastAPI process; no extra container.
 │                │    metrics, hard timeout)                       │
 │                │                                                 │
 │                └─ Notifier (protocol)                            │
-│                     ├─ SignalNotifier  → send_signal_message     │
-│                     ├─ HAPushNotifier  → ha_send_notification    │
+│                     ├─ SignalNotifier      → send_signal_message │
+│                     ├─ HAPushNotifier      → ha_send_notification│
+│                     ├─ SpeakerNotifier     → Kokoro TTS + MA     │
+│                     ├─ NtfyFanoutNotifier  → companion-app push  │
 │                     └─ NullNotifier                              │
 │                                                                  │
 │  new REST: /api/autonomy/{status,pause,resume,items,runs,trigger}│
@@ -82,7 +84,7 @@ Code lives in `services/agent/selene_agent/autonomy/`:
 | `turn.py` | `AutonomousTurn` — single-use orchestrator with custom prompt + filtered tools + timeout |
 | `schedule.py` | `croniter`-based `next_fire_at()` computation in `CURRENT_TIMEZONE`, stores UTC |
 | `tool_gating.py` | Per-tier allow-lists (`observe`, `notify`) and explicit `V1_DENY` set |
-| `notifiers.py` | `Notifier` protocol + `SignalNotifier`, `HAPushNotifier`, `NullNotifier` |
+| `notifiers.py` | `Notifier` protocol + `SignalNotifier`, `HAPushNotifier`, `SpeakerNotifier`, `NtfyNotifier` (single endpoint) / `NtfyFanoutNotifier` (DB-backed), `NullNotifier` |
 | `db.py` | `agenda_items` + `autonomy_runs` access layer (reuses the `conversation_db` pool) |
 | `handlers/briefing.py` | Deterministic gather → LLM summarize → Signal message |
 | `handlers/anomaly.py` | State snapshot + memory context → LLM JSON judgment → push + cooldown |
@@ -128,7 +130,7 @@ across restarts so a manual pause survives.
 | `summary` | text | one-line human summary (e.g. `nominal`, `garage open >10min`) |
 | `severity` | text | `none` / `low` / `med` / `high` (anomaly-only) |
 | `signature_hash` | text | stable sha1(first 16) of the dedup signature — drives cooldown. For triggers carrying a normalized `sensor_event` (camera/face/etc.) the signature is derived deterministically as `{domain}:{kind}:{zone}:{subject}`; otherwise it's the LLM-emitted slug |
-| `notified_via` | text | `email` / `ha_push` / null |
+| `notified_via` | text | `signal` / `ha_push` / `speaker` / `ntfy` / null |
 | `messages` | jsonb | full message trace from the turn |
 | `metrics` | jsonb | `{llm_ms, tool_ms_total, total_ms, iterations, tool_calls, autonomy_level, tools_allowed}` |
 | `error` | text | nullable |
@@ -152,6 +154,7 @@ AUTONOMY_MAX_RUNS_PER_HOUR=20
 AUTONOMY_TURN_TIMEOUT_SEC=60
 AUTONOMY_BRIEFING_NOTIFY_TO=""       # Signal recipient for the morning briefing
 AUTONOMY_HA_NOTIFY_TARGET=""         # e.g. notify.mobile_app_pixel_8
+NTFY_PUBLISH_TOKEN=""                # optional bearer for self-hosted ntfy with auth (companion-app push)
 AUTONOMY_BRIEFING_CAMERA_ENTITIES="" # comma-separated camera entity_ids
 AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
 ```
@@ -167,6 +170,13 @@ Notes:
   `docs/services/agent/tools/general.md` for the one-time QR-link setup.
 - `AUTONOMY_HA_NOTIFY_TARGET` may be written as `notify.mobile_app_<device>`
   or `mobile_app_<device>`; the leading `notify.` is stripped.
+- `NTFY_PUBLISH_TOKEN` is the bearer token the agent presents when POSTing
+  to a registered companion-app endpoint. Empty (default) is correct for
+  self-hosted ntfy with no auth — the most common LAN setup. The user's
+  *distributor* (the ntfy Android app) handles its own server-side auth
+  separately. End-to-end protocol + setup checklist in the
+  [companion-app integration](../../../integrations/companion-app.md)
+  walkthrough.
 
 ## REST API
 
@@ -184,6 +194,39 @@ convention as the rest of `/api/*`).
 
 The agent's `/health` endpoint gains an `autonomy` block reporting
 `running`, `paused`, and `last_dispatch_at`.
+
+## Notification channels
+
+Handlers select where a run delivers via the `_notify_channel` field on
+their result dict (anomaly/watch path) or `deliver.channel` on
+confirmation items. `engine._build_notifier(channel, to, cfg)` maps
+the string to a `Notifier`:
+
+| Channel | Notifier | Wire path | Default for |
+|---------|----------|-----------|-------------|
+| `signal` (alias `email`) | `SignalNotifier` | `send_signal_message` MCP tool → `signal-api` container | briefing handler |
+| `ha_push` | `HAPushNotifier` | `ha_send_notification` MCP tool → HA mobile-app integration | anomaly / watch (default) |
+| `speaker` | `SpeakerNotifier` | Kokoro TTS render → Music Assistant playback | speak-tier autonomy items |
+| `ntfy` | `NtfyFanoutNotifier` | direct HTTPS POST to every endpoint registered via `/api/push/register` | (opt-in via handler config) |
+| _other / unset_ | `NullNotifier` | no-op (logged) | observe-tier and tests |
+
+The `ntfy` channel reads the `push_devices` Postgres table at send-time
+(not at engine-start), so devices registered between dispatches are
+picked up on the next fire. Payload shape is the
+[wire envelope](../../../integrations/companion-app.md#wire-format)
+(`v=1`, `type`, `title`, `body`, optional `session_id`, `severity`) —
+identical for every endpoint, capped defensively at 3000 chars in
+`body` to leave headroom under the 4 KB UnifiedPush byte cap.
+`NtfyFanoutNotifier.send()` returns True if at least one endpoint
+accepted; per-endpoint failures are logged but do not fail the run.
+
+Optional `cfg` keys for the `ntfy` branch:
+- `ntfy_session_id` — populates the wire envelope's `session_id` so a
+  tap on the resulting Android notification deep-links to that chat
+  session in the companion app.
+- `ntfy_type` — one of `autonomy_brief` / `anomaly` / `reminder` /
+  `act_confirm` / `ad_hoc` (default). Reserved for future per-type
+  notification-channel splitting on the phone.
 
 ## Tool gating
 
