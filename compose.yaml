@@ -398,6 +398,36 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  # UnifiedPush server for companion-app push notifications. The ntfy
+  # Android app (the user's UnifiedPush distributor) holds a long-lived
+  # WebSocket here; the agent's NtfyFanoutNotifier POSTs autonomy
+  # payloads to per-device endpoint URLs that resolve back through the
+  # mapped 8585 port. LAN-only, no auth — fine for a self-hosted
+  # household stack. See docs/integrations/companion-app.md.
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ntfy
+    command: serve
+    environment:
+      - TZ=${CURRENT_TIMEZONE:-America/Los_Angeles}
+      - NTFY_BASE_URL=http://${HOST_IP_ADDRESS}:8585
+      - NTFY_BEHIND_PROXY=false
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+      - NTFY_CACHE_DURATION=12h
+      - NTFY_ATTACHMENT_CACHE_DIR=/var/cache/ntfy/attachments
+    volumes:
+      - ./volumes/ntfy/cache:/var/cache/ntfy
+      - ./volumes/ntfy/lib:/var/lib/ntfy
+    ports:
+      - "8585:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O - http://localhost:80/v1/health 2>/dev/null | grep -q healthy || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   github_repo_clone:
