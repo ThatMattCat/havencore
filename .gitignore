@@ -89,6 +89,10 @@ CLAUDE.md
 .claude/*
 .worktrees/
 
+# vision smoke-test fixtures (local artifacts, not committed)
+scripts/vision-smoke-test-fixtures/*
+!scripts/vision-smoke-test-fixtures/README.md
+
 # Overrides (keep at end)
 !/.gitkeep
 !**/.gitkeep

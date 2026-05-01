@@ -1,45 +1,31 @@
-"""Vision / IAV proxy — wraps the iav-to-text vLLM chat-completion endpoint."""
+"""Vision proxy — wraps the vllm-vision OpenAI-compat chat-completion endpoint."""
 import base64
 import time
+from typing import Any, Optional
 
 import aiohttp
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 
 logger = custom_logger.get_logger('loki')
 
 router = APIRouter()
 
-IAV_BASE = "http://iav-to-text:8100"
 
-
-@router.post("/vision/ask")
-async def ask(
-    prompt: str = Form(...),
-    image: UploadFile = File(...),
-    max_tokens: int = Form(512),
-    temperature: float = Form(0.7),
-):
-    if not prompt.strip():
-        raise HTTPException(status_code=400, detail="prompt is required")
-
-    data = await image.read()
-    mime = image.content_type or "image/png"
-    b64 = base64.b64encode(data).decode("ascii")
-    data_url = f"data:{mime};base64,{b64}"
-
+async def _call_vision(
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> tuple[str, int, dict]:
+    """POST a chat-completions request to vllm-vision and return (content, latency_ms, usage)."""
     body = {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
+        "model": config.VISION_SERVED_NAME,
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
@@ -49,7 +35,7 @@ async def ask(
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{IAV_BASE}/v1/chat/completions",
+                f"{config.VISION_API_BASE}/chat/completions",
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=180),
             ) as resp:
@@ -66,7 +52,66 @@ async def ask(
     except (KeyError, IndexError, TypeError):
         raise HTTPException(status_code=502, detail="Unexpected vLLM response shape")
 
-    usage = payload.get("usage", {})
+    return content, latency_ms, payload.get("usage", {})
+
+
+@router.post("/vision/ask")
+async def ask(
+    prompt: str = Form(...),
+    image: UploadFile = File(...),
+    max_tokens: int = Form(512),
+    temperature: float = Form(0.7),
+):
+    """Multipart form: file upload + prompt. Used by the dashboard playground."""
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    data = await image.read()
+    mime = image.content_type or "image/png"
+    b64 = base64.b64encode(data).decode("ascii")
+    data_url = f"data:{mime};base64,{b64}"
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }
+    ]
+    content, latency_ms, usage = await _call_vision(
+        messages, max_tokens=max_tokens, temperature=temperature
+    )
+    return {"response": content, "latency_ms": latency_ms, "usage": usage}
+
+
+class VisionAskUrlRequest(BaseModel):
+    text: Optional[str] = None
+    image_url: Optional[str] = None
+    max_tokens: int = 512
+    temperature: float = 0.7
+
+
+@router.post("/vision/ask_url")
+async def ask_url(req: VisionAskUrlRequest):
+    """JSON body with text + image_url. Used by the query_multimodal_api MCP tool.
+
+    vllm-vision fetches image_url itself (http(s):// or data: URLs).
+    """
+    if not (req.text or req.image_url):
+        raise HTTPException(status_code=400, detail="text or image_url is required")
+
+    content_parts: list[dict[str, Any]] = []
+    if req.text:
+        content_parts.append({"type": "text", "text": req.text})
+    if req.image_url:
+        content_parts.append({"type": "image_url", "image_url": {"url": req.image_url}})
+
+    messages = [{"role": "user", "content": content_parts}]
+    content, latency_ms, usage = await _call_vision(
+        messages, max_tokens=req.max_tokens, temperature=req.temperature
+    )
     return {"response": content, "latency_ms": latency_ms, "usage": usage}
 
 
@@ -75,7 +120,7 @@ async def health():
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{IAV_BASE}/v1/models",
+                f"{config.VISION_API_BASE}/models",
                 timeout=aiohttp.ClientTimeout(total=3),
             ) as resp:
                 if resp.status >= 400:

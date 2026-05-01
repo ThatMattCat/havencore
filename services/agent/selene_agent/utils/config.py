@@ -12,6 +12,13 @@ LOG_LEVEL_OTHERS = logging.INFO
 LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
+# Vision model — separate vLLM instance on a dedicated GPU. Same OpenAI-compat
+# shape as LLM_API_BASE; the served-model name is required in the request body
+# because the vision instance and the main agent vLLM use different aliases.
+VISION_API_BASE = os.getenv("VISION_API_BASE", "")
+VISION_API_KEY = os.getenv("VISION_API_KEY", "")
+VISION_SERVED_NAME = os.getenv("VISION_SERVED_NAME", "gpt-4-vision")
+
 # Pluggable agent-LLM provider. "vllm" routes to the local vLLM container
 # (same kwargs as today); "anthropic" routes to api.anthropic.com for
 # benchmarking the agent harness against a frontier model; "openai" is
