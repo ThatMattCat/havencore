@@ -157,3 +157,15 @@ server {
 add_header X-Frame-Options DENY;
 add_header X-Content-Type-Options nosniff;
 ```
+
+### Upload size caps
+
+Per-location `client_max_body_size` overrides nginx's 1 MB default:
+
+| Location | Cap | Why |
+|----------|-----|-----|
+| `/v1/audio/speech` | 10 MB | TTS request bodies are small text payloads. |
+| `/v1/audio/transcriptions` / `/v1/audio/translations` | 25 MB | STT accepts uploaded audio files (Whisper). |
+| `/api/` | 25 MB | Agent REST surface — the vision playground (`/api/vision/ask`) accepts phone-camera JPEGs that routinely run 5–15 MB. Default 1 MB returns 413. |
+
+Other locations inherit the default 1 MB.

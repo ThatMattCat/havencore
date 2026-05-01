@@ -36,7 +36,7 @@ contract documented in
 |-------|------|
 | `haven/face/identified` | A face matched a known person above MATCH_THRESHOLD. |
 | `haven/face/unknown`    | A face was detected but didn't match any enrolled person. |
-| `haven/face/no_face`    | The person sensor tripped + frames were captured but no face cleared QUALITY_FLOOR. The middle frame is saved as a snapshot so a vision-AI gather step can still inspect it. |
+| `haven/face/no_face`    | The person sensor tripped + frames were captured but no face cleared QUALITY_FLOOR. The middle frame is saved as a snapshot which the watch_llm gather step then sends to the vision LLM for a scene description. |
 
 ```json
 {
@@ -96,6 +96,8 @@ publisher  ──►  mosquitto  ──►  agent autonomy/mqtt_listener
                           gather: HA entities + L4 memory
                                   + ha_get_presence
                                   + face_recent_visitors
+                                  + query_multimodal_api (scene description
+                                    of sensor_event.snapshot_url)
                                         │
                                         ▼
                             LLM judgment (JSON)
@@ -145,7 +147,9 @@ config flags:
     "entities": [],                  // optional HA entities to pull history for
     "memories_k": 3,                 // L2/L3 memory hits
     "presence": true,                // adds ha_get_presence to the gather
-    "recent_visitors_hours": 6       // adds face_recent_visitors(hours=N)
+    "recent_visitors_hours": 6,      // adds face_recent_visitors(hours=N)
+    "scene_description": true,       // run the vision LLM on the trigger snapshot
+    "scene_description_prompt": ""   // optional override of the default prompt
   },
   "notify": { "channel": "signal" },  // default channel; LLM may override
   "severity_floor": "low",
@@ -187,6 +191,40 @@ the LLM's choice:
   on the run as `signature_raw` for observability and is the fallback when
   the trigger has no `sensor_event` (generic webhooks).
 
+## Vision-AI scene description
+
+When `gather.scene_description: true` is set, `_gather()` extracts a snapshot
+URL from the trigger event and calls `query_multimodal_api` against it. The
+vision LLM's reply lands in the LLM's user prompt as a `## scene_description`
+block alongside `presence`, `recent_visitors`, and the rest — so the triage
+LLM sees a sentence like *"a person in a maroon shirt holding a small dark
+dog on a grassy lawn"* instead of just `subject=Matt confidence=0.95
+zone=backyard`.
+
+Snapshot URL resolution order (first hit wins):
+
+1. `event.sensor_event.snapshot_url` — already populated by the
+   `sensor_events` normalizer for face/* topics (e.g.
+   `http://agent:6002/api/face/detections/{id}/snapshot`).
+2. `event.payload.snapshot_url` — fallback for events that didn't pass
+   through the normalizer.
+
+If neither is present, the gather step silently skips — the LLM still
+runs, just without a scene description.
+
+The default prompt (`watch_llm._DEFAULT_SCENE_PROMPT`) is intentionally
+generic ("describe what's visible, note people, animals, vehicles, packages,
+unusual things"). A seed can override it per-item with
+`gather.scene_description_prompt`. The shipped `face_no_face_triage` seed
+uses an override biased toward *resident vs. pet vs. delivery driver vs.
+wildlife* disambiguation, since that's the hard call for triggers where no
+face was visible.
+
+The vision call is wrapped in `_safe_tool` — a vision-LLM failure (model
+unreachable, snapshot 404) won't block the triage. The state block falls
+back to "tool failed: …" and the LLM still gets to judge on the rest of
+the gather.
+
 ## Default seeded items
 
 The agent seeds four `watch_llm` agenda items at first startup
@@ -194,13 +232,17 @@ The agent seeds four `watch_llm` agenda items at first startup
 
 | name | enabled | trigger topic | notes |
 |------|---------|---------------|-------|
-| `face_identified_triage` | ✅ | `haven/face/identified` | Known-resident path. Usually nominal unless context is off (late hour while away, etc.). Default `cooldown_min=30`. |
-| `face_unknown_triage`    | ✅ | `haven/face/unknown`    | Face detected but not matched — primary stranger-at-the-door path. Default `cooldown_min=15` (kept short — high signal). |
-| `face_no_face_triage`    | ✅ | `haven/face/no_face`    | Person sensor tripped, no face visible. Higher severity floor (`med`) since these are noisier (wildlife, shadows). Default `cooldown_min=45`. |
+| `face_identified_triage` | ✅ | `haven/face/identified` | Known-resident path. Usually nominal unless context is off (late hour while away, etc.). Default `cooldown_min=30`. Ships with `scene_description: true`. |
+| `face_unknown_triage`    | ✅ | `haven/face/unknown`    | Face detected but not matched — primary stranger-at-the-door path. Default `cooldown_min=15` (kept short — high signal). Ships with `scene_description: true`. |
+| `face_no_face_triage`    | ✅ | `haven/face/no_face`    | Person sensor tripped, no face visible. Higher severity floor (`med`) since these are noisier (wildlife, shadows). Default `cooldown_min=45`. Ships with `scene_description: true` plus a tailored prompt biased toward resident/pet/delivery/wildlife disambiguation. |
 | `vehicle_event_triage`   | ❌ | `haven/vehicles/+`      | Off by default; flip on once an LPR / vehicle source publishes. |
 
 Both are `created_by='system_camera'`. Re-running the seed only inserts
-missing rows — your dashboard tweaks survive restarts.
+missing rows — your dashboard tweaks survive restarts. The exception is a
+narrow one-time migration that adds `scene_description` (and the no_face
+prompt override) to existing system-seeded rows that don't already have the
+key set; rows where the operator has already explicitly set or unset
+`scene_description` via the dashboard are skipped.
 
 ## Adding a new sensor source
 
@@ -228,11 +270,12 @@ missing rows — your dashboard tweaks survive restarts.
 2. Normalizer maps the camera → zone `front_door`, attaches
    `snapshot_url=http://agent:6002/api/face/detections/d1/snapshot`.
 3. `face_unknown_triage` matches; gather pulls presence + last 6h of visitors
-   + 3 memories.
+   + 3 memories + the vision LLM's scene description of the snapshot
+   ("a man in a hooded jacket carrying a clipboard at the front porch").
 4. LLM sees: subject is unknown, zone is front_door, quality is moderate,
-   no recent visitors, presence shows resident is home → returns
-   `{unusual: true, severity: med, channel: speaker, urgency: alert,
-   summary: "Unknown person at front door"}`.
+   no recent visitors, presence shows resident is home, scene looks like a
+   delivery courier → returns `{unusual: true, severity: med,
+   channel: speaker, urgency: alert, summary: "Unknown person at front door"}`.
 5. Engine cooldown + severity floor passes; `SpeakerNotifier` synthesizes
    "Selene: front door. Unknown person at front door." through the default
    speaker.
@@ -242,7 +285,9 @@ missing rows — your dashboard tweaks survive restarts.
 1. Backyard camera fires `haven/face/unknown` because the angle was bad —
    no face match. `quality_score=0.45`, zone `backyard`.
 2. Gather sees: presence has resident `home`, recent_visitors over 6 hours
-   shows two prior detections of the resident at the backyard zone.
+   shows two prior detections of the resident at the backyard zone, and the
+   vision LLM's scene description reads "a person in a maroon shirt holding
+   a small dark dog on a grassy lawn near a wicker patio set."
 3. L4 memory contains "Resident walks the cat in the backyard most
    evenings, often at unusual angles" (you wrote this once, now it
    propagates into every autonomy turn).

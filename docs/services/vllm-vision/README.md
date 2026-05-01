@@ -113,3 +113,14 @@ Agent-side wiring is complete:
 - **`iav-to-text` retired.** `services/iav-to-text/`, `docs/services/iav-to-text/`, the commented compose block, and the commented nginx upstreams + `/iav/ui/` / `/iav/api` location blocks have all been removed.
 
 After landing, recreate the agent so `.env` env reads pick up the new VISION vars: `docker compose up -d --force-recreate --no-deps agent` (or the full `down agent && build agent && up -d agent` cycle if you also touched code).
+
+## Phase 3 status (landed 2026-05-01)
+
+The autonomy engine's face-trigger triage now drives the vision model on every camera event:
+
+- **`watch_llm` gather step.** When an agenda item sets `gather.scene_description: true`, the handler extracts a snapshot URL from the trigger event (preferring `event.sensor_event.snapshot_url`, falling back to `event.payload.snapshot_url`), calls `query_multimodal_api` against it, and threads the description into the triage LLM's user prompt as a `## scene_description` block. Per-seed `gather.scene_description_prompt` overrides the default.
+- **Default seeds updated.** All three `face_*_triage` seeds in `selene_agent/autonomy/seeds/camera_events.py` ship with `scene_description: true`. `face_no_face_triage` ships with a tailored prompt biased toward the disambiguation that seed exists for (resident vs. pet vs. delivery driver vs. wildlife). A one-time migration patches existing system-seeded rows in place — protected by `created_by='system_camera'` and a missing-key check, so dashboard-edited rows are never clobbered.
+- **Verified live (2026-05-01).** A synthetic `haven/face/identified` event against a real backyard detection produced the description *"a person in a maroon shirt holding a small, dark-colored dog on a grassy lawn"*; the triage LLM saw it alongside `subject=Matt confidence=0.95 zone=backyard` and correctly judged `nominal`. End-to-end gather → vllm-vision → triage prompt → judgment loop is working.
+- **Failure mode is bounded.** The vision call is wrapped in `_safe_tool`, so a vision-LLM outage or a 404 snapshot path drops a `<tool ... failed>` string into the gather instead of blocking the triage. The triage LLM still gets to judge on the rest of the gather.
+
+See [autonomy/cameras.md](../agent/autonomy/cameras.md#vision-ai-scene-description) for the watch_llm gather schema and the worked examples.
