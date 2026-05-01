@@ -497,6 +497,35 @@ provider is active (system block, tools array, and last conversation
 message get `cache_control: ephemeral` breakpoints). Cache hits/writes
 are logged at INFO: `[anthropic] cache read=N create=N input=N output=N`.
 
+### Vision Backend Configuration
+
+The `vllm-vision` service is a second vLLM instance pinned to a dedicated
+GPU and serving a Qwen3-VL model. The agent reaches it via three env vars,
+mirroring the `LLM_API_BASE` / `LLM_API_KEY` pattern:
+
+```bash
+VISION_API_BASE="http://10.0.0.1:8001/v1"   # Host-scoped URL the agent calls (NOT the compose-internal vllm-vision:8000).
+VISION_API_KEY="1234"                       # Bearer token; vllm-vision currently doesn't enforce, but the SDK requires a value.
+VISION_SERVED_NAME="gpt-4-vision"           # OpenAI-compat alias the model is served under; sent in every request body.
+```
+
+`VISION_API_BASE` must be reachable **from inside the agent container** —
+typically the same host LAN IP `LLM_API_BASE` uses, on port `8001`. A
+hostname that only resolves outside the docker network will fail with
+`Cannot connect to host` even though DNS resolves. After changing the
+value, recreate the agent so the env is picked up:
+
+```bash
+docker compose up -d --force-recreate --no-deps agent
+```
+
+Used by `POST /api/vision/ask` (multipart, dashboard playground), `POST
+/api/vision/ask_url` (JSON, the `query_multimodal_api` MCP tool), and
+`GET /api/vision/health`. Service-side flags (model selection, context
+window, GPU memory utilization) live in `compose.yaml` and the
+[vllm-vision service doc](services/vllm-vision/README.md) covers the
+fallback ladder for tight 24 GB fits.
+
 ### Nginx Gateway Configuration
 
 Located in `services/nginx/nginx.conf`:

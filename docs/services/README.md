@@ -10,7 +10,7 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [Agent Service](agent/README.md) | 6002 | AI logic, tool calling, SvelteKit dashboard | Python, FastAPI, SvelteKit |
 | [Speech-to-Text](speech-to-text/README.md) | 6001 | Audio transcription | Python, Faster Whisper, CUDA |
 | [Text-to-Speech](text-to-speech/README.md) | 6005 | Speech synthesis | Python, Kokoro TTS, CUDA |
-| [IAV-to-Text](iav-to-text/README.md) | 8100, 8110 | Image/audio/video understanding | Python, vision LLM |
+| [vLLM Vision](vllm-vision/README.md) | 8001 | Image / short-video understanding (Qwen3-VL on a dedicated GPU) | vLLM, CUDA |
 | [Text-to-Image](text-to-image/README.md) | 8188 | Image generation | ComfyUI |
 | [vLLM](vllm/README.md) | 8000 | Primary LLM inference | vLLM, CUDA |
 | [LlamaCPP](llamacpp/README.md) | 8000 | Alternative LLM backend | llama.cpp |
@@ -33,7 +33,7 @@ agent → qdrant:6333
 agent → embeddings:3000
 agent → text-to-speech:6005     (TTS playground proxy)
 agent → speech-to-text:6001     (STT playground proxy)
-agent → iav-to-text:8100        (Vision playground proxy)
+agent → vllm-vision:8000        (Vision playground proxy + query_multimodal_api chokepoint)
 agent → text-to-image:8188      (ComfyUI playground proxy)
 agent → face-recognition:6006   (/people dashboard proxy + mcp_face_tools)
 face-recognition → postgres:5432

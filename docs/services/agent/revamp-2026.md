@@ -342,13 +342,13 @@ New `/playgrounds/*` routes in the dashboard, backed by new agent API proxies. E
 |-----------|-----------------|-------------------|------------|
 | TTS | `/playgrounds/tts` | `POST /api/tts/speak`, `GET /api/tts/voices`, `GET /api/tts/health` | `text-to-speech:6005` |
 | STT | `/playgrounds/stt` | `POST /api/stt/transcribe`, `GET /api/stt/health` | `speech-to-text:6001` |
-| Vision | `/playgrounds/vision` | `POST /api/vision/ask`, `GET /api/vision/health` | `iav-to-text:8100` |
+| Vision | `/playgrounds/vision` | `POST /api/vision/ask`, `POST /api/vision/ask_url`, `GET /api/vision/health` | `vllm-vision:8000` (originally `iav-to-text:8100`; repointed when `vllm-vision` replaced it) |
 | ComfyUI | `/playgrounds/comfy` | `POST /api/comfy/generate`, `GET /api/comfy/status/{id}`, `GET /api/comfy/view`, `GET /api/comfy/health` | `text-to-image:8188` |
 
 Implementation notes:
 
 - **STT playground**: uses the browser `MediaRecorder` API (WebM/Opus) and uploads the finished blob to `/api/stt/transcribe`. Whisper's file loader handles WebM natively. A WS streaming mode was prototyped but shelved because the STT service's legacy WebSocket expects raw int16 PCM — a transcode-in-browser step we don't need for a "record then transcribe" playground.
-- **Vision playground**: encodes the image as a base64 data URL and forwards it as an OpenAI `image_url` chat-completion to iav-to-text. Avoided a shared-volume mount between the agent and vision containers.
+- **Vision playground**: encodes the image as a base64 data URL and forwards it as an OpenAI `image_url` chat-completion to the vision backend (originally `iav-to-text`; now `vllm-vision`, configured via `VISION_API_BASE` / `VISION_SERVED_NAME`). Avoided a shared-volume mount between the agent and vision containers. The `query_multimodal_api` MCP tool reuses the same proxy via a sibling `/api/vision/ask_url` JSON endpoint, keeping a single chokepoint for vision calls.
 - **ComfyUI playground**: reuses `modules/mcp_general_tools/comfyui_tools.py:SimpleComfyUI` for workflow loading and queue polling — no duplicated queueing logic.
 - **Dependencies**: added `python-multipart` to `pyproject.toml` (needed by FastAPI `File`/`Form` params for the new multipart endpoints).
 

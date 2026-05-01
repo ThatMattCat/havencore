@@ -60,7 +60,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/metrics/*` | GET | Per-turn timings, daily aggregates, top tools |
 | `/api/tts/*` | POST/GET | Proxies to text-to-speech |
 | `/api/stt/*` | POST/GET | Proxies to speech-to-text |
-| `/api/vision/*` | POST/GET | Proxies to iav-to-text |
+| `/api/vision/*` | POST/GET | Proxies to `vllm-vision`. `POST /api/vision/ask` is multipart (file upload, used by the dashboard playground); `POST /api/vision/ask_url` is JSON (used by the `query_multimodal_api` MCP tool — single chokepoint for image-URL inputs). `GET /api/vision/health` proxies `/v1/models`. |
 | `/api/comfy/*` | POST/GET | Proxies to text-to-image (ComfyUI) |
 | `/api/autonomy/status` | GET | Autonomy engine state (running/paused, last dispatch, next-due) |
 | `/api/autonomy/pause` | POST | Runtime kill switch — stop dispatch without restart |
