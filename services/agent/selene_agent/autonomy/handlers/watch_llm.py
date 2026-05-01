@@ -84,6 +84,14 @@ _VALID_CHANNELS = {"signal", "ha_push", "speaker", "silent"}
 _VALID_URGENCY = {"info", "warn", "alert"}
 
 
+_DEFAULT_SCENE_PROMPT = (
+    "Briefly describe what is visible in this camera image. Note: people "
+    "(clothing, posture, what they're holding), animals, vehicles, packages, "
+    "and anything that looks unusual for a residential property. 2-3 sentences. "
+    "No speculation about intent."
+)
+
+
 async def _safe_tool(mcp: MCPClientManager, name: str, args: Dict[str, Any]) -> Any:
     try:
         return await mcp.execute_tool(name, args)
@@ -92,8 +100,29 @@ async def _safe_tool(mcp: MCPClientManager, name: str, args: Dict[str, Any]) -> 
         return f"<tool {name} failed: {e}>"
 
 
+def _extract_snapshot_url(event: Dict[str, Any]) -> Optional[str]:
+    """Pull the camera snapshot URL out of a trigger event.
+
+    Prefers the normalized ``sensor_event`` block (which already resolves
+    face/* topics to the agent-internal ``/api/face/detections/{id}/snapshot``
+    URL). Falls back to a raw-payload ``snapshot_url`` for events that
+    didn't go through the sensor_events normalizer.
+    """
+    if not isinstance(event, dict):
+        return None
+    se = event.get("sensor_event")
+    if isinstance(se, dict) and se.get("snapshot_url"):
+        return str(se["snapshot_url"])
+    payload = event.get("payload")
+    if isinstance(payload, dict) and payload.get("snapshot_url"):
+        return str(payload["snapshot_url"])
+    return None
+
+
 async def _gather(
-    mcp: MCPClientManager, item_config: Dict[str, Any]
+    mcp: MCPClientManager,
+    item_config: Dict[str, Any],
+    event: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     gather_cfg = item_config.get("gather") or {}
     entities: List[str] = [e for e in (gather_cfg.get("entities") or []) if e]
@@ -126,6 +155,17 @@ async def _gather(
         calls["recent_visitors"] = _safe_tool(
             mcp, "face_recent_visitors", {"hours": hours}
         )
+    if gather_cfg.get("scene_description"):
+        snapshot_url = _extract_snapshot_url(event or {})
+        if snapshot_url:
+            scene_prompt = (
+                gather_cfg.get("scene_description_prompt") or _DEFAULT_SCENE_PROMPT
+            )
+            calls["scene_description"] = _safe_tool(
+                mcp,
+                "query_multimodal_api",
+                {"image_url": snapshot_url, "text": scene_prompt},
+            )
 
     if not calls:
         return {}
@@ -305,7 +345,7 @@ async def handle(
     if severity_floor not in _SEVERITY_RANK:
         severity_floor = "low"
 
-    state = await _gather(mcp_manager, cfg)
+    state = await _gather(mcp_manager, cfg, event)
     user_prompt = _render_user_prompt(subject, event, state)
 
     try:

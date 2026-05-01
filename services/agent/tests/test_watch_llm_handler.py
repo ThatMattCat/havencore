@@ -362,3 +362,149 @@ async def test_attach_snapshot_skipped_when_channel_is_speaker(monkeypatch):
     )
     assert result["_notify_channel"] == "speaker"
     assert result["_notify_attachments"] is None
+
+
+@pytest.mark.asyncio
+async def test_scene_description_gather_calls_vision(monkeypatch):
+    """When gather.scene_description is True and the trigger event carries
+    a sensor_event.snapshot_url, the handler invokes query_multimodal_api
+    on the snapshot and threads the description into the prompt."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    scene_text = "A man in a blue jacket walking a small black cat near the garage."
+
+    async def fake_execute(name, args):
+        if name == "query_multimodal_api":
+            assert args.get("image_url") == "http://agent:6002/api/face/detections/d/snapshot"
+            assert isinstance(args.get("text"), str) and args["text"]
+            return scene_text
+        return {}
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(side_effect=fake_execute)
+
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": false, "severity": "none", '
+        '"summary": "", "signature": "nominal", "evidence": []}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-scene",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {"scene_description": True, "memories_k": 0},
+        },
+        "_trigger_event": {
+            "source": "mqtt",
+            "topic": "haven/face/identified",
+            "payload": {},
+            "sensor_event": {
+                "domain": "face",
+                "kind": "identified",
+                "snapshot_url": "http://agent:6002/api/face/detections/d/snapshot",
+                "subject": {"type": "person", "identity": "matt"},
+                "raw": {},
+            },
+        },
+    }
+    await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+
+    called_tools = [c.args[0] for c in mcp.execute_tool.await_args_list]
+    assert "query_multimodal_api" in called_tools
+
+    rendered_prompt = fake_turn.run.await_args.args[0]
+    assert "## scene_description" in rendered_prompt
+    assert scene_text in rendered_prompt
+
+
+@pytest.mark.asyncio
+async def test_scene_description_skipped_without_snapshot(monkeypatch):
+    """If the trigger event has no snapshot URL anywhere, the gather step
+    silently skips the vision call rather than firing a tool with no input."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(return_value={})
+
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": false, "severity": "none", '
+        '"summary": "", "signature": "nominal", "evidence": []}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    item = {
+        "id": "wl-noscene",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {"scene_description": True, "memories_k": 0},
+        },
+        "_trigger_event": {
+            "source": "mqtt",
+            "topic": "haven/face/no_face",
+            "payload": {"camera": "backyard"},
+            # No sensor_event, no snapshot_url anywhere.
+        },
+    }
+    await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+
+    called_tools = [c.args[0] for c in mcp.execute_tool.await_args_list]
+    assert "query_multimodal_api" not in called_tools
+
+
+@pytest.mark.asyncio
+async def test_scene_description_uses_custom_prompt_override(monkeypatch):
+    """gather.scene_description_prompt overrides the default prompt sent to
+    the vision model — the no_face seed uses this to bias the LLM toward
+    'resident vs pet vs delivery driver vs wildlife' disambiguation."""
+    from selene_agent.autonomy.handlers import watch_llm
+
+    captured: dict = {}
+
+    async def fake_execute(name, args):
+        if name == "query_multimodal_api":
+            captured["text"] = args.get("text")
+            return "scene"
+        return {}
+
+    mcp = MagicMock()
+    mcp.execute_tool = AsyncMock(side_effect=fake_execute)
+
+    fake_turn = MagicMock()
+    fake_turn.run = AsyncMock(return_value=_turn_result(
+        '{"unusual": false, "severity": "none", '
+        '"summary": "", "signature": "nominal", "evidence": []}'
+    ))
+    monkeypatch.setattr(watch_llm, "AutonomousTurn", lambda **kw: fake_turn)
+
+    custom = "look for a cat please"
+    item = {
+        "id": "wl-scene-custom",
+        "kind": "watch_llm",
+        "autonomy_level": "notify",
+        "config": {
+            "gather": {
+                "scene_description": True,
+                "scene_description_prompt": custom,
+                "memories_k": 0,
+            },
+        },
+        "_trigger_event": {
+            "source": "mqtt",
+            "topic": "haven/face/no_face",
+            "payload": {},
+            "sensor_event": {"snapshot_url": "http://agent:6002/x.jpg", "raw": {}},
+        },
+    }
+    await watch_llm.handle(
+        item, client=None, mcp_manager=mcp, model_name="m", base_tools=[]
+    )
+    assert captured.get("text") == custom
