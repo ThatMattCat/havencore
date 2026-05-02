@@ -53,6 +53,18 @@ class EventType(str, Enum):
     # turn_metrics — see api/chat.py REST filter and orchestrator.run() where
     # this event is yielded but never appended to self.messages.
     REASONING = "reasoning"
+    # Companion-app side-channel: emitted in addition to the normal
+    # tool_call/tool_result pair when the LLM invokes a device-targeted tool
+    # (see DEVICE_ACTION_TOOLS). The companion app fires the corresponding
+    # platform intent (e.g. AlarmClock.ACTION_SET_ALARM); older app builds
+    # without device_action support drop the event silently.
+    DEVICE_ACTION = "device_action"
+
+
+# Tools whose successful execution should fan out a DEVICE_ACTION event to the
+# device that owns the session. Adding a new device-side action is one new
+# entry here plus the matching MCP tool definition.
+DEVICE_ACTION_TOOLS = frozenset({"set_alarm"})
 
 
 @dataclass
@@ -648,6 +660,17 @@ class AgentOrchestrator:
                                 "ms": int(tool_ms),
                             },
                         )
+
+                        if function_name in DEVICE_ACTION_TOOLS:
+                            yield AgentEvent(
+                                type=EventType.DEVICE_ACTION,
+                                data={
+                                    "action": function_name,
+                                    "args": function_args,
+                                    "id": tool_call.id,
+                                    "device_id": self.device_name,
+                                },
+                            )
 
                         self.messages.append({
                             "role": "tool",
