@@ -386,8 +386,8 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
 | `GET`  | `/api/tts/voices` | Voice alias list |
 | `POST` | `/api/stt/transcribe` | Multipart transcription proxy |
-| `POST` | `/api/vision/ask` | Multipart `image` + `prompt` to the vision LLM (`vllm-vision`). Used by the dashboard playground. |
-| `POST` | `/api/vision/ask_url` | JSON `{text, image_url, max_tokens?, temperature?}` for image-URL inputs (the vision service fetches the URL itself). Used by the `query_multimodal_api` MCP tool — single chokepoint for logging/metrics. Returns the same `{response, latency_ms, usage}` shape as `/api/vision/ask`. |
+| `POST` | `/api/vision/ask` | Multipart `file` (image OR short video) + `prompt` to the vision LLM (`vllm-vision`). MIME branches the upload to an `image_url` vs `video_url` chat-completion content part; unknown MIME → 415. The legacy `image` field name is still accepted. Returns `{response, latency_ms, usage, model, media_type}`. Used by the dashboard playground. nginx cap on `/api/` is 100 MB. |
+| `POST` | `/api/vision/ask_url` | JSON `{text, image_url, max_tokens?, temperature?}` for image-URL inputs (the vision service fetches the URL itself). Used by the `query_multimodal_api` MCP tool — single chokepoint for logging/metrics. Returns `{response, latency_ms, usage, model}`. Image-only by design; for video, the multipart `/api/vision/ask` endpoint or the `mcp_vision_tools` server are the right entry points. |
 | `POST` | `/api/comfy/generate` | Queue ComfyUI workflow |
 | `GET`  | `/api/comfy/status/{prompt_id}` | Poll generation status |
 | `GET`  | `/api/comfy/view` | Stream a generated image |

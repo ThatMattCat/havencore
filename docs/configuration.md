@@ -519,10 +519,17 @@ value, recreate the agent so the env is picked up:
 docker compose up -d --force-recreate --no-deps agent
 ```
 
-Used by `POST /api/vision/ask` (multipart, dashboard playground), `POST
-/api/vision/ask_url` (JSON, the `query_multimodal_api` MCP tool), and
-`GET /api/vision/health`. Service-side flags (model selection, context
-window, GPU memory utilization) live in `compose.yaml` and the
+Used by `POST /api/vision/ask` (multipart — accepts both image AND
+short-video uploads, used by the dashboard playground), `POST
+/api/vision/ask_url` (JSON, image-only, the `query_multimodal_api`
+MCP tool and most `mcp_vision_tools` tools), and `GET /api/vision/health`.
+Both `ask` endpoints return the served-model name in the response so
+clients can show which tier of the fallback ladder is active. The five
+purpose-built tools (`describe_image`, `describe_camera_snapshot`,
+`compare_snapshots`, `identify_object`, `read_text_in_image`) live in
+the [Vision Tools MCP server](services/agent/tools/vision.md).
+Service-side flags (model selection, context window, GPU memory
+utilization) live in `compose.yaml` and the
 [vllm-vision service doc](services/vllm-vision/README.md) covers the
 fallback ladder for tight 24 GB fits.
 

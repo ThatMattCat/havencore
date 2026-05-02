@@ -124,3 +124,59 @@ The autonomy engine's face-trigger triage now drives the vision model on every c
 - **Failure mode is bounded.** The vision call is wrapped in `_safe_tool`, so a vision-LLM outage or a 404 snapshot path drops a `<tool ... failed>` string into the gather instead of blocking the triage. The triage LLM still gets to judge on the rest of the gather.
 
 See [autonomy/cameras.md](../agent/autonomy/cameras.md#vision-ai-scene-description) for the watch_llm gather schema and the worked examples.
+
+## Phase 4 status (landed 2026-05-02)
+
+A dedicated MCP server, `mcp_vision_tools`, layers five purpose-built
+tools on top of `vllm-vision` so the LLM gets focused tools instead of
+having to assemble image URLs and prompts manually:
+
+- `describe_image(image_url, prompt?)` — generic "describe this".
+- `describe_camera_snapshot(camera_name, prompt?)` — one-shot fresh
+  HA snapshot + vision description. Reuses the
+  `mcp_mqtt_tools` `HACamSnapper` for the capture; matches
+  `camera_name` against returned URLs server-side (substring → token
+  split fallback).
+- `compare_snapshots(image_url_a, image_url_b, focus?)` — the only
+  tool that bypasses the `/api/vision/ask_url` chokepoint, posting
+  directly to `vllm-vision`'s `/v1/chat/completions` because the
+  chokepoint schema is single-image.
+- `identify_object(image_url, hint?)` — "what is this thing?" with
+  optional category hint.
+- `read_text_in_image(image_url)` — OCR-flavored prompt with
+  `temperature=0.1`.
+
+All five tool names are in the `observe`-tier autonomy allow-list, so
+autonomy turns can call them. Full reference at
+[Vision Tools](../agent/tools/vision.md).
+
+## Phase 5 status (landed 2026-05-02)
+
+Endpoints + dashboard polish:
+
+- **`/api/vision/ask` accepts video.** The endpoint now branches on
+  the upload's MIME type — `image/*` builds an `image_url` content
+  part (existing behavior), `video/*` builds a `video_url` content
+  part. Unknown MIME → `415 Unsupported Media Type`. The legacy
+  `image` form field still works; new callers should use `file`. A
+  short clip (5-10 s 1080p H.264) is well within the new size budget.
+- **Response shape now includes `model`.** Both `/api/vision/ask`
+  and `/api/vision/ask_url` return the served-model name so the
+  dashboard can label which tier (Tier 1/2/3 from the fallback
+  ladder) handled the call. `/api/vision/ask` additionally returns
+  `media_type` (`image_url` / `video_url`).
+- **Playground page upgraded.** The dashboard playground at
+  `/playgrounds/vision` accepts image+video, renders the appropriate
+  preview element (`<img>` vs `<video controls>`), exposes four
+  preset prompts (Describe scene / What's unusual? / Read all
+  text / Identify objects), and displays a served-model badge plus a
+  prompt/completion token breakdown alongside latency.
+- **nginx upload cap raised.** `client_max_body_size` on the `/api/`
+  location went from 25 MB to 100 MB so a typical short video clip
+  doesn't 413. The previous cap was sized for phone-camera photos
+  only.
+
+The model-selection ladder above is unchanged — Qwen3-VL natively
+supports both image and video, and `vllm-vision`'s
+`--limit-mm-per-prompt '{"image":4,"video":1}'` flag was already in
+place from Phase 1.
