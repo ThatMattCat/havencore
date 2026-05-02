@@ -250,12 +250,18 @@ export function getSttHealth(): Promise<{ status: string }> {
 // --- Vision ---
 
 export async function visionAsk(
-	image: File,
+	file: File,
 	prompt: string,
 	opts?: { max_tokens?: number; temperature?: number },
-): Promise<{ response: string; latency_ms: number; usage?: any }> {
+): Promise<{
+	response: string;
+	latency_ms: number;
+	usage?: any;
+	model?: string;
+	media_type?: string;
+}> {
 	const form = new FormData();
-	form.append('image', image);
+	form.append('file', file);
 	form.append('prompt', prompt);
 	if (opts?.max_tokens !== undefined) form.append('max_tokens', String(opts.max_tokens));
 	if (opts?.temperature !== undefined) form.append('temperature', String(opts.temperature));

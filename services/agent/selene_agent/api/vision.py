@@ -16,6 +16,10 @@ logger = custom_logger.get_logger('loki')
 router = APIRouter()
 
 
+_IMAGE_MIME_PREFIX = "image/"
+_VIDEO_MIME_PREFIX = "video/"
+
+
 async def _call_vision(
     messages: list[dict[str, Any]],
     *,
@@ -58,16 +62,41 @@ async def _call_vision(
 @router.post("/vision/ask")
 async def ask(
     prompt: str = Form(...),
-    image: UploadFile = File(...),
+    file: UploadFile = File(None),
+    image: UploadFile = File(None),
     max_tokens: int = Form(512),
     temperature: float = Form(0.7),
 ):
-    """Multipart form: file upload + prompt. Used by the dashboard playground."""
+    """Multipart form: file upload + prompt. Used by the dashboard playground.
+
+    Accepts both `file` (preferred — image OR video) and `image` (legacy
+    image-only field name retained so older callers keep working). The MIME
+    type on the upload picks the content-part shape: `image/*` -> image_url,
+    `video/*` -> video_url. vllm-vision handles both via the OpenAI-compat
+    multimodal schema.
+    """
     if not prompt.strip():
         raise HTTPException(status_code=400, detail="prompt is required")
 
-    data = await image.read()
-    mime = image.content_type or "image/png"
+    upload = file or image
+    if upload is None:
+        raise HTTPException(status_code=400, detail="file is required")
+
+    data = await upload.read()
+    mime = (upload.content_type or "").lower() or "image/png"
+
+    if mime.startswith(_IMAGE_MIME_PREFIX):
+        part_type = "image_url"
+        url_key = "image_url"
+    elif mime.startswith(_VIDEO_MIME_PREFIX):
+        part_type = "video_url"
+        url_key = "video_url"
+    else:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported media type '{mime}'; expected image/* or video/*",
+        )
+
     b64 = base64.b64encode(data).decode("ascii")
     data_url = f"data:{mime};base64,{b64}"
 
@@ -76,14 +105,20 @@ async def ask(
             "role": "user",
             "content": [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": part_type, url_key: {"url": data_url}},
             ],
         }
     ]
     content, latency_ms, usage = await _call_vision(
         messages, max_tokens=max_tokens, temperature=temperature
     )
-    return {"response": content, "latency_ms": latency_ms, "usage": usage}
+    return {
+        "response": content,
+        "latency_ms": latency_ms,
+        "usage": usage,
+        "model": config.VISION_SERVED_NAME,
+        "media_type": part_type,
+    }
 
 
 class VisionAskUrlRequest(BaseModel):
@@ -112,7 +147,12 @@ async def ask_url(req: VisionAskUrlRequest):
     content, latency_ms, usage = await _call_vision(
         messages, max_tokens=req.max_tokens, temperature=req.temperature
     )
-    return {"response": content, "latency_ms": latency_ms, "usage": usage}
+    return {
+        "response": content,
+        "latency_ms": latency_ms,
+        "usage": usage,
+        "model": config.VISION_SERVED_NAME,
+    }
 
 
 @router.get("/vision/health")
