@@ -41,6 +41,12 @@ OBSERVE_TOOLS: Set[str] = {
     "fetch",
     # MQTT — camera snapshot capture (triggers HA script, waits on MQTT topic)
     "get_camera_snapshots",
+    # Vision tools — purpose-built wrappers around the vllm-vision service
+    "describe_image",
+    "describe_camera_snapshot",
+    "compare_snapshots",
+    "identify_object",
+    "read_text_in_image",
 }
 
 # Notifier tools are only added at the ``notify`` tier.
