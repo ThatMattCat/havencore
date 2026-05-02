@@ -230,8 +230,61 @@ README. Agent-side setup is minimal:
   yet. Routing briefings via ntfy would require a one-line change to
   `briefing.py` to use `_build_notifier` — out of scope for now.
 
+## Device-side actions (live `/ws/chat` channel)
+
+Independent from the UnifiedPush/ntfy push surface above, the
+companion app also listens on `/ws/chat` for `device_action` frames.
+This is the path used when the user is *actively chatting* and the
+LLM decides to schedule something on the device itself — the
+canonical example is "set an alarm for 7 AM," which fires
+[`AlarmClock.ACTION_SET_ALARM`](https://developer.android.com/reference/android/provider/AlarmClock#ACTION_SET_ALARM)
+through the device's Clock app.
+
+Surface comparison:
+
+| | UnifiedPush + ntfy | `device_action` over `/ws/chat` |
+|---|---|---|
+| Triggered by | autonomy engine fires | LLM tool call inside a live chat turn |
+| Transport | HTTPS POST → ntfy → distributor → Android broadcast | already-open WebSocket |
+| Phone state | works while app is killed/Doze'd | requires the app to be foreground or holding the WS open (assist-slot voice overlay or Chat screen) |
+| Wakes the screen | yes (notification) | no — fires the intent silently |
+| Payload type | `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` | `set_alarm` (extensible — see below) |
+
+Wire-protocol shape (sent verbatim by the agent's WS serializer):
+
+```json
+{
+  "type": "device_action",
+  "action": "set_alarm",
+  "args": { "hour": 7, "minute": 0, "label": "Standup", "days_of_week": [2,3,4,5,6] },
+  "id": "<tool_call_id>",
+  "device_id": "<session device name>"
+}
+```
+
+The `tool_call` / `tool_result` pair stays on the wire as the
+server-side breadcrumb — the chat screen still renders a
+`ToolCallCard`. The `device_action` frame is what actually fires
+the platform intent, dispatched by the companion app's
+`DeviceActionDispatcher`.
+
+**Backward compatibility.** Older companion-app builds without
+`device_action` support drop the frame silently via
+`ChatProtocol.ParsedFrame.Unknown` — no version negotiation needed.
+Unknown action names render an inert "(unsupported)" card on
+current builds.
+
+**Extending the action set.** A new device-side action (`set_timer`,
+`start_navigation`, …) is one MCP tool plus one entry in
+`orchestrator.DEVICE_ACTION_TOOLS` plus the matching
+`DeviceActionDispatcher` branch on the phone. Full walkthrough in
+the [device-actions tool reference](../services/agent/tools/device-action.md#adding-a-new-device-action).
+
 ## See also
 
+- [Device actions tool](../services/agent/tools/device-action.md) —
+  the agent-side MCP tool catalog and the wire-protocol contract for
+  the live `/ws/chat` channel above.
 - [Autonomy engine](../services/agent/autonomy/README.md) — the
   notifier abstraction, the `_notify_channel` discriminator, and the
   channels table.

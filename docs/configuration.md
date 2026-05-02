@@ -385,7 +385,9 @@ MCP_SERVERS='[
   {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true},
   {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true},
   {"name": "face",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_face_tools"],             "enabled": true},
-  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true}
+  {"name": "vision",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_vision_tools"],           "enabled": true},
+  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true},
+  {"name": "device_action",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_device_action_tools"],    "enabled": true}
 ]'
 ```
 
