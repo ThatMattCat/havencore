@@ -142,6 +142,26 @@ class DeviceActionToolsServer:
                         "properties": {},
                     },
                 ),
+                Tool(
+                    name="who_is_in_view",
+                    description=(
+                        "Ask the user's phone to capture a photo and identify "
+                        "the person in it against the enrolled face gallery. "
+                        "Returns `{found: bool, name?, confidence?}` along with "
+                        "the `image_url`. Use when the user asks 'who is "
+                        "this?', 'do you know who that is?', 'is anyone in "
+                        "front of me?', or similar identity questions about a "
+                        "person physically near them. The face must already "
+                        "be enrolled in the face-recognition gallery for a "
+                        "match to land; unrecognized faces return "
+                        "`{found: false}` rather than an error. Times out "
+                        "after roughly 25s if no upload arrives."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
             ]
             logger.info(f"Listing {len(tools)} device-action tools")
             return tools
@@ -152,7 +172,12 @@ class DeviceActionToolsServer:
             try:
                 if name == "set_alarm":
                     result = await self.set_alarm(arguments)
-                elif name in ("take_photo", "identify_object_in_photo", "read_text_from_image"):
+                elif name in (
+                    "take_photo",
+                    "identify_object_in_photo",
+                    "read_text_from_image",
+                    "who_is_in_view",
+                ):
                     result = await self.companion_camera_fallback(name)
                 else:
                     return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -196,7 +221,8 @@ class DeviceActionToolsServer:
         # because the future + blob store both live in the agent process and
         # are unreachable from this stdio subprocess. Vision-chained tools
         # (identify_object_in_photo, read_text_from_image) additionally chain
-        # to the vision pipeline server-side after the upload arrives.
+        # to the vision pipeline server-side after the upload arrives;
+        # who_is_in_view chains to the face-recognition service.
         return {
             "status": "error",
             "error": (

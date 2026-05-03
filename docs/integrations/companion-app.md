@@ -248,7 +248,7 @@ Surface comparison:
 | Transport | HTTPS POST → ntfy → distributor → Android broadcast | already-open WebSocket |
 | Phone state | works while app is killed/Doze'd | requires the app to be foreground or holding the WS open (assist-slot voice overlay or Chat screen) |
 | Wakes the screen | yes (notification) | no — fires the intent silently (camera tools do open the camera app) |
-| Payload type | `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` | `set_alarm`, `take_photo`, `identify_object_in_photo`, `read_text_from_image` (extensible — see below) |
+| Payload type | `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` | `set_alarm`, `take_photo`, `identify_object_in_photo`, `read_text_from_image`, `who_is_in_view` (extensible — see below) |
 
 Wire-protocol shape (sent verbatim by the agent's WS serializer):
 
@@ -283,14 +283,14 @@ current builds.
 
 ### Camera round-trip tools
 
-`take_photo`, `identify_object_in_photo`, and `read_text_from_image`
-extend the `device_action` channel with a phone-to-agent return path:
-the phone POSTs the captured JPEG back to
-`/api/companion/upload`, the agent stashes it in an in-memory
+`take_photo`, `identify_object_in_photo`, `read_text_from_image`,
+and `who_is_in_view` extend the `device_action` channel with a
+phone-to-agent return path: the phone POSTs the captured JPEG back
+to `/api/companion/upload`, the agent stashes it in an in-memory
 `BlobStore`, mints a short-lived `image_url`, and resolves a
 `tool_call_id`-keyed `asyncio.Future` so the orchestrator's awaiting
 `_handle_companion_camera()` can return a structured result to the
-LLM (or chain to vision first).
+LLM (or chain to the vision pipeline / face recognition first).
 
 End-to-end flow:
 
@@ -304,6 +304,7 @@ LLM tool_call → orchestrator emits DEVICE_ACTION (pre-execute)
                  take_photo                  → {status: "captured", image_url, ...}
                  identify_object_in_photo    → {status: "captured_and_analyzed", identification}
                  read_text_from_image        → {status: "captured_and_analyzed", text}
+                 who_is_in_view              → {status: "captured_and_recognized", found, name?, ...}
 ```
 
 The agent-side details (allowlists, vision-chain map, prompt
@@ -316,9 +317,10 @@ Tunable env vars (timeout, TTL, byte cap) live in
 [configuration.md → Companion-app camera tools](../configuration.md#companion-app-camera-tools).
 
 **Capability gating.** The companion app's Settings → Camera tools
-card has a master toggle plus per-tool toggles for the
-vision-chained variants. When a toggle is off, the dispatcher
-returns `DeviceActionResult.Disabled` *before* launching the camera —
+card has a master toggle plus per-tool toggles for each chained
+variant (identify, OCR, face recognition). When a toggle is off,
+the dispatcher returns `DeviceActionResult.Disabled` *before*
+launching the camera —
 no capture, no upload, no agent-visible side effect — and the
 agent's upload future eventually times out. Server-side
 short-circuiting based on a phone-shipped capabilities bitmap is

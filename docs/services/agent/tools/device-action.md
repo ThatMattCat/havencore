@@ -9,13 +9,14 @@ tools live here:
   fires the matching platform intent (e.g.
   [`AlarmClock.ACTION_SET_ALARM`](https://developer.android.com/reference/android/provider/AlarmClock#ACTION_SET_ALARM)).
 - **Camera round-trip tools** (`take_photo`, `identify_object_in_photo`,
-  `read_text_from_image`). The orchestrator emits the `device_action`
-  *before* the tool body runs, the phone captures + uploads a JPEG to
-  `/api/companion/upload`, and the orchestrator awaits the upload
-  future in-process. Vision-chained variants then forward the
-  resulting `image_url` to the vllm-vision pipeline and surface the
-  vision response as the tool result. See [Camera tools](#camera-tools)
-  for the full flow.
+  `read_text_from_image`, `who_is_in_view`). The orchestrator emits the
+  `device_action` *before* the tool body runs, the phone captures +
+  uploads a JPEG to `/api/companion/upload`, and the orchestrator
+  awaits the upload future in-process. Vision-chained variants forward
+  the resulting `image_url` to the vllm-vision pipeline; the
+  face-identify variant POSTs the JPEG bytes to the face-recognition
+  service and surfaces the matched identity. See
+  [Camera tools](#camera-tools) for the full flow.
 
 ## Overview
 
@@ -26,11 +27,12 @@ tools live here:
 | Transport | MCP stdio |
 | Server name | `havencore-device-action-tools` |
 | Backend | None for `set_alarm` — handler returns a status string. Camera tools route through the in-process companion-upload registry (see [Camera tools](#camera-tools)); the MCP handlers for those are benign-error fallbacks since the upload future + blob store live in the agent process and are unreachable from this stdio subprocess. |
-| Tool count | 4 |
+| Tool count | 5 |
 | Wire-protocol allowlist | `selene_agent.orchestrator.DEVICE_ACTION_TOOLS` (a `frozenset`) |
 | Pre-execute allowlist | `selene_agent.orchestrator.PRE_EXECUTE_DEVICE_ACTION_TOOLS` — subset whose `device_action` frame ships *before* the tool body runs |
 | Companion-upload allowlist | `selene_agent.orchestrator.COMPANION_UPLOAD_TOOLS` — subset whose result is filled by `/api/companion/upload` (orchestrator routes around MCP) |
 | Vision-chained map | `selene_agent.orchestrator.VISION_CHAINED_TOOLS` — subset that additionally posts the uploaded image to the vision pipeline |
+| Face-identify allowlist | `selene_agent.orchestrator.FACE_IDENTIFY_TOOLS` — subset whose uploaded JPEG is POSTed to the face-recognition service for identity matching |
 
 The execution model is two-sided:
 
@@ -67,6 +69,7 @@ what actually fires the intent on the device.
 | `take_photo(reason?)` | camera round-trip | Ask the companion app to capture a photo and upload it. Returns `{status: "captured", image_url, mime, captured_at, device_id}`. The `image_url` can then be passed to vision tools (e.g. `query_multimodal_api`) for follow-up analysis — but if the user's intent is identification or OCR, prefer the more specific tools below so the LLM doesn't have to chain. Times out after `COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC` seconds (default 25) with `{status: "timeout", error: "..."}`. |
 | `identify_object_in_photo(hint?)` | camera + vision-chained | Capture a photo, then post `image_url` to the vision pipeline with the identify prompt. Returns `{status: "captured_and_analyzed", image_url, captured_at, identification}`. Optional `hint` ("plant", "bird") narrows the prompt. |
 | `read_text_from_image()` | camera + vision-chained | Capture a photo, then post `image_url` to the vision pipeline with the OCR prompt (low temperature, 1024 tokens). Returns `{status: "captured_and_analyzed", image_url, captured_at, text}`. |
+| `who_is_in_view()` | camera + face-identify | Capture a photo, then POST the JPEG to face-recognition's `/api/identify`. Returns `{status: "captured_and_recognized", image_url, captured_at, found, name?, person_id?, confidence?, face_count}`. `found: false` is a normal result (no face detected, or below `FACE_REC_MATCH_THRESHOLD`) — the LLM phrases the reply. The face must already be enrolled in the gallery for a match to land. |
 
 ## Wire protocol
 
@@ -87,7 +90,7 @@ When a tool in `DEVICE_ACTION_TOOLS` runs, the orchestrator yields a
 | Field | Source |
 |-------|--------|
 | `type` | Always `"device_action"`. |
-| `action` | The tool name (`set_alarm`, `take_photo`, `identify_object_in_photo`, `read_text_from_image`). |
+| `action` | The tool name (`set_alarm`, `take_photo`, `identify_object_in_photo`, `read_text_from_image`, `who_is_in_view`). |
 | `args` | The arguments dict the LLM passed to the tool, verbatim. |
 | `id` | The `tool_call.id`, so the companion app can correlate with the `tool_call` / `tool_result` it already received for the same turn. For camera tools this is also the key the upload future is registered under (the phone POSTs it back as `tool_call_id` in the multipart body). |
 | `device_id` | `orchestrator.device_name` — the human-readable label set on the session via the WS first-frame `device_name` or the `X-Device-Name` REST header. May be `null` if the client never set one. |
@@ -139,7 +142,7 @@ LLM. The agent never holds the bytes longer than `COMPANION_BLOB_TTL_SEC`.
 ### End-to-end flow
 
 ```
-LLM → take_photo / identify_object_in_photo / read_text_from_image
+LLM → take_photo / identify_object_in_photo / read_text_from_image / who_is_in_view
     ↓
 orchestrator
   • emits DEVICE_ACTION frame on /ws/chat (PRE-execute)
@@ -161,6 +164,10 @@ orchestrator (await returns)
   • identify_object_in_photo / read_text_from_image:
       calls api/vision._call_vision(image_url, prompt) directly in-process
       returns {status: "captured_and_analyzed", image_url, identification|text}
+  • who_is_in_view:
+      reads bytes from BlobStore (in-process, no self-HTTP)
+      POSTs multipart to ${FACE_REC_API_BASE}/api/identify
+      returns {status: "captured_and_recognized", image_url, found, name?, ...}
 ```
 
 ### Why the upload future lives in the agent process, not this MCP module
@@ -200,12 +207,44 @@ call (no extra hop). Errors from the vision call bubble up as
 `{status: "vision_error", error, image_url}` so the LLM can still
 phrase a useful reply about what happened.
 
+### Face-identify chaining
+
+`who_is_in_view` is the only tool in `FACE_IDENTIFY_TOOLS`. After the
+upload future resolves, `_chain_face_identify()` reads the JPEG bytes
+out of the in-process `BlobStore` (the URL points back at this same
+agent process, so a self-HTTP fetch would be a needless round trip)
+and POSTs them as multipart `file` to
+`${FACE_REC_API_BASE}/api/identify` (default
+`http://face-recognition:6006/api/identify`). The face-recognition
+service runs detect+embed and queries the same Qdrant gallery the
+camera-driven pipeline uses; matches above `FACE_REC_MATCH_THRESHOLD`
+(default 0.50) come back as `{found: true, name, person_id,
+confidence, face_count}`, otherwise `{found: false, face_count}`.
+The orchestrator merges that response into the LLM-facing tool
+result under the `captured_and_recognized` envelope.
+
+The `/api/identify` endpoint applies EXIF rotation before detection
+(via `PIL.ImageOps.exif_transpose`). Phone cameras write portrait
+selfies as landscape bytes plus an EXIF orientation tag; without
+this step `cv2.imdecode` reads pixels straight off the JFIF segment
+and the face arrives sideways, which RetinaFace at
+`FACE_REC_DET_SIZE=1280` misses often enough to break the endpoint
+for the most common companion-app input. Landscape captures
+(orientation 1) pass through unchanged.
+
+Errors (face-rec returning ≥400, blob already evicted, network
+failure) bubble up as `{status: "face_identify_error", error,
+image_url, captured_at}` so the LLM can still apologize coherently.
+Face-not-recognized is **not** an error — `{found: false}` is a 200
+response and flows through verbatim.
+
 ### Companion-app capability gating
 
 The companion app's Settings → Camera tools card has a master toggle
-(gates all camera tools) plus per-tool toggles for the
-vision-chained variants. When a toggle is off, the dispatcher
-returns `DeviceActionResult.Disabled` *before* launching the camera —
+(gates all camera tools) plus per-tool toggles for each chained
+variant (identify, OCR, face recognition). When a toggle is off,
+the dispatcher returns `DeviceActionResult.Disabled` *before*
+launching the camera —
 no capture, no upload, no agent-visible side effect. The agent's
 upload future then times out at `COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC`
 and the LLM sees `{status: "timeout", ...}`. (Server-side
@@ -246,10 +285,12 @@ user's phone (and optionally a vision-pipeline pass on the result):
 2. **Allowlists.** Add the tool name to all three of
    `DEVICE_ACTION_TOOLS`, `PRE_EXECUTE_DEVICE_ACTION_TOOLS`, and
    `COMPANION_UPLOAD_TOOLS`.
-3. **Vision chain (optional).** If the tool should run vision on the
-   captured image before returning to the LLM, add an entry to
-   `VISION_CHAINED_TOOLS` with the prompt builder, `max_tokens`,
-   `temperature`, and result key. Otherwise it returns the raw
+3. **Downstream chain (optional, pick at most one).** If the tool
+   should run vision on the captured image before returning to the
+   LLM, add an entry to `VISION_CHAINED_TOOLS`. If it should run
+   face recognition, add the tool name to `FACE_IDENTIFY_TOOLS`. The
+   two are kept disjoint by an alignment test — a tool picks one
+   downstream service. Without either, it returns the raw
    `{status: "captured", image_url, ...}` (like `take_photo`).
 4. **Companion app.** Add a `DeviceAction.CameraCapture` sealed
    variant + parser branch + a `DeviceActionCard` arm + a per-tool
@@ -274,7 +315,7 @@ The MCP server is spawned via `MCP_SERVERS` in `.env`:
 }
 ```
 
-`MCPClientManager` discovers all four tools automatically on the next
+`MCPClientManager` discovers all five tools automatically on the next
 agent start.
 
 The camera tools additionally read these env vars (see
@@ -376,11 +417,12 @@ on the LLM to ask if it's ambiguous.
 - `services/agent/selene_agent/modules/mcp_device_action_tools/mcp_server.py`
   — Tool declarations + `set_alarm` handler + `companion_camera_fallback`.
 - `services/agent/selene_agent/orchestrator.py` — `DEVICE_ACTION`
-  EventType, the four allowlists (`DEVICE_ACTION_TOOLS`,
+  EventType, the five allowlists (`DEVICE_ACTION_TOOLS`,
   `PRE_EXECUTE_DEVICE_ACTION_TOOLS`, `COMPANION_UPLOAD_TOOLS`,
-  `VISION_CHAINED_TOOLS`), `_handle_companion_camera()`,
-  `_await_companion_upload_payload()`, `_ask_vision()`, and the
-  pre/post emission branches inside the tool-execution loop.
+  `VISION_CHAINED_TOOLS`, `FACE_IDENTIFY_TOOLS`),
+  `_handle_companion_camera()`, `_await_companion_upload_payload()`,
+  `_ask_vision()`, `_chain_face_identify()`, and the pre/post
+  emission branches inside the tool-execution loop.
 - `services/agent/selene_agent/api/companion.py` —
   `POST /api/companion/upload`, `GET /api/companion/blob/{token}`,
   `BlobStore` (TTL + byte-cap eviction), and the
@@ -395,6 +437,13 @@ on the LLM to ask if it's ambiguous.
   chain assertions (right prompt + params per tool, take_photo
   doesn't chain, vision errors → structured envelope, allowlist
   alignment guard).
+- `services/agent/tests/test_companion_face_chain.py` — face-identify
+  chain assertions (multipart shape posted to face-rec, recognized
+  + unrecognized passthroughs, error envelope, blob-evicted error,
+  allowlist alignment guard for `FACE_IDENTIFY_TOOLS`).
+- `services/face-recognition/app/api/identify.py` — `POST /api/identify`
+  handler. Reuses the embedder + vector_store singletons; applies
+  EXIF rotation before detection.
 
 ## See also
 

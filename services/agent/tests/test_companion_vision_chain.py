@@ -245,3 +245,8 @@ def test_camera_tool_constants_aligned():
     assert orch_module.PRE_EXECUTE_DEVICE_ACTION_TOOLS <= orch_module.DEVICE_ACTION_TOOLS
     assert orch_module.COMPANION_UPLOAD_TOOLS <= orch_module.PRE_EXECUTE_DEVICE_ACTION_TOOLS
     assert set(VISION_CHAINED_TOOLS.keys()) <= orch_module.COMPANION_UPLOAD_TOOLS
+    assert orch_module.FACE_IDENTIFY_TOOLS <= orch_module.COMPANION_UPLOAD_TOOLS
+    # A camera tool should chain into at most one downstream service.
+    assert orch_module.FACE_IDENTIFY_TOOLS.isdisjoint(
+        set(VISION_CHAINED_TOOLS.keys())
+    )

@@ -16,7 +16,7 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 | Face Recognition | `mcp_face_tools` | 5 — who's at a camera, recent visitors, list/enroll/access-level for known people | [face.md](face.md) |
 | Vision | `mcp_vision_tools` | 5 — describe image / camera snapshot / compare two images / identify object / read text in image (wraps the `vllm-vision` service) | [vision.md](vision.md) |
 | Reminder | `mcp_reminder_tools` | 3 — schedule one-shot or recurring reminders backed by the autonomy engine, list, cancel | [reminder.md](reminder.md) |
-| Device Actions | `mcp_device_action_tools` | 4 — `set_alarm` (fire-and-forget intent); `take_photo` / `identify_object_in_photo` / `read_text_from_image` round-trip a JPEG via `/api/companion/upload`, with the vision-chained variants forwarding the captured `image_url` to the vision pipeline server-side | [device-action.md](device-action.md) |
+| Device Actions | `mcp_device_action_tools` | 5 — `set_alarm` (fire-and-forget intent); `take_photo` / `identify_object_in_photo` / `read_text_from_image` / `who_is_in_view` round-trip a JPEG via `/api/companion/upload`, with the vision-chained variants forwarding the captured `image_url` to the vision pipeline server-side and `who_is_in_view` POSTing the JPEG to face-recognition's `/api/identify` | [device-action.md](device-action.md) |
 
 ## Writing new tools
 

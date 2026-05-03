@@ -8,6 +8,7 @@ that can be consumed by both non-streaming (collect all) and streaming (SSE/WebS
 import asyncio
 import contextvars
 import json
+import os
 import re
 import time
 import traceback
@@ -70,6 +71,7 @@ DEVICE_ACTION_TOOLS = frozenset({
     "take_photo",
     "identify_object_in_photo",
     "read_text_from_image",
+    "who_is_in_view",
 })
 
 # Subset of DEVICE_ACTION_TOOLS whose ``device_action`` event must be emitted
@@ -82,6 +84,7 @@ PRE_EXECUTE_DEVICE_ACTION_TOOLS = frozenset({
     "take_photo",
     "identify_object_in_photo",
     "read_text_from_image",
+    "who_is_in_view",
 })
 
 # Subset of DEVICE_ACTION_TOOLS whose result is filled by the companion-app
@@ -91,7 +94,14 @@ COMPANION_UPLOAD_TOOLS = frozenset({
     "take_photo",
     "identify_object_in_photo",
     "read_text_from_image",
+    "who_is_in_view",
 })
+
+# Camera tools that, after the upload future resolves, POST the captured
+# JPEG to the face-recognition service for identity matching. Disjoint
+# from VISION_CHAINED_TOOLS — the chains target different sibling services
+# (vllm-vision in-process vs. face-recognition over HTTP).
+FACE_IDENTIFY_TOOLS = frozenset({"who_is_in_view"})
 
 # Vision-chained camera tools: after the upload future resolves, post the
 # image_url to the in-process vision pipeline with the prompt the tool implies
@@ -860,9 +870,11 @@ class AgentOrchestrator:
     ) -> str:
         """End-to-end driver for companion-app camera tools.
 
-        Awaits the upload future, then optionally chains to the in-process
-        vision pipeline if the tool is in ``VISION_CHAINED_TOOLS``. Returns
-        the JSON string the LLM will see as the tool result.
+        Awaits the upload future, then optionally chains: vision-chained
+        tools (identify / OCR) call the in-process vllm-vision pipeline;
+        face-identify tools POST the JPEG to the face-recognition sibling
+        service; bare ``take_photo`` returns the upload metadata as-is.
+        Returns the JSON string the LLM will see as the tool result.
         """
         payload = await self._await_companion_upload_payload(
             function_name, tool_call_id
@@ -900,6 +912,27 @@ class AgentOrchestrator:
                 "image_url": payload.get("image_url"),
                 "captured_at": captured_at_iso,
                 result_key: vision_text,
+            })
+
+        if function_name in FACE_IDENTIFY_TOOLS:
+            try:
+                identity = await self._chain_face_identify(payload)
+            except Exception as e:
+                logger.warning(
+                    f"face-identify chain failed: tool={function_name} "
+                    f"tool_call_id={tool_call_id}: {e}"
+                )
+                return json.dumps({
+                    "status": "face_identify_error",
+                    "error": str(e),
+                    "image_url": payload.get("image_url"),
+                    "captured_at": captured_at_iso,
+                })
+            return json.dumps({
+                "status": "captured_and_recognized",
+                "image_url": payload.get("image_url"),
+                "captured_at": captured_at_iso,
+                **identity,
             })
 
         return json.dumps({
@@ -959,6 +992,74 @@ class AgentOrchestrator:
             .isoformat()
             .replace("+00:00", "Z")
         )
+
+    async def _chain_face_identify(
+        self,
+        upload_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """POST the captured JPEG to the face-recognition service.
+
+        Reads the bytes directly from the in-process BlobStore — the
+        ``image_url`` in the payload points back at this same agent
+        process, so a self-HTTP fetch would just be a round trip. Returns
+        the face-recognition payload (``found`` / ``name`` / etc.) for the
+        caller to merge into the LLM-facing tool result. Raises on
+        transport / HTTP errors so ``_handle_companion_camera`` can wrap
+        them in a structured error envelope.
+        """
+        # Local import — keeps companion module out of orchestrator's
+        # import-time graph and matches the upload-future pattern above.
+        import aiohttp
+        from selene_agent.api.companion import get_blob_store
+
+        blob_token = upload_payload.get("blob_token")
+        mime = upload_payload.get("mime") or "image/jpeg"
+
+        data: Optional[bytes] = None
+        if blob_token:
+            blob = get_blob_store().get(blob_token)
+            if blob is not None:
+                data = blob.data
+
+        if data is None:
+            # Blob already evicted / TTL fired between upload and chain.
+            # Surface as a chain error rather than fall back to self-HTTP
+            # so the failure mode is visible in logs.
+            raise RuntimeError(
+                "blob unavailable for face-identify chain "
+                "(evicted or token missing)"
+            )
+
+        base = os.getenv(
+            "FACE_REC_API_BASE", "http://face-recognition:6006"
+        ).rstrip("/")
+        url = f"{base}/api/identify"
+
+        timeout = aiohttp.ClientTimeout(total=15)
+        form = aiohttp.FormData()
+        form.add_field(
+            "file",
+            data,
+            filename="capture.jpg",
+            content_type=mime,
+        )
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, data=form) as resp:
+                body = await resp.json(content_type=None)
+                if resp.status >= 400:
+                    detail = (
+                        body.get("detail") if isinstance(body, dict) else None
+                    ) or str(body)
+                    raise RuntimeError(
+                        f"face-recognition /api/identify "
+                        f"returned {resp.status}: {detail}"
+                    )
+        logger.info(
+            f"face-identify chain ok: bytes={len(data)} "
+            f"found={body.get('found') if isinstance(body, dict) else None}"
+        )
+        return body if isinstance(body, dict) else {"found": False}
 
     async def _ask_vision(
         self,

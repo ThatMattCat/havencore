@@ -272,12 +272,14 @@ TOOL_RESULT_MAX_CHARS=8000
 #### Companion-app camera tools
 
 Tunes the round-trip flow for `take_photo`,
-`identify_object_in_photo`, and `read_text_from_image` (see
+`identify_object_in_photo`, `read_text_from_image`, and
+`who_is_in_view` (see
 [device-action tool reference → Camera tools](services/agent/tools/device-action.md#camera-tools)).
 The agent stashes uploaded JPEGs in an in-memory `BlobStore` and
-serves them at `/api/companion/blob/<token>` so the in-process
-vision pipeline (and, in later steps, face-recognition) can fetch
-them.
+serves them at `/api/companion/blob/<token>` for the in-process
+vision pipeline. The face-identify chain (`who_is_in_view`) reads
+the same bytes directly from the `BlobStore` and POSTs them to
+face-recognition's `/api/identify`.
 
 ```bash
 # How long the orchestrator blocks waiting for the companion app to

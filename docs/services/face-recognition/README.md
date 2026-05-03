@@ -135,6 +135,12 @@ All paths below are served on port 6006 directly. The agent at port 6002 mirrors
 |---|---|---|
 | `GET` | `/api/face_images/{id}/bytes` | Streams the JPEG. Identity URL — no filesystem path leaks to the client |
 
+### On-demand identify
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/identify` | Multipart `file` (JPEG/PNG). Runs detect+embed on the upload, queries the gallery, returns `{found: bool, name?, person_id?, confidence?, face_count}`. 200 even when no face matches (face-not-recognized is a normal result). Used by the agent's `who_is_in_view` companion-camera chain — the agent calls this directly, not through the `/api/face/*` proxy. EXIF orientation is applied before detection so phone-camera portraits (which are stored as landscape bytes plus an EXIF rotate-90 tag) decode upright. Does **not** create a `face_detections` row, save a snapshot, or publish MQTT |
+
 ### Detections
 
 | Method | Path | Notes |
