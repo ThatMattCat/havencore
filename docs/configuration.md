@@ -269,6 +269,34 @@ CONVERSATION_CONTEXT_LIMIT_TOKENS=0
 TOOL_RESULT_MAX_CHARS=8000
 ```
 
+#### Companion-app camera tools
+
+Tunes the round-trip flow for `take_photo`,
+`identify_object_in_photo`, and `read_text_from_image` (see
+[device-action tool reference → Camera tools](services/agent/tools/device-action.md#camera-tools)).
+The agent stashes uploaded JPEGs in an in-memory `BlobStore` and
+serves them at `/api/companion/blob/<token>` so the in-process
+vision pipeline (and, in later steps, face-recognition) can fetch
+them.
+
+```bash
+# How long the orchestrator blocks waiting for the companion app to
+# POST the captured photo before returning a structured timeout result
+# to the LLM. 25s comfortably covers camera launch + capture + LAN
+# multipart upload on a phone-grade JPEG (~3 MB).
+COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC=25
+
+# How long an uploaded blob remains fetchable via
+# /api/companion/blob/<token>. Vision pipelines fetch within
+# seconds; the rest of the TTL absorbs retries and dashboard previews.
+COMPANION_BLOB_TTL_SEC=600
+
+# Total in-memory cap for the BlobStore. Oldest entries evicted first
+# when breached. Same value caps individual upload size — POSTs above
+# this are rejected 413. 10 MiB ≈ ~5 phone-grade JPEGs.
+COMPANION_BLOB_MAX_BYTES=10485760
+```
+
 Per-session override: clients can pass `X-Idle-Timeout: <seconds>` on
 `POST /api/chat`, or include an `idle_timeout` field on any
 `{"type":"session", ...}` WebSocket frame (first frame or mid-stream), to

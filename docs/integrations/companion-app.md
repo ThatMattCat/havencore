@@ -247,8 +247,8 @@ Surface comparison:
 | Triggered by | autonomy engine fires | LLM tool call inside a live chat turn |
 | Transport | HTTPS POST → ntfy → distributor → Android broadcast | already-open WebSocket |
 | Phone state | works while app is killed/Doze'd | requires the app to be foreground or holding the WS open (assist-slot voice overlay or Chat screen) |
-| Wakes the screen | yes (notification) | no — fires the intent silently |
-| Payload type | `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` | `set_alarm` (extensible — see below) |
+| Wakes the screen | yes (notification) | no — fires the intent silently (camera tools do open the camera app) |
+| Payload type | `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` | `set_alarm`, `take_photo`, `identify_object_in_photo`, `read_text_from_image` (extensible — see below) |
 
 Wire-protocol shape (sent verbatim by the agent's WS serializer):
 
@@ -268,17 +268,80 @@ server-side breadcrumb — the chat screen still renders a
 the platform intent, dispatched by the companion app's
 `DeviceActionDispatcher`.
 
+**Emission timing differs by tool family.** `set_alarm` ships its
+`device_action` frame *after* the `tool_result` — a fire-and-forget
+intent. The camera tools below ship the frame *before* the tool body
+runs (orchestrator's `PRE_EXECUTE_DEVICE_ACTION_TOOLS` allowlist),
+because their handler awaits an upload from the phone that depends on
+the frame having already gone out.
+
 **Backward compatibility.** Older companion-app builds without
 `device_action` support drop the frame silently via
 `ChatProtocol.ParsedFrame.Unknown` — no version negotiation needed.
 Unknown action names render an inert "(unsupported)" card on
 current builds.
 
+### Camera round-trip tools
+
+`take_photo`, `identify_object_in_photo`, and `read_text_from_image`
+extend the `device_action` channel with a phone-to-agent return path:
+the phone POSTs the captured JPEG back to
+`/api/companion/upload`, the agent stashes it in an in-memory
+`BlobStore`, mints a short-lived `image_url`, and resolves a
+`tool_call_id`-keyed `asyncio.Future` so the orchestrator's awaiting
+`_handle_companion_camera()` can return a structured result to the
+LLM (or chain to vision first).
+
+End-to-end flow:
+
+```
+LLM tool_call → orchestrator emits DEVICE_ACTION (pre-execute)
+              → companion app: DeviceActionDispatcher launches CaptureActivity
+              → user takes photo → JPEG written to FileProvider URI in cache
+              → CompanionUploadApi POSTs multipart to /api/companion/upload
+              → BlobStore stashes bytes, mints image_url, resolves future
+              → orchestrator returns to LLM:
+                 take_photo                  → {status: "captured", image_url, ...}
+                 identify_object_in_photo    → {status: "captured_and_analyzed", identification}
+                 read_text_from_image        → {status: "captured_and_analyzed", text}
+```
+
+The agent-side details (allowlists, vision-chain map, prompt
+duplication, why the upload future lives in the agent process and not
+in the MCP module) are documented in
+[device-action.md → Camera tools](../services/agent/tools/device-action.md#camera-tools).
+The upload + blob endpoints are documented in
+[api-reference.md → Companion-app uploads](../api-reference.md#companion-app-uploads).
+Tunable env vars (timeout, TTL, byte cap) live in
+[configuration.md → Companion-app camera tools](../configuration.md#companion-app-camera-tools).
+
+**Capability gating.** The companion app's Settings → Camera tools
+card has a master toggle plus per-tool toggles for the
+vision-chained variants. When a toggle is off, the dispatcher
+returns `DeviceActionResult.Disabled` *before* launching the camera —
+no capture, no upload, no agent-visible side effect — and the
+agent's upload future eventually times out. Server-side
+short-circuiting based on a phone-shipped capabilities bitmap is
+deferred to a later step; in v1 the gating lives entirely on the
+phone.
+
+**Bug fixed during initial bring-up.** `CaptureActivity` originally
+declared `android:noHistory="true"`; that's a footgun for activities
+that delegate to a foreign app via `ActivityResultContracts`, because
+launching the camera Intent counts as "navigating away" and Android
+destroys the activity before the result returns. Symptom is a silent
+upload timeout. `excludeFromRecents` + a translucent theme give the
+"invisible / not in recents" effect without the `noHistory` side
+effect; we call `finish()` manually after the result lands.
+
 **Extending the action set.** A new device-side action (`set_timer`,
 `start_navigation`, …) is one MCP tool plus one entry in
 `orchestrator.DEVICE_ACTION_TOOLS` plus the matching
-`DeviceActionDispatcher` branch on the phone. Full walkthrough in
-the [device-actions tool reference](../services/agent/tools/device-action.md#adding-a-new-device-action).
+`DeviceActionDispatcher` branch on the phone. For a new
+camera-style tool that needs a photo (and optionally a vision-pipeline
+pass), there are two extra allowlists to update — full walkthrough in
+the
+[device-actions tool reference](../services/agent/tools/device-action.md#adding-a-new-device-action).
 
 ## See also
 

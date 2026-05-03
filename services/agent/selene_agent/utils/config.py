@@ -95,6 +95,14 @@ CONVERSATION_CONTEXT_LIMIT_TOKENS_OVERRIDE = int(os.getenv("CONVERSATION_CONTEXT
 TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120"))
 
+# Companion-app camera tools (see api/companion.py + mcp_device_action_tools).
+# Timeout caps how long a take_photo / vision-chained tool blocks waiting on
+# the phone before returning a structured error to the LLM. TTL + max bytes
+# bound the in-memory BlobStore that holds uploaded captures.
+COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC = int(os.getenv("COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC", "25"))
+COMPANION_BLOB_TTL_SEC = int(os.getenv("COMPANION_BLOB_TTL_SEC", "600"))
+COMPANION_BLOB_MAX_BYTES = int(os.getenv("COMPANION_BLOB_MAX_BYTES", str(10 * 1024 * 1024)))
+
 CURRENT_LOCATION = os.getenv("CURRENT_LOCATION", "New York, NY")
 CURRENT_ZIPCODE = os.getenv("CURRENT_ZIPCODE", "10001")
 

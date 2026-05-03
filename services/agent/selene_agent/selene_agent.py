@@ -38,6 +38,7 @@ from selene_agent.api.metrics import router as metrics_router
 from selene_agent.api.tts import router as tts_router
 from selene_agent.api.tts_audio import router as tts_audio_router
 from selene_agent.api.stt import router as stt_router
+from selene_agent.api.companion import router as companion_router, get_blob_store
 from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
 from selene_agent.api.autonomy import router as autonomy_router, ws_router as autonomy_ws_router
@@ -244,6 +245,10 @@ async def lifespan(app: FastAPI):
     )
     await session_pool.start_idle_sweep(interval_sec=30)
 
+    # Companion-app blob store: started here so its sweep loop runs on the
+    # FastAPI event loop and is torn down cleanly on shutdown.
+    await get_blob_store().start()
+
     # Store shared state on app for routers to access via request.app.state
     app.state.session_pool = session_pool
     app.state.client = client
@@ -282,6 +287,10 @@ async def lifespan(app: FastAPI):
         await session_pool.flush_all()
     except Exception as e:
         logger.error(f"Error during session pool shutdown: {e}")
+    try:
+        await get_blob_store().stop()
+    except Exception as e:
+        logger.error(f"Error stopping companion blob store: {e}")
     if mcp_manager:
         await mcp_manager.cleanup()
     await conversation_db.close()
@@ -317,6 +326,7 @@ app.include_router(metrics_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(tts_audio_router, prefix="/api")
 app.include_router(stt_router, prefix="/api")
+app.include_router(companion_router, prefix="/api")
 app.include_router(vision_router, prefix="/api")
 app.include_router(comfy_router, prefix="/api")
 app.include_router(autonomy_router, prefix="/api")

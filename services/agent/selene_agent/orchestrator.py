@@ -6,13 +6,14 @@ that can be consumed by both non-streaming (collect all) and streaming (SSE/WebS
 """
 
 import asyncio
+import contextvars
 import json
 import re
 import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -61,10 +62,93 @@ class EventType(str, Enum):
     DEVICE_ACTION = "device_action"
 
 
-# Tools whose successful execution should fan out a DEVICE_ACTION event to the
-# device that owns the session. Adding a new device-side action is one new
-# entry here plus the matching MCP tool definition.
-DEVICE_ACTION_TOOLS = frozenset({"set_alarm"})
+# Tools whose execution should fan out a DEVICE_ACTION event to the device
+# that owns the session. Adding a new device-side action is one new entry
+# here plus the matching MCP tool definition.
+DEVICE_ACTION_TOOLS = frozenset({
+    "set_alarm",
+    "take_photo",
+    "identify_object_in_photo",
+    "read_text_from_image",
+})
+
+# Subset of DEVICE_ACTION_TOOLS whose ``device_action`` event must be emitted
+# *before* the tool body runs. Camera-style tools fall in this bucket: their
+# server-side handler awaits an upload from the phone, which can't arrive
+# unless the wire event has already gone out. ``set_alarm`` stays on the
+# original post-result emission (the LLM-visible result is the trigger; no
+# round trip is needed).
+PRE_EXECUTE_DEVICE_ACTION_TOOLS = frozenset({
+    "take_photo",
+    "identify_object_in_photo",
+    "read_text_from_image",
+})
+
+# Subset of DEVICE_ACTION_TOOLS whose result is filled by the companion-app
+# upload future, not by an MCP call. The orchestrator routes these through
+# the local pending_uploads registry instead of ``mcp_manager.execute_tool``.
+COMPANION_UPLOAD_TOOLS = frozenset({
+    "take_photo",
+    "identify_object_in_photo",
+    "read_text_from_image",
+})
+
+# Vision-chained camera tools: after the upload future resolves, post the
+# image_url to the in-process vision pipeline with the prompt the tool implies
+# and surface the vision response to the LLM as the tool result. Mapping is
+# tool name -> (prompt-builder(args) -> str, max_tokens, temperature). Prompts
+# duplicated from ``mcp_vision_tools.server.DEFAULT_IDENTIFY_PROMPT`` /
+# ``DEFAULT_OCR_PROMPT`` rather than imported because that module's import
+# spins up an MCP stdio server as a side effect.
+_DEFAULT_IDENTIFY_PROMPT = (
+    "Identify the primary subject of this image. Give a concise name and a "
+    "one-sentence description (material, model, species — whatever is most "
+    "salient). If you cannot identify it confidently, say so and offer the "
+    "closest plausible match."
+)
+_DEFAULT_OCR_PROMPT = (
+    "Transcribe all visible text in this image. Preserve line breaks and "
+    "rough layout where it carries meaning (receipts, forms, tables, code). "
+    "If a region is illegible, mark it [illegible]. Do not paraphrase."
+)
+
+
+def _build_identify_prompt(args: Dict[str, Any]) -> str:
+    base = _DEFAULT_IDENTIFY_PROMPT
+    hint = (args.get("hint") or "").strip() if isinstance(args, dict) else ""
+    if hint:
+        base = f"{base}\n\nHint from the user about what this might be: {hint}"
+    return base
+
+
+def _build_ocr_prompt(_args: Dict[str, Any]) -> str:
+    return _DEFAULT_OCR_PROMPT
+
+
+VISION_CHAINED_TOOLS: Dict[str, Dict[str, Any]] = {
+    "identify_object_in_photo": {
+        "prompt": _build_identify_prompt,
+        "max_tokens": 300,
+        "temperature": 0.7,
+        "result_key": "identification",
+    },
+    "read_text_from_image": {
+        "prompt": _build_ocr_prompt,
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "result_key": "text",
+    },
+}
+
+# ContextVar carrying the in-flight tool_call_id for the duration of a single
+# tool invocation. Set in the orchestrator loop right before _execute_tool_call
+# so any in-process helper that looks it up (e.g. companion-upload waiter)
+# can correlate without threading the id through every layer. Out-of-process
+# MCP subprocess handlers cannot read this — they would receive the id via
+# tool arguments instead.
+current_tool_call_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_tool_call_id", default=None
+)
 
 
 @dataclass
@@ -646,8 +730,26 @@ class AgentOrchestrator:
                             data={"tool": function_name, "args": function_args, "id": tool_call.id},
                         )
 
+                        # Pre-execute device_action: camera tools need the
+                        # phone to act before their handler can return, so
+                        # the wire event has to ship before _execute_tool_call.
+                        if function_name in PRE_EXECUTE_DEVICE_ACTION_TOOLS:
+                            yield AgentEvent(
+                                type=EventType.DEVICE_ACTION,
+                                data={
+                                    "action": function_name,
+                                    "args": function_args,
+                                    "id": tool_call.id,
+                                    "device_id": self.device_name,
+                                },
+                            )
+
                         tool_start = time.perf_counter()
-                        result = await self._execute_tool_call(tool_call)
+                        token = current_tool_call_id.set(tool_call.id)
+                        try:
+                            result = await self._execute_tool_call(tool_call)
+                        finally:
+                            current_tool_call_id.reset(token)
                         tool_ms = (time.perf_counter() - tool_start) * 1000
                         tool_calls_timing.append({"name": function_name, "ms": int(tool_ms)})
 
@@ -661,7 +763,12 @@ class AgentOrchestrator:
                             },
                         )
 
-                        if function_name in DEVICE_ACTION_TOOLS:
+                        # Post-result device_action: pre-execute tools already
+                        # emitted theirs above, skip the duplicate.
+                        if (
+                            function_name in DEVICE_ACTION_TOOLS
+                            and function_name not in PRE_EXECUTE_DEVICE_ACTION_TOOLS
+                        ):
                             yield AgentEvent(
                                 type=EventType.DEVICE_ACTION,
                                 data={
@@ -726,12 +833,17 @@ class AgentOrchestrator:
             yield AgentEvent(type=EventType.ERROR, data={"error": f"ERROR: {str(e)}"})
 
     async def _execute_tool_call(self, tool_call) -> str:
-        """Execute a single tool call via MCP"""
+        """Execute a single tool call via MCP (or the companion-upload path)."""
         try:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
 
             logger.debug(f"Executing tool: {function_name} with args: {function_args}")
+
+            if function_name in COMPANION_UPLOAD_TOOLS:
+                return await self._handle_companion_camera(
+                    function_name, tool_call.id, function_args
+                )
 
             result = await self.mcp_manager.execute_tool(function_name, function_args)
             return truncate_tool_result(str(result))
@@ -739,6 +851,143 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"Error executing tool {tool_call.function.name}: {e}")
             return f"ERROR executing tool: {str(e)}"
+
+    async def _handle_companion_camera(
+        self,
+        function_name: str,
+        tool_call_id: str,
+        function_args: Dict[str, Any],
+    ) -> str:
+        """End-to-end driver for companion-app camera tools.
+
+        Awaits the upload future, then optionally chains to the in-process
+        vision pipeline if the tool is in ``VISION_CHAINED_TOOLS``. Returns
+        the JSON string the LLM will see as the tool result.
+        """
+        payload = await self._await_companion_upload_payload(
+            function_name, tool_call_id
+        )
+        if isinstance(payload, str):
+            # Already a structured error JSON string — bail before chaining.
+            return payload
+
+        captured_at_iso = self._unix_to_iso(payload.get("captured_at"))
+
+        if function_name in VISION_CHAINED_TOOLS:
+            spec = VISION_CHAINED_TOOLS[function_name]
+            prompt = spec["prompt"](function_args or {})
+            try:
+                vision_text = await self._ask_vision(
+                    image_url=payload.get("image_url"),
+                    prompt=prompt,
+                    max_tokens=spec["max_tokens"],
+                    temperature=spec["temperature"],
+                )
+            except Exception as e:
+                logger.warning(
+                    f"vision chain failed: tool={function_name} "
+                    f"tool_call_id={tool_call_id}: {e}"
+                )
+                return json.dumps({
+                    "status": "vision_error",
+                    "error": str(e),
+                    "image_url": payload.get("image_url"),
+                    "captured_at": captured_at_iso,
+                })
+            result_key = spec["result_key"]
+            return json.dumps({
+                "status": "captured_and_analyzed",
+                "image_url": payload.get("image_url"),
+                "captured_at": captured_at_iso,
+                result_key: vision_text,
+            })
+
+        return json.dumps({
+            "status": "captured",
+            "image_url": payload.get("image_url"),
+            "mime": payload.get("mime"),
+            "captured_at": captured_at_iso,
+            "device_id": payload.get("device_id"),
+        })
+
+    async def _await_companion_upload_payload(
+        self,
+        function_name: str,
+        tool_call_id: str,
+    ):
+        """Wait for the companion-app upload future. Returns the dict payload
+        on success, or a JSON-string error envelope on timeout (caller can
+        return that directly to the LLM)."""
+        # Local import — the api package depends on selene_agent at startup,
+        # so an import-time pull would cycle.
+        from selene_agent.api.companion import (
+            register_pending_upload,
+            pop_pending_upload,
+        )
+
+        timeout = float(getattr(config, "COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC", 25))
+        fut = register_pending_upload(tool_call_id)
+        try:
+            payload = await asyncio.wait_for(fut, timeout=timeout)
+            return payload
+        except asyncio.TimeoutError:
+            pop_pending_upload(tool_call_id)
+            logger.warning(
+                f"companion upload timeout: tool={function_name} "
+                f"tool_call_id={tool_call_id} timeout={timeout}s"
+            )
+            return json.dumps({
+                "status": "timeout",
+                "error": (
+                    f"No upload received within {int(timeout)}s. The companion "
+                    "app may be offline, the user may have cancelled the "
+                    "capture, or the camera permission may be denied."
+                ),
+            })
+        except asyncio.CancelledError:
+            pop_pending_upload(tool_call_id)
+            raise
+        finally:
+            # Clear on success too — payload already consumed.
+            pop_pending_upload(tool_call_id)
+
+    @staticmethod
+    def _unix_to_iso(unix_ts) -> str:
+        ts = float(unix_ts) if unix_ts is not None else time.time()
+        return (
+            datetime.fromtimestamp(ts, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    async def _ask_vision(
+        self,
+        image_url: Optional[str],
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Direct in-process call to the vllm-vision pipeline. Reuses the
+        same ``_call_vision`` helper that powers ``/api/vision/ask_url`` so
+        the chokepoint shape (model, message format) stays in one place."""
+        if not image_url:
+            raise ValueError("vision chain requires image_url")
+        from selene_agent.api.vision import _call_vision  # local import — see _await
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }]
+        content, latency_ms, _usage = await _call_vision(
+            messages, max_tokens=max_tokens, temperature=temperature
+        )
+        logger.info(
+            f"vision chain ok: image_url={image_url} latency_ms={latency_ms} "
+            f"prompt_chars={len(prompt)} response_chars={len(content)}"
+        )
+        return content
 
     @staticmethod
     def _extract_tool_calls_from_content(content: str) -> Optional[list]:
