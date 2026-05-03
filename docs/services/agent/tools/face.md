@@ -28,7 +28,7 @@ to guess the exact entity_id.
 | `face_recent_visitors(hours=24, camera=None)` | List of detections newest-first; up to 50 entries. Optional camera filter. |
 | `face_list_known_people()` | Every enrolled person with `image_count` + `access_level`. Use before enrolling to avoid duplicates. |
 | `face_enroll_person(name, source)` | Add a face image to the gallery. `source` is either `"camera:<entity_id>"` (live snapshot) or an `http(s)://` URL. New people are created on the fly when `name` doesn't fuzzy-match an existing one. |
-| `face_set_access_level(name, level)` | `level ∈ {unknown, resident, guest, blocked}`. Persisted on `people.access_level`. v1 has no enforcer — the field is reserved for later automation policies. |
+| `face_set_access_level(name, level)` | `level ∈ {unknown, resident, guest, blocked}`. Persisted on `people.access_level`. The field is reserved for later automation policies — there is no enforcer today. |
 
 ## Fuzzy resolution
 

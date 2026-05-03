@@ -247,10 +247,9 @@ the dispatcher returns `DeviceActionResult.Disabled` *before*
 launching the camera —
 no capture, no upload, no agent-visible side effect. The agent's
 upload future then times out at `COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC`
-and the LLM sees `{status: "timeout", ...}`. (Server-side
-short-circuiting based on a phone-shipped `companion_capabilities`
-bitmap is a Step-6 enhancement; in v1 the gating lives entirely on
-the phone.)
+and the LLM sees `{status: "timeout", ...}`. (Gating lives entirely
+on the phone; server-side short-circuiting based on a phone-shipped
+`companion_capabilities` bitmap is a possible future enhancement.)
 
 ## Adding a new device action
 

@@ -1,6 +1,6 @@
 # Face Recognition Service
 
-Identifies known people seen by Reolink cameras (or any camera Home Assistant exposes), persists detection history, and publishes results to MQTT for HavenCore and other subscribers. v1 is **log-only** — no access-control enforcement; the architecture is shaped so a "welcome home" or smart-lock action can subscribe to the same MQTT topics later without schema changes.
+Identifies known people seen by Reolink cameras (or any camera Home Assistant exposes), persists detection history, and publishes results to MQTT for HavenCore and other subscribers. The service is **log-only** — no access-control enforcement; the architecture is shaped so a "welcome home" or smart-lock action can subscribe to the same MQTT topics later without schema changes.
 
 ## Purpose
 
@@ -86,7 +86,7 @@ The full env reference lives in [`docs/configuration.md` → Face recognition](.
 8. **Continuous improvement** (only when identified): if quality ≥ `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`, confidence ≥ `FACE_REC_IMPROVEMENT_THRESHOLD`, and the person has fewer than `FACE_REC_MAX_EMBEDDINGS_PER_PERSON` gallery embeddings, contribute the new crop. FIFO-evicts the oldest non-primary embedding if the cap is hit.
 9. Publish to `haven/face/identified` or `haven/face/unknown`; status → `idle` (in `try/finally` so it always emits).
 
-If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, `age=NULL`, `sex=NULL`, and publishes to `haven/face/no_face`. This gives downstream subscribers (autonomy + a future vision LLM) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
+If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, `age=NULL`, `sex=NULL`, and publishes to `haven/face/no_face`. This gives downstream subscribers (the autonomy engine and the `vllm-vision` scene-description gather) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
 
 InsightFace inference runs in a worker thread (`asyncio.to_thread`) so a burst doesn't peg the FastAPI event loop while the MQTT bridge is consuming triggers.
 
@@ -289,7 +289,8 @@ For raw cleanup, the same page has "Clear rejected" (deletes `review_state='reje
 
 ## See also
 
-- [MCP Face Tools](../agent/tools/face.md) — agent-side LLM tool reference
+- [MCP Face Tools](../agent/tools/face.md) — `face_who_is_at`, `face_recent_visitors`, `face_list_known_people`, `face_enroll_person`, `face_set_access_level`
+- [MCP Device Action Tools](../agent/tools/device-action.md) — `who_is_in_view` posts a companion-app phone capture to `/api/identify`
 - [Face recognition camera triggers (HA)](../../integrations/home-assistant.md#face-recognition-camera-triggers) — the single-template MQTT automation
 - [Configuration → Face recognition](../../configuration.md#face-recognition) — env var reference
 - [API Reference → Face recognition (agent proxy)](../../api-reference.md#face-recognition-agent-proxy) — same surface served by the agent for the dashboard

@@ -17,7 +17,7 @@ having to assemble image URLs and prompts manually.
 | Backing service | [vllm-vision (port 8001)](../../vllm-vision/README.md) |
 | Tool count | 5 |
 
-This module is **complementary** to the older `query_multimodal_api`
+This module is **complementary** to the lower-level `query_multimodal_api`
 tool in [`mcp_general_tools`](general.md). `query_multimodal_api` is a
 generic "image URL + prompt" pass-through; the tools here wrap that with
 focused behavior — fetching a fresh camera snapshot, comparing two

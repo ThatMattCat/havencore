@@ -68,11 +68,11 @@ serializing.
 | Field | Required | Notes |
 |-------|----------|-------|
 | `v` | yes | Schema version. The companion app's decoder uses `ignoreUnknownKeys = true`; bump only on breaking changes. |
-| `type` | yes | Surface category. Reserved for a future per-type Android notification channel split (`autonomy_brief` vs `anomaly` vs `reminder` vs `act_confirm`); v1 routes everything through one `havencore_autonomy` channel. |
+| `type` | yes | Surface category. Reserved for a future per-type Android notification channel split (`autonomy_brief` vs `anomaly` vs `reminder` vs `act_confirm`); today everything routes through one `havencore_autonomy` channel. |
 | `title` | yes | Notification title. Defaults to `AGENT_NAME` (typically "Selene") when the agent omits it. |
 | `body` | yes | Notification body. Truncated to 3000 chars; the companion app renders with `BigTextStyle` for the expanded view. |
 | `session_id` | no | If set, tapping the notification deep-links to that chat session in the companion app (cold-resume via `/api/conversations/{session_id}/resume`). |
-| `severity` | yes | Maps phone-side to `NotificationCompat.PRIORITY_*`: `none`/`info` → DEFAULT, `warn` → HIGH + short vibration, `alert` → HIGH + long pulsing vibration. v1 respects system Do-Not-Disturb (no DND bypass). |
+| `severity` | yes | Maps phone-side to `NotificationCompat.PRIORITY_*`: `none`/`info` → DEFAULT, `warn` → HIGH + short vibration, `alert` → HIGH + long pulsing vibration. Respects system Do-Not-Disturb (no DND bypass). |
 
 Bearer auth: if `NTFY_PUBLISH_TOKEN` is set in the agent's `.env`, the
 agent presents `Authorization: Bearer <token>` on every POST. Default
@@ -211,16 +211,16 @@ README. Agent-side setup is minimal:
 - **Plaintext over TLS.** The wire envelope is plain JSON; security
   rests on the distributor's HTTPS connection to its ntfy server.
   VAPID-style end-to-end encryption between the agent and the
-  companion app is reserved for a v2 once remote (non-LAN) access is
-  real and the threat model demands it.
-- **No notification action buttons in v1.** Reply / Mark-done /
+  companion app is deferred until remote (non-LAN) access is real and
+  the threat model demands it.
+- **No notification action buttons.** Reply / Mark-done /
   Dismiss-all require server-side action handling tied to the
   autonomy `act` tier — its own design problem, deferred.
 - **iOS / APNS not supported.** Android-only; iOS would need a
   separate notifier (APNS doesn't speak UnifiedPush).
 - **No per-device auth.** All endpoints share the single
   `NTFY_PUBLISH_TOKEN` (or no token). Per-endpoint auth (a future
-  `push_devices.auth` JSONB column) is a v2 concern.
+  `push_devices.auth` JSONB column) is deferred.
 - **No stale-row pruning.** The `push_devices` table grows with each
   `device_id` ever registered. Manual `DELETE /api/push/register/<id>`
   works; an automatic `last_seen_at < now() - 30d` sweep is
@@ -322,10 +322,9 @@ variant (identify, OCR, face recognition). When a toggle is off,
 the dispatcher returns `DeviceActionResult.Disabled` *before*
 launching the camera —
 no capture, no upload, no agent-visible side effect — and the
-agent's upload future eventually times out. Server-side
-short-circuiting based on a phone-shipped capabilities bitmap is
-deferred to a later step; in v1 the gating lives entirely on the
-phone.
+agent's upload future eventually times out. Gating lives entirely on
+the phone; server-side short-circuiting based on a phone-shipped
+capabilities bitmap is a possible future enhancement.
 
 **Bug fixed during initial bring-up.** `CaptureActivity` originally
 declared `android:noHistory="true"`; that's a footgun for activities

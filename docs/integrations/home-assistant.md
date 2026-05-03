@@ -74,10 +74,11 @@ curl http://localhost:6002/health
 
 ## Available Tools and Commands
 
-HavenCore's HA MCP server (`mcp_homeassistant_tools`) currently exposes
-**19 tools** covering generic REST/service calls, opinionated helpers for
-common domains, WebSocket-powered registry + presence lookups, timer /
-template / history / calendar access, and media-player transport control.
+HavenCore's HA MCP server (`mcp_homeassistant_tools`) exposes
+**20 tools** covering generic REST/service calls, single-entity reads,
+opinionated helpers for common domains, WebSocket-powered registry +
+presence lookups, timer / template / history / calendar access, and
+media-player transport control.
 For a structured server-side reference (internals, config, troubleshooting),
 see [MCP Home Assistant](../services/agent/tools/home-assistant.md). The section below focuses on
 what the assistant can do for a user.
@@ -87,6 +88,7 @@ what the assistant can do for a user.
 | Tool | Purpose |
 |------|---------|
 | `ha_list_entities(domain?, area?, include_state?)` | Unified entity lookup. Filter by `domain` (all lights, all thermostats…), by `area` (everything in the kitchen), or both. Domain-only queries include state + curated attributes by default; area queries return bare entity_ids unless `include_state=true`. If a domain has no entities (e.g. `notify`, `tts`, `script`) the response includes a `hint` pointing at `ha_list_services` so the LLM doesn't stall on a dead end. |
+| `ha_get_state(entity_id)` | Cheap single-entity read. Returns state + curated attributes. Use for "is the porch light on?" / "what's the thermostat set to?" instead of pulling a whole domain via `ha_list_entities`. |
 | `ha_list_services(domain)` | Discover what services an HA integration exposes. Most common: `domain="notify"` to find `notify.mobile_app_*`. Also the right tool for `tts`, `script`, and other domains that publish actions rather than entities. |
 | `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch — call any HA service on any entity. `service_data` is a JSON object (brightness, temperature, volume_level, etc.). |
 
@@ -349,8 +351,8 @@ drift before the bridge silently fails on it.
 ### Service status
 
 The bridge publishes capture lifecycle to `haven/face/status`
-(`{camera, mode: "idle"|"capturing"|"matching", since}`). v1 uses a
-single global topic without retain — see deferred follow-up #2 in
+(`{camera, mode: "idle"|"capturing"|"matching", since}`) on a single
+global topic without retain — see deferred follow-up #2 in
 [`docs/todo.md`](../todo.md) for the per-camera retained variant.
 
 ## Troubleshooting

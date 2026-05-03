@@ -348,6 +348,39 @@ NTFY_PUBLISH_TOKEN=""                   # optional bearer token for self-hosted 
 # Handler inputs
 AUTONOMY_BRIEFING_CAMERA_ENTITIES=""    # comma-separated camera entity_ids
 AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
+
+# Optional event-driven dispatch surfaces (off by default — the cron
+# dispatcher above is what fires the bundled briefings/anomaly sweeps).
+AUTONOMY_WEBHOOK_ENABLED=false
+AUTONOMY_MQTT_ENABLED=false
+AUTONOMY_MQTT_CLIENT_ID=selene-autonomy
+AUTONOMY_MQTT_RECONNECT_MAX_SEC=60
+
+# Per-agenda-item defaults applied when an item doesn't specify its own.
+# Quiet hours suppress dispatch; policy is "defer" (queue for after) or
+# "drop". Rate limit is "<count>/<unit>" (e.g. 10/min, 60/hour).
+AUTONOMY_DEFAULT_QUIET_START=""
+AUTONOMY_DEFAULT_QUIET_END=""
+AUTONOMY_DEFAULT_QUIET_POLICY=defer
+AUTONOMY_DEFAULT_EVENT_RATE_LIMIT=10/min
+
+# Speaker-channel notifier defaults (HA media_player target + voice).
+AUTONOMY_SPEAKER_DEFAULT_DEVICE=""
+AUTONOMY_SPEAKER_DEFAULT_VOICE=af_heart
+AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5
+AUTONOMY_TTS_AUDIO_TTL_SEC=600
+
+# Act gate — when true, autonomy turns may execute side-effecting tools
+# (instead of message-only). Confirmation timeout governs how long the
+# engine waits for an in-app confirm before aborting.
+AUTONOMY_ACT_ENABLED=false
+AUTONOMY_ACT_DEFAULT_CONFIRMATION_TIMEOUT_SEC=300
+
+# Internal base URLs the autonomy engine uses when calling back into the
+# agent. INTERNAL_BASE_URL is the compose-internal hostname; BASE_URL is
+# optional and only set when notifier links should resolve from the LAN.
+AGENT_BASE_URL=""
+AGENT_INTERNAL_BASE_URL=http://agent:6002
 ```
 
 Notes:
@@ -383,6 +416,18 @@ MEMORY_RETRIEVAL_MIN_SCORE=0.3
 
 # Seed phase on fresh installs (ignored once the agent_state row exists)
 AGENT_PHASE_DEFAULT="learning"
+
+# Nightly memory consolidation job (runs via the autonomy dispatcher).
+# Cron is interpreted in CURRENT_TIMEZONE.
+AUTONOMY_MEMORY_REVIEW_CRON="0 3 * * *"
+AUTONOMY_MEMORY_MAX_SCAN=5000      # cap on L2 rows pulled per run
+AUTONOMY_MEMORY_LLM_CALL_CAP=20    # cap on summary/promotion LLM calls per run
+
+# Memory scoring + clustering knobs used during consolidation
+MEMORY_HALF_LIFE_DAYS=60           # exponential decay for recency scoring
+MEMORY_ACCESS_COEF=0.5             # weight applied to access count
+MEMORY_HDBSCAN_MIN_CLUSTER_SIZE=5  # HDBSCAN clusters below this don't promote
+MEMORY_HDBSCAN_MIN_SAMPLES=3       # HDBSCAN min_samples
 ```
 
 Notes:

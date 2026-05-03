@@ -52,7 +52,7 @@ git clone https://github.com/ThatMattCat/havencore.git
 cd havencore
 
 # Copy environment template
-cp .env.tmpl .env
+cp .env.example .env
 ```
 
 ### 3. Essential Configuration

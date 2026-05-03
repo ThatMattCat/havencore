@@ -243,14 +243,9 @@ response includes `available_players`.
 - **No playback-control tools in the Plex module.** Pause / resume / seek go
   through `ha_control_media_player` on the TV's HA entity, not through Plex.
   This is intentional — HA's transport surface is more reliable here.
-- **Hand-authored mapping.** `PLEX_CLIENT_HA_MAP` is edited by hand in `.env`
-  today. Auto-discovery (cross-referencing Plex clients against HA entities)
-  is a future improvement.
-- **TTS / announcement routing is not implemented.** Sending Selene's voice
-  to a specific MA speaker (e.g., "announce this on the kitchen speaker")
-  is a separate effort — it depends on a TTS-audio-URL flow that isn't
-  settled yet. MA itself can play arbitrary URLs, so the plumbing exists;
-  the agent-side glue does not.
+- **Hand-authored mapping.** `PLEX_CLIENT_HA_MAP` is edited by hand in `.env`.
+  Auto-discovery (cross-referencing Plex clients against HA entities) is a
+  possible future improvement.
 
 ## Troubleshooting
 
@@ -277,5 +272,5 @@ exceptions, connection errors from inside the container), see
   fallbacks, player resolution).
 - [MCP Home Assistant](../services/agent/tools/home-assistant.md) — `ha_control_media_player`
   transport tool.
-- `.env.tmpl` — reference config with example `PLEX_CLIENT_HA_MAP`,
+- `.env.example` — reference config with example `PLEX_CLIENT_HA_MAP`,
   `MASS_URL`, and `MASS_TOKEN` values.

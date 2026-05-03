@@ -13,7 +13,7 @@ that aren't specific to any other subsystem.
 | Entry point | `python -m selene_agent.modules.mcp_general_tools` |
 | Transport | MCP stdio |
 | Server name | `havencore-general-tools` |
-| Tool count | 5–8 depending on which API keys / credentials are configured |
+| Tool count | Up to 7 (some tools are conditional on credentials) |
 
 Tool registration is **conditional on credentials**. The server enumerates
 tools at `list_tools()` time and only includes the ones whose env vars are

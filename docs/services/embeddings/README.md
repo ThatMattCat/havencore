@@ -13,7 +13,7 @@ HuggingFace Text Embeddings Inference (TEI) container. Produces vectors consumed
 
 ```yaml
 embeddings:
-  image: ghcr.io/huggingface/text-embeddings-inference:latest
+  image: ghcr.io/huggingface/text-embeddings-inference:1.8
   ports:
     - "3000:3000"
   environment:

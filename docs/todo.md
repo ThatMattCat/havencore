@@ -9,7 +9,7 @@ Forward-looking items that aren't in-flight. Each bullet is a seed for a later p
 
 ## Agent tool surface — additions
 
-- **Todo / shopping list tool over HA's `todo.*` services.** *Coordinate with the companion app's list-screen phase* — the LLM-facing tool and the human-facing list display are joint work, no point shipping one without the other. Ship them in the same pass: dedicated tool (or small tool family) in `mcp_homeassistant_tools/` with list-name + item-text params over `todo.add_item` / `todo.remove_item` / `todo.get_items`, alongside the app screen that renders/checks-off the same lists. Check which `todo.*` list entities exist in the target HA instance before committing to the param shape.
+- **Todo / shopping list tool over HA's `todo.*` services.** *Coordinate with the companion app's list screen* — the LLM-facing tool and the human-facing list display are joint work, no point shipping one without the other. Ship them in the same pass: dedicated tool (or small tool family) in `mcp_homeassistant_tools/` with list-name + item-text params over `todo.add_item` / `todo.remove_item` / `todo.get_items`, alongside the app screen that renders/checks-off the same lists. Check which `todo.*` list entities exist in the target HA instance before committing to the param shape.
 - **`web_quick_answer` — additive convenience over `brave_search` + `fetch`.** Keep both primitives; add a convenience tool that runs a search and auto-fetches the top result's body in one call. Saves a round trip on the common "look something up" path, which matters on a local model. Not a replacement — when the model wants result #3 or wants to inspect titles before fetching, it still uses the primitives.
 - **Direct CalDav access for calendar edit/delete.** `ha_create_calendar_event` works against HA's CalDav integration, but `ha_update_calendar_event` / `ha_delete_calendar_event` are currently hidden because HA's CalDav integration doesn't declare the `UPDATE_EVENT` / `DELETE_EVENT` features — the WS commands always fail. The underlying CalDav protocol fully supports PUT/DELETE on events by `uid`; the limitation is HA's wrapper. Path forward: bypass HA and talk to the CalDav server directly via the [`caldav` Python lib](https://github.com/python-caldav/caldav), with URL + creds added to the agent's env (likely the same ones HA already uses). Handler methods `_update_calendar_event` / `_delete_calendar_event` and their dispatch branches in `mcp_homeassistant_tools/mcp_server.py` are kept as dead code so re-enabling is just a Tool() restore once the backing transport is swapped. Decide alongside the Android companion app — that work also has to pick a calendar transport, and using one shared CalDav client would be cleanest.
 
@@ -17,21 +17,20 @@ Forward-looking items that aren't in-flight. Each bullet is a seed for a later p
 
 In flight in the sibling repo
 [`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app)
-— native Kotlin, LAN-only for v1. Surfaces being delivered there:
+— native Kotlin, LAN-only. Surfaces being delivered there:
 in-app chat over `/ws/chat`, registration as Android's default-assistant app
 (`VoiceInteractionService`), push notifications via UnifiedPush + ntfy, and
 the todo/shopping-list view that pairs with the deferred `todo.*` MCP work
 above. iOS is explicitly out of scope. Server-side changes the app needs
-(e.g. a push registration endpoint and an `NtfyNotifier` alongside
-`SignalNotifier`) land in this repo when their phase reaches them; consult
-the companion repo for the current phase.
+land in this repo as the companion-app work reaches them; consult the
+companion repo for current scope.
 
 ## Face recognition — deferred polish
 
-Three carry-overs from step 8 of the face-recognition rollout. Each was
-consciously skipped because the trigger condition hasn't shown up in
-practice. **Trigger first, implement second** — don't pre-build any of
-these unless the trigger is actually firing.
+Carry-overs from the face-recognition rollout. Each was consciously
+skipped because the trigger condition hasn't shown up in practice.
+**Trigger first, implement second** — don't pre-build any of these
+unless the trigger is actually firing.
 
 - **Per-camera quality thresholds.** `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`
   is a single global. Outdoor wide-angle (front_duo_3) consistently

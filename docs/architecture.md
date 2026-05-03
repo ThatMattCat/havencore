@@ -59,7 +59,7 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 - **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
 - **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 
-**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate FastAPI app on port 6006 were removed during the 2026 revamp; port 6006 is now used by the unrelated [face-recognition service](services/face-recognition/README.md).
+**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. Port 6006 hosts the [face-recognition service](services/face-recognition/README.md).
 
 ### 3. Speech-to-Text Service (Port 6001)
 **Purpose**: Audio Transcription and Processing
@@ -130,7 +130,7 @@ conversation_histories (
 - Subscribes to `haven/face/trigger/{camera}` (HA fires it on person-detected)
 - Bursts frames via HA `camera_proxy`, picks top-K faces by quality, embeds, kNN against the Qdrant `faces` collection
 - Persists detections + snapshots to Postgres / disk; publishes results to MQTT
-- v1 is log-only — access-control enforcement is deliberately deferred
+- Log-only: detections are recorded and published; access-control enforcement is out of scope
 
 Uses the existing Postgres + Qdrant + Mosquitto + HA primitives rather than introducing new infrastructure. See [Face Recognition](services/face-recognition/README.md) for full reference.
 
@@ -207,9 +207,15 @@ services:
   - speech-to-text (STT)
   - text-to-speech (TTS)
   - postgres (database)
-  - vllm (LLM inference)
+  - vllm (chat LLM inference)
+  - vllm-vision (vision LLM inference)
+  - text-to-image (ComfyUI)
+  - face-recognition (InsightFace)
   - qdrant (vector DB)
   - embeddings (text vectors)
+  - mosquitto (MQTT broker)
+  - signal-api (signal-cli REST bridge)
+  - ntfy (UnifiedPush server)
 ```
 
 ### Network Architecture
@@ -282,10 +288,13 @@ services:
 - **Proxy**: Nginx (reverse proxy, load balancer)
 
 ### AI/ML Stack
-- **LLM Inference**: vLLM, LlamaCPP
-- **Speech-to-Text**: OpenAI Whisper
+- **Chat LLM**: vLLM serving `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
+- **Vision LLM**: vLLM serving `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
+- **Speech-to-Text**: Faster-Whisper
 - **Text-to-Speech**: Kokoro TTS
-- **Embeddings**: Various transformer models
+- **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`
+- **Face detect+embed**: InsightFace `buffalo_l` (RetinaFace + ArcFace R100)
+- **Image generation**: ComfyUI
 - **GPU Compute**: CUDA, NVIDIA Container Toolkit
 
 ---

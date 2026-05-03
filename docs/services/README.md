@@ -13,7 +13,7 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [vLLM Vision](vllm-vision/README.md) | 8001 | Image / short-video understanding (Qwen3-VL on a dedicated GPU) | vLLM, CUDA |
 | [Text-to-Image](text-to-image/README.md) | 8188 | Image generation | ComfyUI |
 | [vLLM](vllm/README.md) | 8000 | Primary LLM inference | vLLM, CUDA |
-| [LlamaCPP](llamacpp/README.md) | 8000 | Alternative LLM backend | llama.cpp |
+| [LlamaCPP](llamacpp/README.md) | 8000 | Alternative LLM backend (inactive — compose stanza commented out) | llama.cpp |
 | [PostgreSQL](postgres/README.md) | 5432 | Conversation + metrics storage | PostgreSQL 15 Alpine |
 | [Qdrant](qdrant/README.md) | 6333, 6334 | Vector DB for semantic memory | Qdrant |
 | [Embeddings](embeddings/README.md) | 3000 | Text embeddings | HuggingFace TEI |

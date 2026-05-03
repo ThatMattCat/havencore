@@ -4,10 +4,9 @@ The core AI agent — Python + FastAPI + a built-in SvelteKit dashboard, all ser
 
 ## Subtopics
 
-- [Tools (MCP servers)](tools/README.md) — the agent's tool inventory lives here: HA, Plex, Music Assistant, general, Qdrant, MQTT, GitHub, plus a tool-development guide.
+- [Tools (MCP servers)](tools/README.md) — the agent's tool inventory: 11 modules (general, homeassistant, plex, music_assistant, face, vision, device_action, github, qdrant, reminder, mqtt) plus a tool-development guide.
 - [Conversation history](conversation-history.md) — how timed-out conversations get persisted to Postgres.
 - [Autonomy engine](autonomy/README.md) — proactive background behaviors that wake on a schedule or in response to live MQTT/webhook events, run a tier-filtered autonomous turn, and notify via Signal, HA push, speaker, or [companion-app push](../../integrations/companion-app.md) (UnifiedPush + ntfy). Includes scheduled briefing + anomaly sweep, user-programmable reminders / watches / routines, the supervised act tier, and the [camera/sensor event pipeline](autonomy/cameras.md) that wires face-recognition (and future vehicle/motion/doorbell sources) through `watch_llm` for proactive notifications.
-- [Revamp 2026](revamp-2026.md) — architectural notes on the April 2026 rewrite (Gradio removal, async FastAPI, dashboard, streaming).
 
 ## Responsibilities
 

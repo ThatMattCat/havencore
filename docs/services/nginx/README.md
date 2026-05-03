@@ -166,6 +166,6 @@ Per-location `client_max_body_size` overrides nginx's 1 MB default:
 |----------|-----|-----|
 | `/v1/audio/speech` | 10 MB | TTS request bodies are small text payloads. |
 | `/v1/audio/transcriptions` / `/v1/audio/translations` | 25 MB | STT accepts uploaded audio files (Whisper). |
-| `/api/` | 25 MB | Agent REST surface — the vision playground (`/api/vision/ask`) accepts phone-camera JPEGs that routinely run 5–15 MB. Default 1 MB returns 413. |
+| `/api/` | 300 MB | Agent REST surface — `/api/vision/ask` accepts both phone-camera JPEGs (5–15 MB) and short video clips (a 3-min 1080p H.264 clip is ~150–200 MB; phone footage at 10–15 Mbps can hit ~340 MB). 300 MB covers ~3 min of typical 1080p phone video with margin. **Bind-mount inode pitfall:** atomic-save editors change the inode, so the running container sees the OLD file until `docker compose up -d --force-recreate nginx`; `restart` is not enough. |
 
 Other locations inherit the default 1 MB.

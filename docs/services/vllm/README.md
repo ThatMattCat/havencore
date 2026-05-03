@@ -25,9 +25,9 @@ vllm:
     --served-model-name gpt-3.5-turbo
     --tensor-parallel-size 4
     --enable-expert-parallel
-    --max-model-len 32768
+    --max-model-len 46080
     --max-num-seqs 2
-    --gpu-memory-utilization 0.77
+    --gpu-memory-utilization 0.79
     --tool-call-parser glm45
     --reasoning-parser glm45
     --enable-auto-tool-choice

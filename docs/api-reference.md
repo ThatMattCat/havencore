@@ -497,9 +497,9 @@ LAN-only stack — these routes are unauthenticated like the rest of
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `POST` | `/api/push/register` | Upsert a device. Body: `{device_id: <uuid>, device_label: string, endpoint: string, platform?: "android"}`. `endpoint` must be `http(s)://...`. Always upserts on `device_id` (no 409 path in v1) — re-registering with a rotated endpoint replaces the prior row. Returns `{"ok": true}`. 400s on malformed `device_id` (must be UUID) or non-`http(s)` endpoint |
+| `POST` | `/api/push/register` | Upsert a device. Body: `{device_id: <uuid>, device_label: string, endpoint: string, platform?: "android"}`. `endpoint` must be `http(s)://...`. Always upserts on `device_id` — re-registering with a rotated endpoint replaces the prior row. Returns `{"ok": true}`. 400s on malformed `device_id` (must be UUID) or non-`http(s)` endpoint |
 | `DELETE` | `/api/push/register/{device_id}` | Remove a registered device. Returns `{"ok": true}` on success or 404 `{"detail": "device not registered"}` if the row doesn't exist (companion app treats 404 as success) |
-| `GET`  | `/api/push/register` | List all registered devices: `{devices: [{device_id, device_label, endpoint, platform, registered_at, last_seen_at}, ...]}`. Used for debugging — there is no dashboard UI for it in v1 |
+| `GET`  | `/api/push/register` | List all registered devices: `{devices: [{device_id, device_label, endpoint, platform, registered_at, last_seen_at}, ...]}`. Debug endpoint; no dashboard UI |
 
 When the autonomy engine fires with `_notify_channel = "ntfy"`, the
 `NtfyFanoutNotifier` reads this table at send-time and POSTs the

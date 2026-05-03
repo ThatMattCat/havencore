@@ -238,7 +238,7 @@ class SeleneAgent:
 
 #### 4. Add Environment Configuration
 
-Add any required API keys to `.env.tmpl`:
+Add any required API keys to `.env.example`:
 
 ```bash
 # Cryptocurrency API Configuration (optional)
