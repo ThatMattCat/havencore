@@ -223,14 +223,14 @@ confidence, face_count}`, otherwise `{found: false, face_count}`.
 The orchestrator merges that response into the LLM-facing tool
 result under the `captured_and_recognized` envelope.
 
-The `/api/identify` endpoint applies EXIF rotation before detection
-(via `PIL.ImageOps.exif_transpose`). Phone cameras write portrait
-selfies as landscape bytes plus an EXIF orientation tag; without
-this step `cv2.imdecode` reads pixels straight off the JFIF segment
-and the face arrives sideways, which RetinaFace at
-`FACE_REC_DET_SIZE=1280` misses often enough to break the endpoint
-for the most common companion-app input. Landscape captures
-(orientation 1) pass through unchanged.
+EXIF orientation is honored automatically by `cv2.imdecode` in
+OpenCV ≥ 3.4, so phone-camera portraits arrive upright without any
+preprocessing in the `/api/identify` handler. The most common
+recognition-failure mode is **framing**: RetinaFace expects some
+context around the face, so very tight selfies that fill the frame
+(no shoulders / hair / background) are routinely missed even though
+the face itself is sharp and upright. Holding the phone a hand's
+length further away typically restores detection.
 
 Errors (face-rec returning ≥400, blob already evicted, network
 failure) bubble up as `{status: "face_identify_error", error,

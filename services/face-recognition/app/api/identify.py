@@ -11,13 +11,11 @@ normal result, not an error). The HTTP error path is reserved for upstream
 problems the caller can fix (bad image, embedder not ready).
 """
 
-import io
 import logging
 import uuid
 
 import cv2
 import numpy as np
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 import config
@@ -38,7 +36,8 @@ async def identify(file: UploadFile = File(...)) -> dict:
     if not raw:
         raise HTTPException(status_code=400, detail="empty upload")
 
-    img = _decode_with_exif_rotation(raw)
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(status_code=400, detail="could not decode image")
 
@@ -107,28 +106,3 @@ async def identify(file: UploadFile = File(...)) -> dict:
     }
 
 
-def _decode_with_exif_rotation(raw: bytes) -> "np.ndarray | None":
-    """Decode JPEG bytes to BGR honoring EXIF orientation.
-
-    ``cv2.imdecode`` reads pixel data straight off the JFIF segment and
-    ignores the EXIF orientation tag, so phone-camera portraits (which
-    are stored as landscape bytes plus a "rotate 90" EXIF flag) come out
-    sideways. RetinaFace at det_size=1280 misses sideways faces often
-    enough to break this endpoint for the most common companion-app
-    input. PIL's ``exif_transpose`` applies the orientation in pixel
-    space; we then hand the corrected RGB array to OpenCV converted to
-    BGR so the rest of the pipeline (embedder, quality scoring) sees the
-    same colorspace it always has.
-    """
-    try:
-        with Image.open(io.BytesIO(raw)) as im:
-            im.load()
-            rotated = ImageOps.exif_transpose(im)
-            if rotated.mode != "RGB":
-                rotated = rotated.convert("RGB")
-            arr_rgb = np.asarray(rotated)
-    except (UnidentifiedImageError, OSError) as e:
-        logger.warning("PIL decode failed, falling back to cv2.imdecode: %s", e)
-        arr = np.frombuffer(raw, dtype=np.uint8)
-        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    return cv2.cvtColor(arr_rgb, cv2.COLOR_RGB2BGR)
