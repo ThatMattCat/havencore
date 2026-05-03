@@ -38,6 +38,7 @@ from selene_agent.api.metrics import router as metrics_router
 from selene_agent.api.tts import router as tts_router
 from selene_agent.api.tts_audio import router as tts_audio_router
 from selene_agent.api.stt import router as stt_router
+from selene_agent.api.companion import router as companion_router, get_blob_store
 from selene_agent.api.vision import router as vision_router
 from selene_agent.api.comfy import router as comfy_router
 from selene_agent.api.autonomy import router as autonomy_router, ws_router as autonomy_ws_router
@@ -46,11 +47,30 @@ from selene_agent.api.face import router as face_router
 from selene_agent.api.cameras import router as cameras_router
 from selene_agent.api.agent import router as agent_router
 from selene_agent.api.logs import ws_router as logs_ws_router
+from selene_agent.api.push import router as push_router
 from selene_agent.utils import log_stream
 from selene_agent.utils.metrics_db import metrics_db
 from selene_agent.autonomy.engine import AutonomyEngine
 
 logger = custom_logger.get_logger('loki')
+
+# Quiet third-party libraries that log every HTTP call at INFO. The OpenAI
+# SDK + qdrant client both route through httpx for every request; uvicorn's
+# access logger fires on every Docker /health poll (every 30s). Both drown
+# out the lines we actually care about. Apply after get_logger() so the
+# dictConfig in the custom logger module doesn't override these.
+import logging as _logging
+for _noisy in ("httpx", "httpcore", "openai"):
+    _logging.getLogger(_noisy).setLevel(_logging.WARNING)
+
+
+class _SuppressHealthAccessLog(_logging.Filter):
+    def filter(self, record: _logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/health" not in msg
+
+
+_logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLog())
 
 
 # --- Pydantic models for OpenAI-compatible API ---
@@ -150,6 +170,8 @@ async def lifespan(app: FastAPI):
         await metrics_db.ensure_schema()
         from selene_agent.utils import agent_state
         await agent_state.ensure_schema()
+        from selene_agent.utils.push_db import push_db
+        await push_db.ensure_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database connection: {e}")
 
@@ -223,6 +245,10 @@ async def lifespan(app: FastAPI):
     )
     await session_pool.start_idle_sweep(interval_sec=30)
 
+    # Companion-app blob store: started here so its sweep loop runs on the
+    # FastAPI event loop and is torn down cleanly on shutdown.
+    await get_blob_store().start()
+
     # Store shared state on app for routers to access via request.app.state
     app.state.session_pool = session_pool
     app.state.client = client
@@ -261,6 +287,10 @@ async def lifespan(app: FastAPI):
         await session_pool.flush_all()
     except Exception as e:
         logger.error(f"Error during session pool shutdown: {e}")
+    try:
+        await get_blob_store().stop()
+    except Exception as e:
+        logger.error(f"Error stopping companion blob store: {e}")
     if mcp_manager:
         await mcp_manager.cleanup()
     await conversation_db.close()
@@ -296,6 +326,7 @@ app.include_router(metrics_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(tts_audio_router, prefix="/api")
 app.include_router(stt_router, prefix="/api")
+app.include_router(companion_router, prefix="/api")
 app.include_router(vision_router, prefix="/api")
 app.include_router(comfy_router, prefix="/api")
 app.include_router(autonomy_router, prefix="/api")
@@ -303,6 +334,7 @@ app.include_router(memory_router, prefix="/api")
 app.include_router(face_router, prefix="/api")
 app.include_router(cameras_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
+app.include_router(push_router, prefix="/api")
 app.include_router(chat_ws_router, prefix="/ws")
 app.include_router(logs_ws_router, prefix="/ws")
 app.include_router(autonomy_ws_router, prefix="/ws")

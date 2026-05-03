@@ -18,6 +18,10 @@ MCP_SERVERS = os.getenv('MCP_SERVERS', '[]')
 HOST_IP_ADDRESS = os.getenv('HOST_IP_ADDRESS', '127.0.0.1')
 LLM_API_BASE = os.getenv('LLM_API_BASE', 'http://10.0.0.1:8000/v1')
 
+VISION_API_BASE = os.getenv('VISION_API_BASE', 'http://10.0.0.1:8001/v1')
+VISION_API_KEY = os.getenv('VISION_API_KEY', '1234')
+VISION_SERVED_NAME = os.getenv('VISION_SERVED_NAME', 'gpt-4-vision')
+
 # Agent LLM provider — runtime-togglable via the System page; env is just the seed.
 LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'vllm')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
@@ -70,6 +74,7 @@ AUTONOMY_MAX_RUNS_PER_HOUR = int(os.getenv('AUTONOMY_MAX_RUNS_PER_HOUR', '20'))
 AUTONOMY_TURN_TIMEOUT_SEC = int(os.getenv('AUTONOMY_TURN_TIMEOUT_SEC', '60'))
 AUTONOMY_BRIEFING_NOTIFY_TO = os.getenv('AUTONOMY_BRIEFING_NOTIFY_TO', '') or os.getenv('AUTONOMY_BRIEFING_EMAIL_TO', '')
 AUTONOMY_HA_NOTIFY_TARGET = os.getenv('AUTONOMY_HA_NOTIFY_TARGET', '')
+NTFY_PUBLISH_TOKEN = os.getenv('NTFY_PUBLISH_TOKEN', '')
 AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
     e.strip() for e in os.getenv('AUTONOMY_BRIEFING_CAMERA_ENTITIES', '').split(',') if e.strip()
 ]

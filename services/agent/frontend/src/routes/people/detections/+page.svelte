@@ -33,8 +33,18 @@
 	}
 
 	function shortCamera(entity) {
-		// camera.front_duo_3_fluent → front_duo_3
-		return entity.replace(/^camera\./, '').replace(/_fluent$/, '');
+		// camera.front_duo_3_clear → front_duo_3
+		return entity.replace(/^camera\./, '').replace(/_(clear|fluent|main|sub)$/, '');
+	}
+
+	function formatDemographic(d) {
+		// Informational only — InsightFace estimates from the genderage
+		// submodel. Hidden when no face was detected (no_face events).
+		if (d.age == null && !d.sex) return null;
+		const parts = [];
+		if (d.sex) parts.push(d.sex);
+		if (d.age != null) parts.push(`~${d.age}`);
+		return parts.join(' ');
 	}
 
 	function stateClass(s) {
@@ -120,6 +130,9 @@
 							{/if}
 							{#if d.quality_score != null}
 								<span>quality {d.quality_score.toFixed(2)}</span>
+							{/if}
+							{#if formatDemographic(d)}
+								<span class="demo" title="InsightFace estimate — display only">{formatDemographic(d)}</span>
 							{/if}
 							{#if d.embedding_contributed}
 								<span class="contrib">embedding contributed</span>
@@ -292,6 +305,10 @@
 	}
 	.contrib {
 		color: #4ade80;
+	}
+	.demo {
+		color: #94a3b8;
+		font-variant-numeric: tabular-nums;
 	}
 	.state {
 		font-size: 11px;

@@ -9,9 +9,12 @@ from __future__ import annotations
 import json
 from typing import Any, List, Optional, Protocol, Tuple
 
+import httpx
+
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.mcp_client_manager import MCPClientManager
+from selene_agent.utils.push_db import push_db
 
 logger = custom_logger.get_logger('loki')
 
@@ -276,3 +279,119 @@ class HAPushNotifier:
         else:
             logger.error(f"[HAPushNotifier] tool reported failure: {detail}")
         return ok
+
+
+class NtfyNotifier:
+    """Single-endpoint UnifiedPush publisher.
+
+    Publishes a JSON envelope to one endpoint URL produced by a
+    UnifiedPush distributor (typically ntfy). The envelope wire-format is
+    pinned by the companion-app contract — see
+    docs/services/agent/integrations/companion-app.md.
+
+    Used directly when an autonomy handler wants to address one specific
+    endpoint; usually the engine wraps NtfyFanoutNotifier instead so that
+    a single autonomy fire reaches every registered device.
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        token: Optional[str] = None,
+        *,
+        session_id: Optional[str] = None,
+        type_: str = "ad_hoc",
+    ):
+        self.endpoint = endpoint
+        self.token = token if token is not None else (config.NTFY_PUBLISH_TOKEN or None)
+        self.session_id = session_id
+        self.type = type_
+
+    async def send(
+        self,
+        *,
+        title: str,
+        body: str,
+        severity: str = "none",
+        attachments: Optional[List[Any]] = None,
+    ) -> bool:
+        if not self.endpoint:
+            logger.warning("[NtfyNotifier] no endpoint configured; dropping notification")
+            return False
+        payload: dict = {
+            "v": 1,
+            "type": self.type,
+            "title": title or (config.AGENT_NAME or "Selene"),
+            "body": (body or "")[:3000],
+            "severity": severity,
+        }
+        if self.session_id:
+            payload["session_id"] = self.session_id
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                r = await c.post(self.endpoint, json=payload, headers=headers)
+        except Exception as e:
+            logger.error(f"[NtfyNotifier] post to {self.endpoint} failed: {e}")
+            return False
+        ok = r.status_code < 300
+        if ok:
+            logger.info(f"[NtfyNotifier] sent ({r.status_code}) to {self.endpoint}")
+        else:
+            logger.warning(
+                f"[NtfyNotifier] {r.status_code} from {self.endpoint}: {r.text[:200]}"
+            )
+        return ok
+
+
+class NtfyFanoutNotifier:
+    """Looks up every registered push device and dispatches to each.
+
+    Reads ``push_devices`` at send-time (not construction-time) so devices
+    registered between engine-start and the next autonomy fire are picked
+    up without a restart. Returns True if at least one endpoint accepted
+    the POST — best-effort delivery, individual 4xx/5xx are logged but
+    do not fail the engine's notify step.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        type_: str = "ad_hoc",
+        token: Optional[str] = None,
+    ):
+        self.session_id = session_id
+        self.type = type_
+        self.token = token if token is not None else (config.NTFY_PUBLISH_TOKEN or None)
+
+    async def send(
+        self,
+        *,
+        title: str,
+        body: str,
+        severity: str = "none",
+        attachments: Optional[List[Any]] = None,
+    ) -> bool:
+        devices = await push_db.list_devices()
+        if not devices:
+            logger.info("[NtfyFanout] no registered devices; dropping notification")
+            return False
+        results: List[bool] = []
+        for d in devices:
+            sub = NtfyNotifier(
+                endpoint=d["endpoint"],
+                token=self.token,
+                session_id=self.session_id,
+                type_=self.type,
+            )
+            results.append(
+                await sub.send(title=title, body=body, severity=severity)
+            )
+        delivered = sum(1 for r in results if r)
+        logger.info(
+            f"[NtfyFanout] delivered to {delivered}/{len(results)} device(s)"
+        )
+        return any(results)

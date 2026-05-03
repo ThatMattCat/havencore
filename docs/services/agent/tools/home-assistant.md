@@ -14,9 +14,9 @@ TV playback specifics live in [Media Control](../../../integrations/media-contro
 | Entry point | `python -m selene_agent.modules.mcp_homeassistant_tools` |
 | Transport | MCP stdio (spawned by the agent's `MCPClientManager`) |
 | Server name | `havencore-homeassistant` |
-| HA REST client | `aiohttp`-based `HomeAssistantClient` (replaces the older blocking `homeassistant_api.Client`); also owns the short-lived WS client used for registry lookups |
+| HA REST client | `aiohttp`-based `HomeAssistantClient`; also owns the short-lived WS client used for registry lookups |
 | Media controller | REST-only `ha_media_controller.MediaController` (transport / volume / power on any `media_player` entity) |
-| Tool count | 18 |
+| Tool count | 20 |
 
 The module registers a single MCP stdio server. On startup it constructs a
 `HomeAssistantClient` (REST + on-demand WS) and a REST `MediaController`.
@@ -37,10 +37,11 @@ Tools are grouped here by purpose; names match the MCP registrations.
 | Tool | Purpose |
 |------|---------|
 | `ha_list_entities(domain?, area?, include_state?)` | Unified entity listing. Requires at least one of `domain` or `area`. Domain-only → `GET /api/states` filtered by domain prefix, returns `{entity_id: {state, attributes}}` wrapped in `{domain, entities, count}` with **attributes curated per domain** (see "Attribute projection" below); `include_state` defaults to `true` here. Area-only → WS registry lookup grouped by domain, bare entity_ids by default (`include_state=true` to attach state); `include_state` defaults to `false`. Domain + area → grouped shape filtered to that one domain. For `domain="media_player"` (no area) this hands off to the media controller so you also get playback state. **Service-only-domain fallback**: if the domain has no entities (e.g. `notify`, `tts`, `script`) the response includes a `hint` pointing at `ha_list_services` instead of an opaque empty dict. |
+| `ha_get_state(entity_id)` | Cheap single-entity read. `GET /api/states/<entity_id>`. Returns `{entity_id, state, attributes, last_changed, last_updated}` with the same curated-per-domain attribute projection as `ha_list_entities`. Use for trivial reads ("is the porch light on", "what's the thermostat set to") so the LLM doesn't fall back to `ha_list_entities` (whole domain) or `ha_evaluate_template` (escape hatch). 404 → `{"error": "entity '<id>' not found"}`. |
 | `ha_list_services(domain)` | `GET /api/services`, narrowed to one domain. Returns `{domain, services: {name: description}, count}`. Use this to discover which `notify.*` / `tts.*` / `script.*` services exist on a given HA instance — these domains expose services, not entities, and `ha_list_entities` will steer you here when you query them. |
 | `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch: `POST /api/services/<domain>/<service>`. Domain is inferred from the entity ID. `service_data` is forwarded as a JSON object. |
 
-### Device / automation control (Phase A)
+### Device / automation control
 
 | Tool | What it calls | Notes |
 |------|---------------|-------|
@@ -52,7 +53,7 @@ Tools are grouped here by purpose; names match the MCP registrations.
 | `ha_toggle_automation(entity_id, enabled)` | `automation.turn_on` / `turn_off` | Enable/disable gating. Does not fire the automation. |
 | `ha_send_notification(service, message, title?, target?)` | `notify.<service>` | Entity-less call — goes through `HomeAssistantClient.execute_service(entity_id=None, domain='notify', ...)`. |
 
-### Registry + presence (Phase B)
+### Registry + presence
 
 These use the Home Assistant WebSocket API under the hood via
 `HomeAssistantClient._ws_call` — HA's `config/*_registry/list` endpoints
@@ -70,7 +71,7 @@ here.
 | `ha_list_entities(area=…)` (area path) | WS `config/area_registry/list` + `entity_registry/list` + `device_registry/list` (plus `GET /api/states` when `include_state=true`) | Resolves `area` by `area_id`, name, or alias (case-insensitive). Entities inherit their device's area when their own `area_id` is null. Disabled / hidden entities are filtered. Grouped by domain. Default returns bare entity_id strings; with `include_state=true` each list element becomes `{entity_id, state, attributes}` using the same curated-per-domain attributes as the domain path. Combine with `domain=…` to filter to a single domain within the area. |
 | `ha_get_presence()` | REST `GET /api/states` | Buckets `person.*` and `device_tracker.*` into two lists with their state + `friendly_name`. |
 
-### Timer / template / history / calendar (Phase C)
+### Timer / template / history / calendar
 
 | Tool | HA endpoint | Notes |
 |------|-------------|-------|
@@ -78,7 +79,19 @@ here.
 | `ha_cancel_timer(entity_id)` | `timer.cancel` | |
 | `ha_evaluate_template(template)` | `POST /api/template` (text response) | Server-side Jinja2 render. Uses `_post_text` on the client since HA returns raw text here, not JSON. |
 | `ha_get_entity_history(entity_id, hours?)` | `GET /api/history/period/<start>?filter_entity_id=<id>` | `hours` clamped to `[1, 168]` (one week). Dense series are downsampled to ~200 points. Returns `{entity_id, hours, total_points, points[], sampled?}`. Each point is `{state, last_changed, attributes?}` — attributes use the same curated-per-domain projection as `ha_list_entities`. Note: which attributes actually appear depends on HA's own recorder configuration — HA's default recorder commonly stores only `friendly_name`, so to get e.g. `brightness` / `rgb_color` preserved in history you need to expand the recorder `attributes` include list in `configuration.yaml` (see [HA recorder docs](https://www.home-assistant.io/integrations/recorder/)). `attributes` is omitted when HA didn't record anything projectable for a point. |
-| `ha_get_calendar_events(calendar_entity, days?)` | `GET /api/calendars/<entity>?start=…&end=…` | `days` clamped to `[1, 31]`. Normalizes `start`/`end` from `{dateTime, date}` dicts to flat values. |
+| `ha_get_calendar_events(calendar_entity, days?)` | `GET /api/calendars/<entity>?start=…&end=…` | `days` clamped to `[1, 31]`. Normalizes `start`/`end` from `{dateTime, date}` dicts to flat values. Also surfaces `uid` + `recurrence_id` (currently informational — see note below). |
+| `ha_create_calendar_event(calendar_entity, summary, …)` | `calendar.create_event` service via `POST /api/services/calendar/create_event` | Validates exactly one of (`start_date_time`+`end_date_time`) or (`start_date`+`end_date`). Field names match HA's service API verbatim. |
+
+> **Note — edit / delete are not exposed.** Handler methods
+> `_update_calendar_event` / `_delete_calendar_event` exist and are wired
+> to dispatch, but their `Tool()` definitions are commented out in the
+> tool list. HA's CalDav integration does not declare `UPDATE_EVENT` /
+> `DELETE_EVENT` features, so the WS commands `calendar/event/update` /
+> `calendar/event/delete` always return "not supported" against our
+> setup. Re-enabling these tools requires either (a) switching to a
+> calendar integration that supports the features (Local Calendar
+> does, but it's HA-internal-only), or (b) bypassing HA and talking to
+> the CalDav server directly — see the `docs/todo.md` follow-up.
 
 ### Media player transport
 
@@ -123,10 +136,9 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 
 ## Internals worth knowing
 
-- **REST client is aiohttp-backed.** The older blocking
-  `homeassistant_api.Client` was replaced to unblock the orchestrator event
-  loop under tool calls. All methods open a short-lived session with a 15s
-  timeout.
+- **REST client is aiohttp-backed.** The client keeps the orchestrator event
+  loop unblocked under tool calls. All methods open a short-lived session with
+  a 15s timeout.
 - **`execute_service` pre-flights entity existence.** HA's
   `POST /api/services/<domain>/<service>` returns HTTP 200 with an empty
   body `[]` for *both* non-existent entities and legitimate no-ops (e.g.

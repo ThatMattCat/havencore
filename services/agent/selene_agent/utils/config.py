@@ -12,6 +12,13 @@ LOG_LEVEL_OTHERS = logging.INFO
 LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
+# Vision model — separate vLLM instance on a dedicated GPU. Same OpenAI-compat
+# shape as LLM_API_BASE; the served-model name is required in the request body
+# because the vision instance and the main agent vLLM use different aliases.
+VISION_API_BASE = os.getenv("VISION_API_BASE", "")
+VISION_API_KEY = os.getenv("VISION_API_KEY", "")
+VISION_SERVED_NAME = os.getenv("VISION_SERVED_NAME", "gpt-4-vision")
+
 # Pluggable agent-LLM provider. "vllm" routes to the local vLLM container
 # (same kwargs as today); "anthropic" routes to api.anthropic.com for
 # benchmarking the agent harness against a frontier model; "openai" is
@@ -78,8 +85,23 @@ CONVERSATION_TIMEOUT_MAX = int(os.getenv("CONVERSATION_TIMEOUT_MAX", "3600"))
 SESSION_SUMMARY_MAX_TOKENS = int(os.getenv("SESSION_SUMMARY_MAX_TOKENS", "400"))
 SESSION_SUMMARY_TAIL_EXCHANGES = int(os.getenv("SESSION_SUMMARY_TAIL_EXCHANGES", "2"))
 SESSION_SUMMARY_LLM_TIMEOUT_SEC = float(os.getenv("SESSION_SUMMARY_LLM_TIMEOUT_SEC", "15"))
+# Context-size summarization. Threshold tracks the active provider's
+# max_model_len so a `--max-model-len` bump in compose flows through
+# without a second knob to flip. Override sets an absolute ceiling when
+# truthy (>0); otherwise the fraction is multiplied against the
+# provider-reported max length.
+CONVERSATION_CONTEXT_LIMIT_FRACTION = float(os.getenv("CONVERSATION_CONTEXT_LIMIT_FRACTION", "0.75"))
+CONVERSATION_CONTEXT_LIMIT_TOKENS_OVERRIDE = int(os.getenv("CONVERSATION_CONTEXT_LIMIT_TOKENS", "0"))
 TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120"))
+
+# Companion-app camera tools (see api/companion.py + mcp_device_action_tools).
+# Timeout caps how long a take_photo / vision-chained tool blocks waiting on
+# the phone before returning a structured error to the LLM. TTL + max bytes
+# bound the in-memory BlobStore that holds uploaded captures.
+COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC = int(os.getenv("COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC", "25"))
+COMPANION_BLOB_TTL_SEC = int(os.getenv("COMPANION_BLOB_TTL_SEC", "600"))
+COMPANION_BLOB_MAX_BYTES = int(os.getenv("COMPANION_BLOB_MAX_BYTES", str(10 * 1024 * 1024)))
 
 CURRENT_LOCATION = os.getenv("CURRENT_LOCATION", "New York, NY")
 CURRENT_ZIPCODE = os.getenv("CURRENT_ZIPCODE", "10001")
@@ -94,6 +116,7 @@ AUTONOMY_MAX_RUNS_PER_HOUR = int(os.getenv("AUTONOMY_MAX_RUNS_PER_HOUR", "20"))
 AUTONOMY_TURN_TIMEOUT_SEC = int(os.getenv("AUTONOMY_TURN_TIMEOUT_SEC", "60"))
 AUTONOMY_BRIEFING_NOTIFY_TO = os.getenv("AUTONOMY_BRIEFING_NOTIFY_TO", "") or os.getenv("AUTONOMY_BRIEFING_EMAIL_TO", "")
 AUTONOMY_HA_NOTIFY_TARGET = os.getenv("AUTONOMY_HA_NOTIFY_TARGET", "")
+NTFY_PUBLISH_TOKEN = os.getenv("NTFY_PUBLISH_TOKEN", "")
 AUTONOMY_BRIEFING_CAMERA_ENTITIES = [
     e.strip() for e in os.getenv("AUTONOMY_BRIEFING_CAMERA_ENTITIES", "").split(",") if e.strip()
 ]

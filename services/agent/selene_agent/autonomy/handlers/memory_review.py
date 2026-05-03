@@ -5,7 +5,8 @@ Steps:
   2. Apply decay/boost -> importance_effective
   3. Cluster new L2 into L3 (HDBSCAN + LLM summarizer)
   4. Propose L3 -> L4 (flag only; never auto-promote)
-  5. Prune stale L2 (respecting source_ids protection)
+  5. Prune stale L2 (sources already absorbed at L3 creation, so no
+     source-protection lookup is needed here)
 
 Runs as a plain async function — not an AutonomousTurn. It does not need
 tool gating or a fresh orchestrator; it calls the LLM directly via the

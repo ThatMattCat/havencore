@@ -2,12 +2,13 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Card from '$lib/components/Card.svelte';
-	import { listConversations, getConversation, resumeConversation, getConversationDeviceName } from '$lib/api';
-	import { setSessionId } from '$lib/stores/chat';
+	import { listConversations, getConversation, resumeConversation, deleteConversation, deleteAllConversations, getConversationDeviceName } from '$lib/api';
+	import { setSessionId, messages as chatMessages, clearMessages } from '$lib/stores/chat';
 
 	let conversations = $state([]);
 	let selectedConv = $state(null);
 	let selectedMessages = $state(null);
+	let viewMode = $state('llm');
 	let loading = $state(true);
 	let loadingDetail = $state(false);
 	let error = $state('');
@@ -34,6 +35,7 @@
 	async function selectConversation(conv) {
 		selectedConv = conv;
 		selectedMessages = null;
+		viewMode = 'llm';
 		loadingDetail = true;
 		try {
 			const data = await getConversation(conv.session_id, conv.id);
@@ -89,6 +91,119 @@
 	}
 
 	let resumingSid = $state(null);
+	let deletingId = $state(null);
+	let deletingAll = $state(false);
+
+	async function handleDeleteAll() {
+		if (!window.confirm('Delete ALL stored conversation history? This cannot be undone.')) {
+			return;
+		}
+		deletingAll = true;
+		try {
+			await deleteAllConversations();
+			conversations = [];
+			selectedConv = null;
+			selectedMessages = null;
+			offset = 0;
+			atEnd = true;
+		} catch (e) {
+			error = `Delete all failed: ${e.message || e}`;
+		} finally {
+			deletingAll = false;
+		}
+	}
+
+	async function handleDelete(conv, event) {
+		if (event) event.stopPropagation();
+		const dname = getConversationDeviceName(conv);
+		const label = dname ? `"${dname}"` : conv.session_id.slice(-8);
+		const when = formatTime(conv.created_at);
+		if (!window.confirm(`Delete the ${label} conversation from ${when}? This cannot be undone.`)) {
+			return;
+		}
+		deletingId = conv.id;
+		try {
+			await deleteConversation(conv.session_id, conv.id);
+			conversations = conversations.filter((c) => c.id !== conv.id);
+			if (selectedConv?.id === conv.id) {
+				selectedConv = null;
+				selectedMessages = null;
+			}
+		} catch (e) {
+			error = `Delete failed: ${e.message || e}`;
+		} finally {
+			deletingId = null;
+		}
+	}
+
+	const USER_MESSAGE_RE = /### User Message\n([\s\S]*)/;
+
+	function stripUserMessageWrapper(content) {
+		if (typeof content !== 'string') return '';
+		const match = content.match(USER_MESSAGE_RE);
+		return match ? match[1].trim() : content.trim();
+	}
+
+	function lastUserIndex(messages) {
+		if (!Array.isArray(messages)) return -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i]?.role === 'user') return i;
+		}
+		return -1;
+	}
+
+	function mapResumedMessages(raw) {
+		if (!Array.isArray(raw)) return [];
+		const now = Date.now();
+		const lastUser = lastUserIndex(raw);
+		const out = [];
+		for (let i = 0; i < raw.length; i++) {
+			const m = raw[i];
+			if (!m || typeof m !== 'object') continue;
+			const role = m.role;
+			const content = typeof m.content === 'string' ? m.content : '';
+			if (role === 'system' && content.startsWith(SUMMARY_PREFIX)) {
+				out.push({
+					role: 'summary',
+					content: summaryBody(m),
+					events: [],
+					timestamp: now,
+				});
+			} else if (role === 'user') {
+				const text = stripUserMessageWrapper(content);
+				if (text) {
+					out.push({ role: 'user', content: text, events: [], timestamp: now });
+				}
+			} else if (role === 'assistant') {
+				// Mirror GLM-4.5-Air's chat_template.jinja: reasoning_content is
+				// only rendered for assistant messages newer than the most
+				// recent user message — those are the ones the model will
+				// actually see <think>…</think> for on the next turn. Older
+				// assistants get an empty <think></think> from the template
+				// regardless of what's stored, so we hide their reasoning here
+				// to keep the resumed view faithful to what the AI sees.
+				const events = [];
+				if (
+					i > lastUser &&
+					typeof m.reasoning_content === 'string' &&
+					m.reasoning_content.trim()
+				) {
+					events.push({
+						type: 'reasoning',
+						content: m.reasoning_content,
+						iteration: 1,
+					});
+				}
+				if (content.trim()) {
+					out.push({ role: 'assistant', content, events, timestamp: now });
+				}
+				// assistant with empty content (tool-call-only step) is dropped
+				// — no live events array to drive ToolCallCard.
+			}
+			// 'tool' messages and base 'system' messages are dropped.
+		}
+		return out;
+	}
 
 	async function handleResume(conv, event) {
 		// Prevent the row's selectConversation click.
@@ -96,6 +211,8 @@
 		resumingSid = conv.session_id;
 		try {
 			const result = await resumeConversation(conv.session_id);
+			clearMessages();
+			chatMessages.set(mapResumedMessages(result.messages));
 			setSessionId(result.session_id);
 			await goto('/chat');
 		} catch (e) {
@@ -120,7 +237,19 @@
 </script>
 
 <div class="history-page">
-	<h1 class="page-title">Conversation History</h1>
+	<div class="page-header">
+		<h1 class="page-title">Conversation History</h1>
+		{#if conversations.length > 0}
+			<button
+				class="delete-all-btn"
+				onclick={handleDeleteAll}
+				disabled={deletingAll}
+				title="Delete every stored conversation"
+			>
+				{deletingAll ? 'Deleting…' : 'Delete all'}
+			</button>
+		{/if}
+	</div>
 
 	{#if error}
 		<div class="error-banner">{error}</div>
@@ -157,6 +286,15 @@
 						>
 							{resumingSid === conv.session_id ? '…' : 'Resume'}
 						</button>
+						<button
+							class="delete-btn"
+							onclick={(e) => handleDelete(conv, e)}
+							disabled={deletingId === conv.id}
+							title="Delete this conversation"
+							aria-label="Delete conversation"
+						>
+							{deletingId === conv.id ? '…' : '×'}
+						</button>
 					</div>
 				{/each}
 
@@ -179,16 +317,40 @@
 			{:else if loadingDetail}
 				<p class="muted">Loading conversation...</p>
 			{:else if selectedMessages}
+				{@const rollingSummary = selectedMessages[0]?.metadata?.rolling_summary}
+				{@const hasRollingSummary = typeof rollingSummary === 'string' && rollingSummary.trim().length > 0}
 				<div class="detail-header">
-					<h2>{formatTime(selectedConv.created_at)}</h2>
-					<span class="muted">
-						{#if getConversationDeviceName(selectedConv)}{getConversationDeviceName(selectedConv)} · {/if}
-						{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
-					</span>
+					<div class="detail-header-meta">
+						<h2>{formatTime(selectedConv.created_at)}</h2>
+						<span class="muted">
+							{#if getConversationDeviceName(selectedConv)}{getConversationDeviceName(selectedConv)} · {/if}
+							{selectedConv.message_count} messages · {selectedConv.session_id.slice(-8)}
+						</span>
+					</div>
+					{#if hasRollingSummary}
+						<button
+							class="view-toggle"
+							onclick={() => (viewMode = viewMode === 'llm' ? 'raw' : 'llm')}
+							title={viewMode === 'llm'
+								? 'Show the pre-summary message buffer (debug view)'
+								: 'Show the rolling summary the LLM saw on subsequent turns'}
+						>
+							{viewMode === 'llm' ? 'Show raw transcript' : 'Show summary view'}
+						</button>
+					{/if}
 				</div>
-				{#if selectedMessages.length > 0}
+				{#if hasRollingSummary && viewMode === 'llm'}
 					<div class="message-list">
-						{#each selectedMessages[0].messages as msg}
+						<div class="msg summary">
+							<span class="msg-role">Prior conversation summary</span>
+							<div class="msg-content">{rollingSummary}</div>
+						</div>
+					</div>
+				{:else if selectedMessages.length > 0}
+					{@const rawMessages = selectedMessages[0].messages}
+					{@const detailLastUser = lastUserIndex(rawMessages)}
+					<div class="message-list">
+						{#each rawMessages as msg, idx}
 							{#if shouldRenderMessage(msg)}
 								{#if isSummaryMessage(msg)}
 									<div class="msg summary">
@@ -198,6 +360,15 @@
 								{:else}
 									<div class="msg" class:user={msg.role === 'user'} class:assistant={msg.role === 'assistant'} class:tool={msg.role === 'tool'}>
 										<span class="msg-role">{msg.role}</span>
+										{#if msg.role === 'assistant' && idx > detailLastUser && typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()}
+											<details class="reasoning-card">
+												<summary class="reasoning-card-header">
+													<span class="reasoning-card-label">Reasoning</span>
+													<span class="reasoning-card-hint">click to view</span>
+												</summary>
+												<div class="reasoning-card-body">{msg.reasoning_content}</div>
+											</details>
+										{/if}
 										<div class="msg-content">
 											{#if typeof msg.content === 'string'}
 												{msg.content}
@@ -217,11 +388,40 @@
 </div>
 
 <style>
+	.page-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 20px;
+		gap: 12px;
+	}
+
 	.page-title {
 		font-size: 24px;
 		font-weight: 600;
-		margin-bottom: 20px;
 		color: #f0f0f0;
+	}
+
+	.delete-all-btn {
+		padding: 6px 14px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		color: #f87171;
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.delete-all-btn:hover:not(:disabled) {
+		background: #2a1a1f;
+		border-color: #7f1d1d;
+	}
+
+	.delete-all-btn:disabled {
+		opacity: 0.5;
+		cursor: wait;
 	}
 
 	.error-banner {
@@ -302,6 +502,29 @@
 	}
 
 	.resume-btn:disabled {
+		opacity: 0.5;
+		cursor: wait;
+	}
+
+	.delete-btn {
+		padding: 0 10px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		color: #9ca3af;
+		font-size: 16px;
+		line-height: 1;
+		cursor: pointer;
+		transition: background 0.15s, border-color 0.15s, color 0.15s;
+	}
+
+	.delete-btn:hover:not(:disabled) {
+		background: #2a1a1f;
+		border-color: #7f1d1d;
+		color: #f87171;
+	}
+
+	.delete-btn:disabled {
 		opacity: 0.5;
 		cursor: wait;
 	}
@@ -387,16 +610,40 @@
 	.detail-header {
 		display: flex;
 		justify-content: space-between;
-		align-items: baseline;
+		align-items: center;
+		gap: 12px;
 		margin-bottom: 16px;
 		padding-bottom: 12px;
 		border-bottom: 1px solid #2d3148;
+	}
+
+	.detail-header-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
 	}
 
 	.detail-header h2 {
 		font-size: 16px;
 		font-weight: 600;
 		color: #f0f0f0;
+	}
+
+	.view-toggle {
+		padding: 6px 10px;
+		background: #1e2235;
+		border: 1px solid #2d3148;
+		border-radius: 6px;
+		color: #a5b4fc;
+		font-size: 12px;
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.view-toggle:hover {
+		background: #252a3e;
+		border-color: #6366f1;
 	}
 
 	.message-list {
@@ -462,5 +709,58 @@
 		border-radius: 6px;
 		font-size: 11px;
 		overflow-x: auto;
+	}
+
+	.reasoning-card {
+		background: #15182a;
+		border: 1px solid #2d3148;
+		border-left: 3px solid #c4b5fd;
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin: 6px 0;
+		font-size: 12px;
+	}
+
+	.reasoning-card-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		cursor: pointer;
+		color: #c4b5fd;
+		font-weight: 600;
+		list-style: none;
+		user-select: none;
+	}
+
+	.reasoning-card-header::-webkit-details-marker {
+		display: none;
+	}
+
+	.reasoning-card-label {
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		font-size: 11px;
+	}
+
+	.reasoning-card-hint {
+		margin-left: auto;
+		color: #6b7280;
+		font-weight: 400;
+		font-size: 11px;
+		font-style: italic;
+	}
+
+	.reasoning-card[open] .reasoning-card-hint {
+		display: none;
+	}
+
+	.reasoning-card-body {
+		color: #c9cdd5;
+		line-height: 1.5;
+		margin-top: 8px;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		font-size: 12px;
 	}
 </style>

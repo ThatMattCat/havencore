@@ -3,8 +3,12 @@
 Returns a score in [0, 1] combining four signals about a detected face:
 
   bbox_area     — bigger faces have more pixels to embed reliably; saturates
-                  at 25% of the frame area (a face bigger than that is just
-                  "max-area").
+                  at AREA_SATURATION_PX absolute pixels (~200×200), since
+                  ArcFace's input is fixed 112×112 and a face crop with at
+                  least that many pixels has all the info the embedder can
+                  use. Frame-relative ratio scoring penalized panoramic and
+                  wide-angle cameras unfairly — same face is "small" in a
+                  7680×2160 panorama but pixel-rich for embedding.
   sharpness     — Laplacian variance of the face crop; low variance means
                   blurry. Saturates at variance=300 (typical "very sharp"
                   point for face crops at 640px detection size).
@@ -35,10 +39,16 @@ W_SHARPNESS = 0.30
 W_POSE = 0.25
 W_BRIGHTNESS = 0.15
 
-# Saturation point for bbox area: face occupying >=25% of frame is "max".
-AREA_SATURATION = 0.25
-# Saturation point for Laplacian variance — a sharp face crop at the
-# detection resolution typically lands around this value.
+# Saturation point for bbox area in *absolute* pixel count, not a ratio of
+# the frame. ArcFace resizes every face crop to 112×112 (12,544 px) before
+# embedding, so a face crop above ~200×200 has all the information ArcFace
+# can use; bigger crops add no value and a face-area-as-fraction-of-frame
+# metric punishes wide-angle and panoramic cameras unfairly. 40000 ≈ 200×200,
+# slightly above the embedder input so there's headroom before saturation.
+AREA_SATURATION_PX = 40000.0
+# Saturation point for Laplacian variance — a sharp face crop typically
+# lands around this value. Resolution-independent in practice because the
+# Laplacian operator's variance scales with both signal and noise.
 SHARPNESS_SATURATION = 300.0
 
 
@@ -55,15 +65,10 @@ def _crop(frame: np.ndarray, bbox: np.ndarray) -> np.ndarray | None:
     return crop
 
 
-def _area_score(frame: np.ndarray, bbox: np.ndarray) -> float:
-    h, w = frame.shape[:2]
-    frame_area = float(h * w)
-    if frame_area <= 0:
-        return 0.0
+def _area_score(bbox: np.ndarray) -> float:
     bw = max(0.0, float(bbox[2] - bbox[0]))
     bh = max(0.0, float(bbox[3] - bbox[1]))
-    ratio = (bw * bh) / frame_area
-    return float(min(ratio / AREA_SATURATION, 1.0))
+    return float(min((bw * bh) / AREA_SATURATION_PX, 1.0))
 
 
 def _sharpness_score(crop_gray: np.ndarray) -> float:
@@ -101,7 +106,7 @@ def score_face(frame: np.ndarray, face) -> float:
         return 0.0
     crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
-    area = _area_score(frame, face.bbox)
+    area = _area_score(face.bbox)
     sharpness = _sharpness_score(crop_gray)
     pose = _pose_score(face.kps)
     brightness = _brightness_score(crop_gray)
@@ -113,8 +118,12 @@ def score_face(frame: np.ndarray, face) -> float:
         + W_BRIGHTNESS * brightness
     )
     score = float(max(0.0, min(score, 1.0)))
-    logger.debug(
-        "quality score=%.3f (area=%.2f sharp=%.2f pose=%.2f bright=%.2f)",
+    bw = int(round(face.bbox[2] - face.bbox[0]))
+    bh = int(round(face.bbox[3] - face.bbox[1]))
+    logger.info(
+        "quality score=%.3f (area=%.2f sharp=%.2f pose=%.2f bright=%.2f) "
+        "face=%dx%d det=%.2f",
         score, area, sharpness, pose, brightness,
+        bw, bh, float(getattr(face, "det_score", 0.0)),
     )
     return score

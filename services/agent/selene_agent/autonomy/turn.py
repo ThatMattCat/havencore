@@ -94,6 +94,10 @@ class AutonomousTurn:
         # an arbitrary user prompt — per-turn retrieval isn't useful here and
         # burns an embed + Qdrant query per turn.
         orch.retrieval_enabled = False
+        # One-shot turn with a tiny scratch state — the size-based summarize
+        # path would never fire usefully here, and we don't want autonomy to
+        # ever invoke an LLM-backed summary call. Belt-and-suspenders.
+        orch.context_size_check_enabled = False
         orch.temperature = self.temperature
         orch.max_tokens = self.max_tokens
 

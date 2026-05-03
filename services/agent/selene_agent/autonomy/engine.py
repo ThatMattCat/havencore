@@ -29,6 +29,7 @@ from selene_agent.autonomy.handlers import watch as watch_handler
 from selene_agent.autonomy.handlers import watch_llm as watch_llm_handler
 from selene_agent.autonomy.notifiers import (
     HAPushNotifier,
+    NtfyFanoutNotifier,
     NullNotifier,
     SignalNotifier,
     SpeakerNotifier,
@@ -710,5 +711,10 @@ def _build_notifier(mcp_manager, channel: str, to: str, cfg: Dict[str, Any]):
             device=speaker_cfg.get("device") or to or cfg.get("device") or "",
             voice=speaker_cfg.get("voice") or cfg.get("voice") or "",
             volume=speaker_cfg.get("volume", cfg.get("volume")),
+        )
+    if channel == "ntfy":
+        return NtfyFanoutNotifier(
+            session_id=cfg.get("ntfy_session_id"),
+            type_=cfg.get("ntfy_type", "ad_hoc"),
         )
     return NullNotifier()

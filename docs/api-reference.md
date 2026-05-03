@@ -133,9 +133,10 @@ HavenCore supports tool calling for external integrations:
 Tools are grouped into MCP servers. Each server has its own reference
 doc with the full tool list, arguments, config, and troubleshooting.
 
-- **Home Assistant** — 19 tools (domain state / services, light & climate
+- **Home Assistant** — 20 tools (domain state / services, light & climate
   helpers, scenes, scripts, automations, notifications, areas, presence,
-  timers, Jinja templates, history, calendar, media transport). See
+  timers, Jinja templates, history, calendar (read + create), media
+  transport). See
   [MCP Home Assistant](services/agent/tools/home-assistant.md).
 - **Plex** — library search + cloud-relay playback
   (`plex_search`, `plex_list_recent`, `plex_list_on_deck`,
@@ -150,6 +151,7 @@ doc with the full tool list, arguments, config, and troubleshooting.
 - **Qdrant** — semantic memory (`create_memory`, `search_memories`). See
   [MCP Qdrant](services/agent/tools/qdrant.md).
 - **MQTT / Cameras** — `get_camera_snapshots`. See [MCP MQTT](services/agent/tools/mqtt.md).
+- **Device Actions** — `set_alarm` on the user's phone (intent-fire); plus the camera round-trip family `take_photo`, `identify_object_in_photo`, `read_text_from_image`, `who_is_in_view`. All five dispatch to the companion app via the `device_action` `/ws/chat` event; the camera tools additionally round-trip a JPEG through `/api/companion/upload`. The vision-chained variants chain to the vision pipeline server-side; `who_is_in_view` POSTs the JPEG to face-recognition's `/api/identify` for identity matching. See [MCP Device Actions](services/agent/tools/device-action.md).
 
 #### Example Request
 ```bash
@@ -320,6 +322,22 @@ curl http://localhost/health
 | STT | `GET http://localhost:6001/health` | Speech-to-text service |
 | LLM | `GET http://localhost:8000/health` | LLM backend status |
 
+### Satellite OTA firmware
+
+Static blobs served straight from disk by nginx (not the agent), on the
+same gateway port as the rest of the API. Plain HTTP, no auth, LAN-only —
+the satellite firmware's "Pull" button GETs `satellite.bin` and streams
+it into `esp_https_ota`.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/firmware/satellite.bin` | Whole-file firmware image (`application/octet-stream`). Whole-file GETs only — no range support needed. |
+| `GET` | `/firmware/satellite.json` | Optional version sidecar (`application/json`): `{"version", "size", "sha256"}`. Satellite ignores this today; reserved for future version-skip logic. |
+
+Bare `/firmware/` returns 403 (autoindex disabled). Upload path and the
+build-host scp/rsync recommendation are documented in
+[`services/nginx/README.md`](services/nginx/README.md#satellite-ota-firmware-firmware).
+
 ### MCP Management APIs
 
 #### GET /mcp/status
@@ -356,7 +374,9 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/tools` | Registered tools grouped by MCP server |
 | `GET`  | `/api/conversations` | Paginated conversation history. Each row carries its primary-key `id` (addresses a specific stored flush) alongside `session_id`, `created_at`, `message_count`, and `metadata` (which includes a `device_name` key — the label of the device that wrote that flush, captured per-flush so renames are preserved historically). |
 | `GET`  | `/api/conversations/{session_id}` | Stored conversation snapshots for a session. Without query args, returns every flush for that `session_id` newest-first. With `?id=<flush_id>` (the `id` from a list row), returns only that single flush; mismatched `session_id`/`id` pairs 404. Each returned record includes its `id`, `messages`, `created_at`, and `metadata`. |
-| `POST` | `/api/conversations/{session_id}/resume` | Hydrate a stored session into the live pool. Returns `{session_id, resumed, message_count}`. Used by the dashboard's "Resume" button on `/history`. |
+| `POST` | `/api/conversations/{session_id}/resume` | Hydrate a stored session into the live pool. Returns `{session_id, resumed, message_count, messages}` where `messages` is the post-hydrate orchestrator buffer with the leading base system prompt filtered out (any `[Prior conversation summary]` system message is preserved). The dashboard's "Resume" button on `/history` consumes this payload directly to pre-populate the chat transcript before navigating to `/chat`, so the user lands on what the model will actually see on the next turn. |
+| `DELETE` | `/api/conversations/{session_id}?id=<flush_id>` | Delete a single stored flush row. The `id` query parameter is required and the `(session_id, id)` pair must match — a mismatched pair 404s. Returns `{"deleted": 1}` on success. Granularity is per-flush because `/history` lists one row per flush; bulk session deletion is not exposed. If the session is currently live in the pool, the in-memory orchestrator is untouched — the next flush will create a new row. The dashboard's `/history` page exposes this via a per-row delete button (with a browser-native confirm prompt). |
+| `DELETE` | `/api/conversations` | Delete every stored conversation flush. Irreversible. Returns `{"deleted": N}`; a no-op against an already-empty table is a 200 with `deleted: 0`. Live pool sessions are untouched — their next flush creates fresh rows. The dashboard exposes this through a "Delete all" button at the top of `/history`, gated by an explicit confirmation prompt. |
 | `GET`  | `/api/ha/entities` | HA entities (optionally `?domain=light`) |
 | `GET`  | `/api/ha/entities/summary` | Entity counts per domain |
 | `GET`  | `/api/ha/automations` | HA automations |
@@ -367,7 +387,8 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
 | `GET`  | `/api/tts/voices` | Voice alias list |
 | `POST` | `/api/stt/transcribe` | Multipart transcription proxy |
-| `POST` | `/api/vision/ask` | Multipart image + prompt to vision LLM |
+| `POST` | `/api/vision/ask` | Multipart `file` (image OR short video) + `prompt` to the vision LLM (`vllm-vision`). MIME branches the upload to an `image_url` vs `video_url` chat-completion content part; unknown MIME → 415. The legacy `image` field name is still accepted. Returns `{response, latency_ms, usage, model, media_type}`. Used by the dashboard playground. nginx cap on `/api/` is 100 MB. |
+| `POST` | `/api/vision/ask_url` | JSON `{text, image_url, max_tokens?, temperature?}` for image-URL inputs (the vision service fetches the URL itself). Used by the `query_multimodal_api` MCP tool — single chokepoint for logging/metrics. Returns `{response, latency_ms, usage, model}`. Image-only by design; for video, the multipart `/api/vision/ask` endpoint or the `mcp_vision_tools` server are the right entry points. |
 | `POST` | `/api/comfy/generate` | Queue ComfyUI workflow |
 | `GET`  | `/api/comfy/status/{prompt_id}` | Poll generation status |
 | `GET`  | `/api/comfy/view` | Stream a generated image |
@@ -455,14 +476,72 @@ end-to-end flow.
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET`    | `/api/cameras` | Returns `{cameras: [...], zones: [...]}`. `cameras[]` is the discovered HA camera list (proxied from face-rec's `/api/cameras`) left-joined with `camera_zones` — each row is `{camera_entity, sensor_entity, camera_exists, current_state, zone, zone_label, notes, updated_at}`. Orphan rows whose entity_id is no longer reported by face-rec are still included so they can be cleaned up. `zones[]` is the distinct list of in-use zone slugs for autocomplete |
-| `PUT`    | `/api/cameras/{entity}/zone` | Upsert. Body: `{zone: string, zone_label?: string, notes?: string}`. `entity` is the HA camera entity_id (e.g. `camera.front_duo_3_fluent`); the path uses FastAPI's `:path` converter so `.` is preserved |
+| `PUT`    | `/api/cameras/{entity}/zone` | Upsert. Body: `{zone: string, zone_label?: string, notes?: string}`. `entity` is the HA camera entity_id (e.g. `camera.front_duo_3_clear`); the path uses FastAPI's `:path` converter so `.` is preserved |
 | `DELETE` | `/api/cameras/{entity}/zone` | Clear the assignment. Returns `{camera_entity, deleted: bool}` |
+
+### Push registration (companion-app)
+
+`/api/push/register` is the agent's inbound registration surface for
+[UnifiedPush](https://unifiedpush.org/) endpoints — used by the
+[`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app)
+to deliver autonomy briefings, anomaly alerts, and ad-hoc agent
+messages to a phone without keeping a WebSocket open. Endpoints are
+self-contained URLs produced by the user's distributor (typically the
+ntfy Android app), and the agent stores them verbatim — there is no
+agent-side ntfy server URL config. See the
+[companion-app integration](integrations/companion-app.md) walkthrough
+for the end-to-end flow and setup checklist.
+
+LAN-only stack — these routes are unauthenticated like the rest of
+`/api/*`. Backed by the `push_devices` Postgres table.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/push/register` | Upsert a device. Body: `{device_id: <uuid>, device_label: string, endpoint: string, platform?: "android"}`. `endpoint` must be `http(s)://...`. Always upserts on `device_id` — re-registering with a rotated endpoint replaces the prior row. Returns `{"ok": true}`. 400s on malformed `device_id` (must be UUID) or non-`http(s)` endpoint |
+| `DELETE` | `/api/push/register/{device_id}` | Remove a registered device. Returns `{"ok": true}` on success or 404 `{"detail": "device not registered"}` if the row doesn't exist (companion app treats 404 as success) |
+| `GET`  | `/api/push/register` | List all registered devices: `{devices: [{device_id, device_label, endpoint, platform, registered_at, last_seen_at}, ...]}`. Debug endpoint; no dashboard UI |
+
+When the autonomy engine fires with `_notify_channel = "ntfy"`, the
+`NtfyFanoutNotifier` reads this table at send-time and POSTs the
+[wire-format envelope](integrations/companion-app.md#wire-format) to
+every registered endpoint. Devices added between dispatches are picked
+up on the next fire without an engine restart.
+
+### Companion-app uploads
+
+`/api/companion/upload` is the inbound endpoint for the companion
+app's camera round-trip flow: when the LLM calls `take_photo` /
+`identify_object_in_photo` / `read_text_from_image` / `who_is_in_view`,
+the orchestrator emits a `device_action` frame on `/ws/chat`, the
+phone captures a photo, and POSTs the JPEG back here. The agent
+stashes the bytes in an in-memory `BlobStore` (10 MiB cap, 10-minute
+TTL by default) and resolves a `tool_call_id`-keyed `asyncio.Future`
+so the orchestrator's awaiting `_handle_companion_camera()` can
+return a structured tool result (or chain to vision / face
+recognition) for the LLM. See
+[device-action.md → Camera tools](services/agent/tools/device-action.md#camera-tools)
+for the end-to-end flow and
+[configuration.md → Companion-app camera tools](configuration.md#companion-app-camera-tools)
+for the env vars (`COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC`,
+`COMPANION_BLOB_TTL_SEC`, `COMPANION_BLOB_MAX_BYTES`).
+
+LAN-only stack — these routes are unauthenticated like the rest of
+`/api/*`.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/companion/upload` | Multipart upload from the companion app. Required form fields: `tool_call_id` (must match an `id` the agent emitted in a `device_action` frame and is currently awaiting), `file` (the JPEG, ≤ `COMPANION_BLOB_MAX_BYTES`). Optional: `device_id` (mirror of the WS `device_name` for logging). Returns `{ok: true, image_url, expires_at}`. **410** when no orchestrator is currently awaiting `tool_call_id` (the per-tool timeout already fired or the LLM never asked for a photo). **413** if the file exceeds the cap. **400** on empty file |
+| `GET` | `/api/companion/blob/{token}` | Streams a previously-uploaded blob back to the caller. Used by the in-process vision pipeline to fetch the captured image. The face-identify chain (`who_is_in_view`) reads the same bytes directly from the `BlobStore` in-process — it does not hit this endpoint. **404** when the token is unknown or expired. The token is opaque (`secrets.token_urlsafe(24)`), minted by the upload endpoint and embedded in `image_url` |
+
+Tool-result shape returned to the LLM after a successful upload (and
+optional vision chain) is documented in the
+[device-action tool reference](services/agent/tools/device-action.md#tool-inventory).
 
 ### WebSockets
 
 | URL | Direction | Purpose |
 |-----|-----------|---------|
-| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `reasoning`, `metric`, `done`, `error`, and `summary_reset` events. `reasoning` frames (`{"type":"reasoning","content":"...","iteration":N}`) carry chain-of-thought from reasoning-capable models (e.g. GLM-4.5-Air via vLLM's `--reasoning-parser glm45`) — they arrive before the `done` of the iteration that produced them and are **dashboard-only**: `/api/chat` filters them out of its returned `events[]`, `/v1/chat/completions` naturally drops them, and they are never persisted to history or metrics. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90,"device_name":"Kitchen Speaker"}` as the first frame to resume/bind a session, set a per-session idle window, and/or label the device; all fields optional. A later `{"type":"session", ...}` mid-stream may update `idle_timeout` or `device_name` on the active session (omitted fields are left untouched; `session_id` is honored only on the first frame). The server responds once with `{"type":"session","session_id":"..."}` before any turn events. `summary_reset` frames (`{"type":"summary_reset","reason":"idle_timeout_summarize","summary":"..."}`) may arrive in two flavors: inline at turn start when `run()` detects a pre-turn compaction, or pushed between turns when the background idle sweep compacts an otherwise-idle session (per-session pub/sub on the pool) — both carry the same shape and the Chat pane renders them as a "Conversation summarized" marker. |
+| `/ws/chat` | bidirectional | Streaming chat with `thinking`, `tool_call`, `tool_result`, `reasoning`, `metric`, `done`, `error`, `summary_reset`, and `device_action` events. `device_action` frames (`{"type":"device_action","action":"set_alarm","args":{...},"id":"<tool_call_id>","device_id":"<session device name or null>"}`) are a companion-app side-channel: emitted in addition to the normal `tool_call`/`tool_result` pair whenever the executed tool name is in `orchestrator.DEVICE_ACTION_TOOLS` (`set_alarm`, `take_photo`, `identify_object_in_photo`, `read_text_from_image`, `who_is_in_view`). For tools in `PRE_EXECUTE_DEVICE_ACTION_TOOLS` (the camera tools) the frame ships *before* the tool body runs — the handler awaits an upload future that depends on the phone seeing the frame; for `set_alarm` it ships right after `tool_result`. The companion app's `DeviceActionDispatcher` fires the matching platform intent (`AlarmClock.ACTION_SET_ALARM`) or launches the camera capture flow; older app builds without `device_action` support drop the frame silently via the existing `ParsedFrame.Unknown` path. The frame is not persisted (no `conversation_histories` row, no `turn_metrics`) and not surfaced to `/api/chat` or `/v1/chat/completions`. See [tools/device-action.md](services/agent/tools/device-action.md) for the wire-protocol contract, the camera round-trip pattern, and how to extend the action set. `reasoning` frames (`{"type":"reasoning","content":"...","iteration":N}`) carry chain-of-thought from reasoning-capable models (e.g. GLM-4.5-Air via vLLM's `--reasoning-parser glm45`) — they arrive before the `done` of the iteration that produced them and are **dashboard-only on the wire**: `/api/chat` filters them out of its returned `events[]`, `/v1/chat/completions` naturally drops them, and they're not recorded as a separate event stream. The same CoT is, however, normalized onto the corresponding assistant message as `reasoning_content` and persisted with the rest of the conversation, since GLM-4.5-Air's chat template reads that field to render `<think>…</think>` for assistant messages within the in-progress agentic tool-call loop. `turn_metrics` does not record reasoning content. Session handshake: clients MAY send `{"type":"session","session_id":"...","idle_timeout":90,"device_name":"Kitchen Speaker"}` as the first frame to resume/bind a session, set a per-session idle window, and/or label the device; all fields optional. A later `{"type":"session", ...}` mid-stream may update `idle_timeout` or `device_name` on the active session (omitted fields are left untouched; `session_id` is honored only on the first frame). The server responds once with `{"type":"session","session_id":"..."}` before any turn events. `summary_reset` frames (`{"type":"summary_reset","reason":"idle_timeout_summarize","summary":"..."}`) may arrive in two flavors: inline at turn start when `run()` detects a pre-turn compaction, or pushed between turns when the background pool sweep compacts a session (per-session pub/sub on the pool) — both carry the same shape and the Chat pane renders them as a "Conversation summarized" marker. The `reason` field is `idle_timeout_summarize` when the session crossed its idle window, or `context_size_summarize` when its serialized message bytes crossed the provider-derived token budget (see `CONVERSATION_CONTEXT_LIMIT_FRACTION` / `CONVERSATION_CONTEXT_LIMIT_TOKENS` in [`configuration.md`](configuration.md#agent-runtime-tuning)). Idle and size are independent axes — a session pinned to `idle_timeout=-1` will still receive a `context_size_summarize` frame if it grows past the size threshold. |
 | `/ws/logs` | server → client | Live tail of the agent's in-process log ring buffer |
 
 ## Error Handling

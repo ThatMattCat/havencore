@@ -161,9 +161,10 @@ Tried to allocate XXX MiB. GPU 0 has total capacity of 23.69 GiB
 
 **Cause**: the MoE model's per-shard working set plus KV cache is
 exceeding available VRAM on one of the GPUs — typically because an aux
-service (TTS/STT/iav-to-text/embeddings) is co-pinned on that card and
-holding VRAM vLLM wanted. With `-tp 4` vLLM occupies *all four* cards
-simultaneously, so every aux service shares with it.
+service (TTS/STT/embeddings) is co-pinned on that card and holding VRAM
+vLLM wanted. With `-tp 4` vLLM occupies *all four* cards simultaneously,
+so every aux service shares with it. (`vllm-vision` is on the dedicated
+5th card and does not contend with the main vLLM instance.)
 
 **Solutions**:
 
@@ -175,9 +176,10 @@ simultaneously, so every aux service shares with it.
 #    --max-model-len 16384           (default in compose is 32768)
 
 # 3. Move aux services to GPUs that don't spike at the same time:
-#    - iav-to-text: compose.yaml `CUDA_VISIBLE_DEVICES=2`
-#    - embeddings:  compose.yaml `CUDA_VISIBLE_DEVICES=3`
-#    - TTS/STT:     .env `TTS_DEVICE` / `STT_DEVICE`
+#    - embeddings:    compose.yaml `CUDA_VISIBLE_DEVICES=2`
+#    - face-rec:      compose.yaml `CUDA_VISIBLE_DEVICES=3`
+#    - vllm-vision:   compose.yaml `CUDA_VISIBLE_DEVICES=4` (dedicated 5th card)
+#    - TTS/STT:       .env `TTS_DEVICE` / `STT_DEVICE`
 #    STT/TTS run sequentially with the LLM turn, so co-pinning is OK.
 
 # 4. Swap to a smaller non-MoE model that fits on fewer GPUs, e.g.
@@ -238,7 +240,7 @@ curl http://localhost:8000/v1/models
 #    for `openai.APIConnectionError` — vllm isn't reachable yet.
 ```
 
-#### Symptom: iav-to-text / STT / TTS fail with CUDA OOM
+#### Symptom: STT / TTS fail with CUDA OOM
 
 **Cause**: the non-LLM services share GPUs with vLLM by default. If
 vLLM is greedy about KV cache, there's no room left for the small
@@ -250,11 +252,15 @@ models.
 # Pin specific GPUs in .env so services don't compete
 TTS_DEVICE="cuda:1"   # second card
 STT_DEVICE="1"        # Whisper uses raw index, not cuda: prefix
-# iav-to-text honors the same convention — see its README.
 
 # Then restart just the affected services
 docker compose up -d --force-recreate text-to-speech speech-to-text
 ```
+
+`vllm-vision` is pinned to its own card via `CUDA_VISIBLE_DEVICES=4` in
+`compose.yaml` and doesn't compete with the main vLLM instance — see the
+[vllm-vision service doc](services/vllm-vision/README.md) for its
+single-card sizing notes if vision OOMs in isolation.
 
 ### Service Startup Issues
 

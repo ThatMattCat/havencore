@@ -175,8 +175,15 @@ FACE_REC_MATCH_THRESHOLD=0.50
 # stricter than the match threshold so we only learn from confident hits.
 FACE_REC_IMPROVEMENT_THRESHOLD=0.65
 FACE_REC_QUALITY_FLOOR=0.40
-FACE_REC_IMPROVEMENT_QUALITY_FLOOR=0.65   # outdoor wide-angle scores routinely 0.66-0.69
+FACE_REC_IMPROVEMENT_QUALITY_FLOOR=0.65   # tune via the per-face quality logs (area/sharp/pose/bright breakdown)
 FACE_REC_MAX_EMBEDDINGS_PER_PERSON=50     # FIFO eviction on cap
+
+# Detector input size — InsightFace resizes the longest edge to this value
+# before RetinaFace runs. 1280 (vs buffalo_l's 640 default) gives ~3x the
+# per-face pixels post-resize on high-res `_clear` Reolink streams and
+# panoramic tiles. Lower to 640 if running on a smaller GPU; raise for
+# higher accuracy at the cost of VRAM.
+FACE_REC_DET_SIZE=1280
 
 # Burst-capture from HA per trigger
 FACE_REC_BURST_FRAMES=6
@@ -246,8 +253,50 @@ SESSION_SUMMARY_MAX_TOKENS=400       # cap on the recap length
 SESSION_SUMMARY_TAIL_EXCHANGES=2     # raw user/assistant pairs kept after reset
 SESSION_SUMMARY_LLM_TIMEOUT_SEC=15   # fall back to tail-only if the call hangs
 
+# Context-size summarization: in addition to the idle sweep, the pool runs
+# summarize-and-reset whenever a session's serialized message bytes exceed
+# the active provider's context budget. Threshold = max_model_len * fraction
+# (vLLM reports max_model_len via /v1/models; Anthropic uses a static map).
+# Bumping --max-model-len in compose flows through automatically.
+CONVERSATION_CONTEXT_LIMIT_FRACTION=0.75
+# Optional absolute override in tokens (0 = unset, fraction-of-max wins).
+# Set > 0 to pin a specific ceiling regardless of provider — useful for
+# benchmarking across providers with very different windows or for forcing
+# an earlier compaction than the fraction would.
+CONVERSATION_CONTEXT_LIMIT_TOKENS=0
+
 # Cap on tool-result text before it's summarized back to the LLM
 TOOL_RESULT_MAX_CHARS=8000
+```
+
+#### Companion-app camera tools
+
+Tunes the round-trip flow for `take_photo`,
+`identify_object_in_photo`, `read_text_from_image`, and
+`who_is_in_view` (see
+[device-action tool reference → Camera tools](services/agent/tools/device-action.md#camera-tools)).
+The agent stashes uploaded JPEGs in an in-memory `BlobStore` and
+serves them at `/api/companion/blob/<token>` for the in-process
+vision pipeline. The face-identify chain (`who_is_in_view`) reads
+the same bytes directly from the `BlobStore` and POSTs them to
+face-recognition's `/api/identify`.
+
+```bash
+# How long the orchestrator blocks waiting for the companion app to
+# POST the captured photo before returning a structured timeout result
+# to the LLM. 25s comfortably covers camera launch + capture + LAN
+# multipart upload on a phone-grade JPEG (~3 MB).
+COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC=25
+
+# How long an uploaded blob remains fetchable via
+# /api/companion/blob/<token>. Vision pipelines fetch within
+# seconds; the rest of the TTL absorbs retries and dashboard previews.
+COMPANION_BLOB_TTL_SEC=600
+
+# Total in-memory cap for the BlobStore. Oldest entries evicted first
+# when breached. Same value caps individual upload size — POSTs above
+# this are rejected 413. 10 MiB ≈ ~5 phone-grade JPEGs.
+COMPANION_BLOB_MAX_BYTES=10485760
 ```
 
 Per-session override: clients can pass `X-Idle-Timeout: <seconds>` on
@@ -294,10 +343,44 @@ AUTONOMY_TURN_TIMEOUT_SEC=60
 # Notification targets
 AUTONOMY_BRIEFING_NOTIFY_TO=""          # Signal recipient for the morning briefing
 AUTONOMY_HA_NOTIFY_TARGET=""            # e.g. notify.mobile_app_pixel_8
+NTFY_PUBLISH_TOKEN=""                   # optional bearer token for self-hosted ntfy with auth (companion-app push)
 
 # Handler inputs
 AUTONOMY_BRIEFING_CAMERA_ENTITIES=""    # comma-separated camera entity_ids
 AUTONOMY_ANOMALY_WATCH_DOMAINS="binary_sensor,lock,cover"
+
+# Optional event-driven dispatch surfaces (off by default — the cron
+# dispatcher above is what fires the bundled briefings/anomaly sweeps).
+AUTONOMY_WEBHOOK_ENABLED=false
+AUTONOMY_MQTT_ENABLED=false
+AUTONOMY_MQTT_CLIENT_ID=selene-autonomy
+AUTONOMY_MQTT_RECONNECT_MAX_SEC=60
+
+# Per-agenda-item defaults applied when an item doesn't specify its own.
+# Quiet hours suppress dispatch; policy is "defer" (queue for after) or
+# "drop". Rate limit is "<count>/<unit>" (e.g. 10/min, 60/hour).
+AUTONOMY_DEFAULT_QUIET_START=""
+AUTONOMY_DEFAULT_QUIET_END=""
+AUTONOMY_DEFAULT_QUIET_POLICY=defer
+AUTONOMY_DEFAULT_EVENT_RATE_LIMIT=10/min
+
+# Speaker-channel notifier defaults (HA media_player target + voice).
+AUTONOMY_SPEAKER_DEFAULT_DEVICE=""
+AUTONOMY_SPEAKER_DEFAULT_VOICE=af_heart
+AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5
+AUTONOMY_TTS_AUDIO_TTL_SEC=600
+
+# Act gate — when true, autonomy turns may execute side-effecting tools
+# (instead of message-only). Confirmation timeout governs how long the
+# engine waits for an in-app confirm before aborting.
+AUTONOMY_ACT_ENABLED=false
+AUTONOMY_ACT_DEFAULT_CONFIRMATION_TIMEOUT_SEC=300
+
+# Internal base URLs the autonomy engine uses when calling back into the
+# agent. INTERNAL_BASE_URL is the compose-internal hostname; BASE_URL is
+# optional and only set when notifier links should resolve from the LAN.
+AGENT_BASE_URL=""
+AGENT_INTERNAL_BASE_URL=http://agent:6002
 ```
 
 Notes:
@@ -307,6 +390,13 @@ Notes:
   `docs/services/agent/tools/general.md` for the one-time QR-link setup.
 - `AUTONOMY_HA_NOTIFY_TARGET` accepts `notify.mobile_app_<device>` or
   `mobile_app_<device>`; the leading `notify.` is stripped.
+- `NTFY_PUBLISH_TOKEN` is the **bearer token the agent presents** when
+  POSTing to a registered ntfy/UnifiedPush endpoint. Empty (default) is
+  correct for self-hosted ntfy with no auth — the most common LAN setup.
+  Set it only if your ntfy server requires bearer auth on publish; the
+  user's *distributor* (the ntfy Android app) handles its own server-side
+  auth separately. See the
+  [companion-app integration](integrations/companion-app.md) walkthrough.
 
 ### Memory retrieval & agent phase
 
@@ -326,6 +416,18 @@ MEMORY_RETRIEVAL_MIN_SCORE=0.3
 
 # Seed phase on fresh installs (ignored once the agent_state row exists)
 AGENT_PHASE_DEFAULT="learning"
+
+# Nightly memory consolidation job (runs via the autonomy dispatcher).
+# Cron is interpreted in CURRENT_TIMEZONE.
+AUTONOMY_MEMORY_REVIEW_CRON="0 3 * * *"
+AUTONOMY_MEMORY_MAX_SCAN=5000      # cap on L2 rows pulled per run
+AUTONOMY_MEMORY_LLM_CALL_CAP=20    # cap on summary/promotion LLM calls per run
+
+# Memory scoring + clustering knobs used during consolidation
+MEMORY_HALF_LIFE_DAYS=60           # exponential decay for recency scoring
+MEMORY_ACCESS_COEF=0.5             # weight applied to access count
+MEMORY_HDBSCAN_MIN_CLUSTER_SIZE=5  # HDBSCAN clusters below this don't promote
+MEMORY_HDBSCAN_MIN_SAMPLES=3       # HDBSCAN min_samples
 ```
 
 Notes:
@@ -358,7 +460,9 @@ MCP_SERVERS='[
   {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true},
   {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true},
   {"name": "face",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_face_tools"],             "enabled": true},
-  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true}
+  {"name": "vision",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_vision_tools"],           "enabled": true},
+  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true},
+  {"name": "device_action",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_device_action_tools"],    "enabled": true}
 ]'
 ```
 
@@ -426,8 +530,12 @@ command: >
 `--reasoning-parser glm45` splits the model's `<think>…</think>`
 chain-of-thought into a separate `reasoning` field on the response,
 keeping `message.content` clean for voice satellites. The agent surfaces
-the CoT as a dashboard-only `REASONING` event on `/ws/chat` — see
-[Agent → WebSocket event schema](api-reference.md#websockets).
+the CoT as a `REASONING` event on `/ws/chat` (dashboard-only on the
+wire) and also normalizes it onto the assistant message as
+`reasoning_content` so GLM-4.5-Air's chat template can render
+`<think>…</think>` for in-progress agentic tool-call iterations — see
+[Agent → WebSocket event schema](api-reference.md#websockets) and
+[vLLM service docs](services/vllm/README.md) for the lifecycle.
 
 **Key Parameters**:
 - `--model`: HuggingFace model path
@@ -465,6 +573,42 @@ Server-side prompt caching is applied automatically when the Anthropic
 provider is active (system block, tools array, and last conversation
 message get `cache_control: ephemeral` breakpoints). Cache hits/writes
 are logged at INFO: `[anthropic] cache read=N create=N input=N output=N`.
+
+### Vision Backend Configuration
+
+The `vllm-vision` service is a second vLLM instance pinned to a dedicated
+GPU and serving a Qwen3-VL model. The agent reaches it via three env vars,
+mirroring the `LLM_API_BASE` / `LLM_API_KEY` pattern:
+
+```bash
+VISION_API_BASE="http://10.0.0.1:8001/v1"   # Host-scoped URL the agent calls (NOT the compose-internal vllm-vision:8000).
+VISION_API_KEY="1234"                       # Bearer token; vllm-vision currently doesn't enforce, but the SDK requires a value.
+VISION_SERVED_NAME="gpt-4-vision"           # OpenAI-compat alias the model is served under; sent in every request body.
+```
+
+`VISION_API_BASE` must be reachable **from inside the agent container** —
+typically the same host LAN IP `LLM_API_BASE` uses, on port `8001`. A
+hostname that only resolves outside the docker network will fail with
+`Cannot connect to host` even though DNS resolves. After changing the
+value, recreate the agent so the env is picked up:
+
+```bash
+docker compose up -d --force-recreate --no-deps agent
+```
+
+Used by `POST /api/vision/ask` (multipart — accepts both image AND
+short-video uploads, used by the dashboard playground), `POST
+/api/vision/ask_url` (JSON, image-only, the `query_multimodal_api`
+MCP tool and most `mcp_vision_tools` tools), and `GET /api/vision/health`.
+Both `ask` endpoints return the served-model name in the response so
+clients can show which tier of the fallback ladder is active. The five
+purpose-built tools (`describe_image`, `describe_camera_snapshot`,
+`compare_snapshots`, `identify_object`, `read_text_in_image`) live in
+the [Vision Tools MCP server](services/agent/tools/vision.md).
+Service-side flags (model selection, context window, GPU memory
+utilization) live in `compose.yaml` and the
+[vllm-vision service doc](services/vllm-vision/README.md) covers the
+fallback ladder for tight 24 GB fits.
 
 ### Nginx Gateway Configuration
 

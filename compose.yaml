@@ -24,6 +24,8 @@ services:
       - "80:80"
     volumes:
       - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Satellite OTA blobs — host-side scp target, served read-only at /firmware/
+      - ./volumes/firmware:/usr/share/havencore/firmware:ro
     depends_on:
       agent:
         condition: service_healthy
@@ -137,9 +139,9 @@ services:
       --served-model-name gpt-3.5-turbo
       --tensor-parallel-size 4
       --enable-expert-parallel
-      --max-model-len 32768
+      --max-model-len 46080
       --max-num-seqs 2
-      --gpu-memory-utilization 0.77
+      --gpu-memory-utilization 0.79
       --tool-call-parser glm45
       --reasoning-parser glm45
       --enable-auto-tool-choice
@@ -161,35 +163,54 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-### Re-enable IAV in nginx as well, when turning this back on
-  # iav-to-text:
-  #     build:
-  #       context: ./services/iav-to-text
-  #       dockerfile: Dockerfile
-  #     runtime: nvidia
-  #     environment:
-  #       - CUDA_VISIBLE_DEVICES=2
-  #     ports:
-  #       - "8100:8100"  # vLLM API port
-  #       - "8110:8110"  # Gradio UI port
-  #     volumes:
-  #       - ~/.cache/huggingface:/root/.cache/huggingface
-  #       - ./services/iav-to-text/app:/app
-  #     ipc: host
-  #     healthcheck:
-  #       test: ["CMD", "curl", "-f", "http://localhost:8100/v1/models"]
-  #       interval: 15s
-  #       timeout: 5s
-  #       retries: 5
-  #       start_period: 300s
-  #     deploy:
-  #       resources:
-  #         reservations:
-  #           devices:
-  #             - driver: nvidia
-  #               count: all
-  #               capabilities: [gpu]
-  #     restart: unless-stopped
+  vllm-vision:
+    # Same digest as the main `vllm` service: vLLM 0.19.0, verified on NVIDIA
+    # driver 580.x. Above the 0.11.0 minimum required for Qwen3-VL support.
+    image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
+    runtime: nvidia
+    env_file:
+      - .env
+    environment:
+      # Pin to the dedicated 5th RTX 3090. count:all under deploy.resources is
+      # required for the nvidia runtime to expose GPUs into the container; the
+      # actual selection happens via CUDA_VISIBLE_DEVICES (same pattern as
+      # face-recognition).
+      - CUDA_VISIBLE_DEVICES=4
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    ports:
+      - "8001:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./services/vllm-vision/app:/app
+    ipc: host
+    # All tunables come from .env so the model + flags can be swapped (32B-AWQ
+    # → 30B-A3B-AWQ → 8B-AWQ) without editing this file. See the VISION block
+    # in .env.example and docs/services/vllm-vision/README.md.
+    command: >
+      --model ${VISION_MODEL:-QuantTrio/Qwen3-VL-32B-Instruct-AWQ}
+      --served-model-name ${VISION_SERVED_NAME:-gpt-4-vision}
+      --max-model-len ${VISION_MAX_MODEL_LEN:-16384}
+      --max-num-seqs ${VISION_MAX_NUM_SEQS:-2}
+      --gpu-memory-utilization ${VISION_GPU_MEM_UTIL:-0.92}
+      --kv-cache-dtype fp8_e4m3
+      --limit-mm-per-prompt '{"image": 4, "video": 1}'
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 1200s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
   mosquitto:
     # Rollback digest (known-good 2026-04-12):
     #   eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87
@@ -394,6 +415,44 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    restart: unless-stopped
+
+  # UnifiedPush server for companion-app push notifications. The ntfy
+  # Android app (the user's UnifiedPush distributor) holds a long-lived
+  # WebSocket here; the agent's NtfyFanoutNotifier POSTs autonomy
+  # payloads to per-device endpoint URLs.
+  #
+  # Canonical URL is http://<HOST_IP_ADDRESS>:8585 — the phone-side
+  # ntfy app uses it as its server URL and ntfy itself emits it as the
+  # base of every generated UnifiedPush endpoint. ntfy refuses
+  # sub-path hosting (its web UI uses absolute asset paths), so nginx
+  # provides only a 301 from /ntfy → :8585 as a memorability
+  # shortcut for humans typing in browsers.
+  #
+  # LAN-only, no auth — fine for a self-hosted household stack. See
+  # docs/integrations/companion-app.md.
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ntfy
+    command: serve
+    environment:
+      - TZ=${CURRENT_TIMEZONE:-America/Los_Angeles}
+      - NTFY_BASE_URL=http://${HOST_IP_ADDRESS}:8585
+      - NTFY_BEHIND_PROXY=false
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+      - NTFY_CACHE_DURATION=12h
+      - NTFY_ATTACHMENT_CACHE_DIR=/var/cache/ntfy/attachments
+    volumes:
+      - ./volumes/ntfy/cache:/var/cache/ntfy
+      - ./volumes/ntfy/lib:/var/lib/ntfy
+    ports:
+      - "8585:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O - http://localhost:80/v1/health 2>/dev/null | grep -q healthy || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 volumes:

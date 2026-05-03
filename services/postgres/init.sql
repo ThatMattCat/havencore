@@ -72,8 +72,27 @@ CREATE TABLE IF NOT EXISTS face_detections (
     quality_score REAL,
     snapshot_path TEXT NOT NULL,
     review_state TEXT NOT NULL DEFAULT 'auto',
-    embedding_contributed BOOLEAN DEFAULT false
+    embedding_contributed BOOLEAN DEFAULT false,
+    -- InsightFace genderage outputs (read-only display; not used in matching).
+    age SMALLINT,
+    sex CHAR(1)
 );
 CREATE INDEX IF NOT EXISTS idx_face_detections_captured ON face_detections(captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_face_detections_unknown
     ON face_detections(review_state) WHERE person_id IS NULL;
+
+-- Per-camera FOV metadata. Pipeline reads `fov_type` to decide whether to
+-- tile a frame before InsightFace (panoramic_dual_lens cameras get split
+-- into two horizontally overlapping halves).
+CREATE TABLE IF NOT EXISTS cameras (
+    entity_id     TEXT PRIMARY KEY,
+    sensor_entity TEXT NOT NULL,
+    fov_type      TEXT NOT NULL DEFAULT 'standard'
+                  CHECK (fov_type IN ('standard', 'panoramic_dual_lens')),
+    native_width  INTEGER,
+    native_height INTEGER,
+    notes         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cameras_sensor ON cameras(sensor_entity);

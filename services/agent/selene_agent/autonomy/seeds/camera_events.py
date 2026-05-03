@@ -32,6 +32,15 @@ _FACE_TRIGGER_PROMPT_NOTE = (
 )
 
 
+_NO_FACE_SCENE_PROMPT = (
+    "Pay particular attention to whether this looks like a resident, pet, "
+    "delivery driver, or wildlife — those are the common no-face triggers we "
+    "want to disambiguate. Note clothing, posture, animals, vehicles, packages, "
+    "and anything unusual for a residential property. 2-3 sentences. No "
+    "speculation about intent."
+)
+
+
 SEEDS = [
     {
         "name": "face_identified_triage",
@@ -50,10 +59,11 @@ SEEDS = [
                 "memories_k": 3,
                 "presence": True,
                 "recent_visitors_hours": 6,
+                "scene_description": True,
             },
             "notify": {"channel": "signal"},
             "severity_floor": "low",
-            "cooldown_min": 10,
+            "cooldown_min": 30,
             "attach_snapshot": True,
             "event_rate_limit": "20/min",
         },
@@ -73,10 +83,11 @@ SEEDS = [
                 "memories_k": 3,
                 "presence": True,
                 "recent_visitors_hours": 6,
+                "scene_description": True,
             },
             "notify": {"channel": "signal"},
             "severity_floor": "low",
-            "cooldown_min": 10,
+            "cooldown_min": 15,
             "attach_snapshot": True,
             "event_rate_limit": "20/min",
         },
@@ -84,8 +95,8 @@ SEEDS = [
     {
         # "Person sensor tripped, but no face was identifiable" — backyard
         # cat-walking, hooded delivery driver, etc. The LLM uses presence,
-        # zone, and time to judge; later, a vision AI gather step can
-        # examine the snapshot for additional context (clothing, objects).
+        # zone, time, and the vision AI scene description (resident vs. pet
+        # vs. delivery driver vs. wildlife) to judge.
         "name": "face_no_face_triage",
         "kind": "watch_llm",
         "autonomy_level": "notify",
@@ -106,12 +117,14 @@ SEEDS = [
                 "memories_k": 3,
                 "presence": True,
                 "recent_visitors_hours": 6,
+                "scene_description": True,
+                "scene_description_prompt": _NO_FACE_SCENE_PROMPT,
             },
             "notify": {"channel": "signal"},
             # No-face events are inherently noisy — wildlife, shadows. Set a
             # higher floor so only escalated severity actually pages.
             "severity_floor": "med",
-            "cooldown_min": 15,
+            "cooldown_min": 45,
             "attach_snapshot": True,
             "event_rate_limit": "10/min",
         },
@@ -179,6 +192,50 @@ async def ensure_seeds() -> None:
                 continue
             await _insert_seed(conn, seed)
             logger.info(f"[seeds.camera_events] inserted {seed['name']}")
+        await _migrate_scene_description(conn)
+
+
+async def _migrate_scene_description(conn) -> None:
+    """One-time patch: add ``scene_description`` (and an optional
+    ``scene_description_prompt`` override) to the gather block of any existing
+    system-seeded face_*_triage rows that don't already have the key.
+
+    Mirrors the retired-seed pattern — operator-edited rows are protected by
+    the ``created_by`` filter, and rows where the operator has already
+    explicitly set or unset ``scene_description`` via the dashboard are
+    protected by the missing-key check.
+    """
+    for seed in SEEDS:
+        gather = (seed.get("config") or {}).get("gather") or {}
+        if "scene_description" not in gather:
+            continue
+        row = await conn.fetchrow(
+            "SELECT id, config FROM agenda_items "
+            "WHERE name = $1 AND created_by = $2 LIMIT 1",
+            seed["name"], _CREATED_BY,
+        )
+        if not row:
+            continue
+        existing_cfg = row["config"]
+        if isinstance(existing_cfg, str):
+            existing_cfg = json.loads(existing_cfg)
+        existing_gather = (existing_cfg or {}).get("gather") or {}
+        if "scene_description" in existing_gather:
+            continue
+        new_gather = dict(existing_gather)
+        new_gather["scene_description"] = gather["scene_description"]
+        if "scene_description_prompt" in gather:
+            new_gather["scene_description_prompt"] = gather["scene_description_prompt"]
+        new_cfg = dict(existing_cfg or {})
+        new_cfg["gather"] = new_gather
+        await conn.execute(
+            "UPDATE agenda_items SET config = $1::jsonb WHERE id = $2",
+            json.dumps(new_cfg),
+            row["id"],
+        )
+        logger.info(
+            f"[seeds.camera_events] patched {seed['name']} with scene_description"
+        )
 
 
 async def _insert_seed(conn, seed: Dict[str, Any]) -> None:

@@ -13,7 +13,7 @@ that aren't specific to any other subsystem.
 | Entry point | `python -m selene_agent.modules.mcp_general_tools` |
 | Transport | MCP stdio |
 | Server name | `havencore-general-tools` |
-| Tool count | 5–8 depending on which API keys / credentials are configured |
+| Tool count | Up to 7 (some tools are conditional on credentials) |
 
 Tool registration is **conditional on credentials**. The server enumerates
 tools at `list_tools()` time and only includes the ones whose env vars are
@@ -26,7 +26,7 @@ instead of registering one that always errors.
 |------|-------|---------|
 | `generate_image(prompt)` | (none) | Submits a prompt to the ComfyUI service at `text-to-image:8188` using the `default` workflow. Returns a filepath and a URL to the finished image. |
 | `send_signal_message(message, attachments?)` | `SIGNAL_PHONE_NUMBER`, `SIGNAL_DEFAULT_RECIPIENT` | Sends a Signal message (text + optional image/video attachments) via the `signal-api` container (`signal-cli-rest-api`). Recipient is fixed to `SIGNAL_DEFAULT_RECIPIENT` — the tool is intentionally not a free-form "send to anyone". Attachments accept URLs (auto-downloaded, 50 MB cap) or local paths, are base64-encoded, and sent via `POST /v2/send`; per-attachment errors are tracked and only a full failure is surfaced. Video size cap is ~95 MB. |
-| `query_multimodal_api(text?, image_url?, audio_url?, video_url?)` | (none) | POSTs to the internal `iav-to-text` vision LLM through `http://nginx/iav/api`. Use for image / audio / video analysis. At least one of the four inputs is required. |
+| `query_multimodal_api(image_url, text?)` | (none) | Send an image URL (and optional text prompt) to the vision LLM (`vllm-vision`). POSTs JSON to the agent's own `/api/vision/ask_url` endpoint, which forwards to `vllm-vision` — the agent-side proxy is the single chokepoint for logging and authentication. Image-only by design (the URL endpoint is single-image). For higher-leverage tools — fresh camera snapshots, two-image diffs, OCR — prefer the dedicated [Vision Tools server](vision.md) (`mcp_vision_tools`); for video uploads, use the multipart `/api/vision/ask` endpoint or the dashboard playground. |
 | `wolfram_alpha(query)` | `WOLFRAM_ALPHA_API_KEY` | Wolfram Alpha LLM API for factual + computational questions. 1000-char response cap, 30 s timeout. |
 | `get_weather_forecast(location, date?)` | `WEATHER_API_KEY` | weatherapi.com forecast — current day by default, or a specific `YYYY-MM-DD` up to 365 days ahead. Returns temp, conditions, precip, wind, and astronomy (sunrise/sunset/moon phase). |
 | `brave_search(query, count?)` | `BRAVE_SEARCH_API_KEY` | Brave Search web results. Usually paired with the `fetch` MCP (from `mcp_server_fetch`) to actually read one of the returned pages. |
@@ -46,9 +46,14 @@ Env vars read directly via `os.getenv()` in `mcp_server.py`:
 | `SIGNAL_PHONE_NUMBER` | `send_signal_message` | Your Signal account number in E.164 (e.g. `+15551234567`). The container is linked to this account as a secondary device. |
 | `SIGNAL_DEFAULT_RECIPIENT` | `send_signal_message` | Where messages go. Leave empty to default to `SIGNAL_PHONE_NUMBER` (Note to Self). |
 
-ComfyUI image generation and the multimodal gateway use in-cluster hostnames
-(`text-to-image:8188`, `nginx`) and require no additional credentials — they
-only work when their respective services are running.
+ComfyUI image generation and the vision gateway use in-cluster routing
+(`text-to-image:8188` directly; `query_multimodal_api` posts to the agent's
+own `/api/vision/ask_url`, which then talks to `vllm-vision`) and require no
+additional credentials — they only work when their respective services are
+running. The agent reads `VISION_API_BASE`, `VISION_API_KEY`, and
+`VISION_SERVED_NAME` for the upstream call; see
+[Configuration](../../../configuration.md) and the
+[vllm-vision service doc](../../vllm-vision/README.md).
 
 The agent spawns the server via `MCP_SERVERS` in `.env`:
 
@@ -68,9 +73,13 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   both the filepath and a URL pointing at the ComfyUI service
   (`text-to-image:8188`) — the dashboard proxies these through
   `/api/comfy/view` on the agent (port 6002).
-- **`query_multimodal_api` routes through nginx, not the service directly.**
-  The endpoint is `http://nginx/iav/api`, which proxies to
-  `iav-to-text:8100`. This keeps the routing configurable in one place.
+- **`query_multimodal_api` routes through the agent's own FastAPI proxy,
+  not directly at `vllm-vision`.** The tool POSTs JSON to
+  `http://agent:6002/api/vision/ask_url`, which fills in the served-model
+  name (`VISION_SERVED_NAME`) and forwards to the `VISION_API_BASE`
+  upstream. Single chokepoint for logging, auth, and any future
+  request-shaping; matches the pattern the dashboard's `/api/vision/ask`
+  multipart endpoint already uses.
 - **`send_signal_message`'s attachment pipeline is robust but silent.** Failed
   attachments are collected into `attachment_errors` and only surface in
   the response if *all* attachments fail. Partial success sends the
@@ -108,17 +117,32 @@ docker compose ps text-to-image
 docker compose exec agent curl -I http://text-to-image:8188
 ```
 
-### `query_multimodal_api` returns a 5xx or `Unexpected response structure`
+### `query_multimodal_api` returns a 5xx or `Vision API error`
 
-`iav-to-text` or `nginx` is down, or the vision LLM model didn't load.
-Check:
+`vllm-vision` is down or unreachable, or the agent's `/api/vision/ask_url`
+proxy can't reach the upstream URL configured in `VISION_API_BASE`. Check
+in this order:
 
 ```bash
-docker compose logs iav-to-text
-docker compose logs nginx
+# 1. Is vllm-vision running and serving the model?
+docker compose ps vllm-vision
+docker compose exec agent curl -sf http://vllm-vision:8000/v1/models
+
+# 2. Can the agent container reach the host-LAN URL configured in .env?
+docker compose exec agent bash -lc 'curl -sf -m 3 -o /dev/null -w "%{http_code}\n" "$VISION_API_BASE/models"'
+
+# 3. Agent-side proxy health (this is what query_multimodal_api actually calls):
+curl -sf http://localhost:6002/api/vision/health
 ```
 
-The tool extracts `data["choices"][0]["message"]["content"]`; any
+If (1) is fine but (2) is failing, the `VISION_API_BASE` value in `.env`
+points somewhere the agent container can't route to (typical: a hostname
+that resolves outside the docker network). Update it to a host IP that
+matches the same convention as `LLM_API_BASE`, then
+`docker compose up -d --force-recreate --no-deps agent` so the new env
+is picked up.
+
+The tool extracts `data["response"]` from the proxy's reply; any
 structural deviation raises `ValueError`.
 
 ### `send_signal_message` returns "SIGNAL_PHONE_NUMBER is not configured"

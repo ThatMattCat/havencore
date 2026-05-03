@@ -1,10 +1,16 @@
 """Camera discovery against Home Assistant.
 
 Queries HA's ``/api/states`` and surfaces every ``binary_sensor.*_person``
-entity with the corresponding ``camera.<base>_fluent`` it would trigger.
+entity with the corresponding snapshot camera entity it would trigger. The
+mapping comes from the ``cameras`` Postgres table when available (operator-
+seeded) and falls back to the Reolink ``_clear`` naming convention for
+sensors that haven't been registered yet.
+
 ``camera_exists`` flags any naming-convention drift so a future camera that
 breaks the convention can be spotted before the MQTT bridge silently fails
-on it.
+on it. ``registered`` flags whether the cameras table has a row for this
+sensor — unregistered cameras still work (fall back to ``fov_type=standard``)
+but won't get panoramic tiling until they're seeded.
 
 Reuses HAOS_URL / HAOS_TOKEN — same env vars the agent's
 ``mcp_homeassistant_tools`` and our ``ha_snapshot`` consume — and the same
@@ -13,10 +19,13 @@ trailing-``/api`` strip rule so the example .env value works unchanged.
 
 import logging
 import os
+from typing import Optional
 
 import aiohttp
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from db import db
 
 
 logger = logging.getLogger("face-recognition.api.cameras")
@@ -31,7 +40,10 @@ HA_REQUEST_TIMEOUT_SEC = float(os.getenv("FACE_REC_HA_TIMEOUT_SEC", "10"))
 PERSON_SENSOR_PREFIX = "binary_sensor."
 PERSON_SENSOR_SUFFIX = "_person"
 CAMERA_PREFIX = "camera."
-CAMERA_SUFFIX = "_fluent"
+# Default suffix for Reolink HACS — points to the high-res "clear" stream
+# profile. The trigger automation in HA uses the same convention so
+# face-recognition's MQTT bridge sees matching entity names.
+CAMERA_SUFFIX = "_clear"
 
 
 class CameraDiscovery(BaseModel):
@@ -39,6 +51,9 @@ class CameraDiscovery(BaseModel):
     camera_entity: str
     camera_exists: bool
     current_state: str
+    registered: bool
+    fov_type: Optional[str] = None
+    native_resolution: Optional[str] = None  # "WxH" or None
 
 
 def _normalize_base_url(raw: str) -> str:
@@ -51,6 +66,12 @@ def _normalize_base_url(raw: str) -> str:
 def _derive_camera_entity(sensor_entity: str) -> str:
     base = sensor_entity[len(PERSON_SENSOR_PREFIX):-len(PERSON_SENSOR_SUFFIX)]
     return f"{CAMERA_PREFIX}{base}{CAMERA_SUFFIX}"
+
+
+def _format_resolution(w: Optional[int], h: Optional[int]) -> Optional[str]:
+    if w and h:
+        return f"{w}x{h}"
+    return None
 
 
 @router.get("", response_model=list[CameraDiscovery])
@@ -84,6 +105,10 @@ async def discover_cameras() -> list[CameraDiscovery]:
         and s["entity_id"].startswith(CAMERA_PREFIX)
     }
 
+    # One DB read up-front; the cameras table is at-most-cameras-count rows
+    # so iterating is cheaper than per-sensor lookups.
+    registry = {row["sensor_entity"]: row for row in await db.list_cameras()}
+
     discoveries: list[CameraDiscovery] = []
     for s in states:
         entity_id = s.get("entity_id")
@@ -94,13 +119,29 @@ async def discover_cameras() -> list[CameraDiscovery]:
             and entity_id.endswith(PERSON_SENSOR_SUFFIX)
         ):
             continue
-        camera_entity = _derive_camera_entity(entity_id)
+        registered_row = registry.get(entity_id)
+        if registered_row:
+            camera_entity = registered_row["entity_id"]
+            fov_type = registered_row["fov_type"]
+            native_resolution = _format_resolution(
+                registered_row.get("native_width"),
+                registered_row.get("native_height"),
+            )
+            registered = True
+        else:
+            camera_entity = _derive_camera_entity(entity_id)
+            fov_type = None
+            native_resolution = None
+            registered = False
         discoveries.append(
             CameraDiscovery(
                 sensor_entity=entity_id,
                 camera_entity=camera_entity,
                 camera_exists=camera_entity in camera_ids,
                 current_state=str(s.get("state", "unknown")),
+                registered=registered,
+                fov_type=fov_type,
+                native_resolution=native_resolution,
             )
         )
 

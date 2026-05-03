@@ -74,10 +74,11 @@ curl http://localhost:6002/health
 
 ## Available Tools and Commands
 
-HavenCore's HA MCP server (`mcp_homeassistant_tools`) currently exposes
-**19 tools** covering generic REST/service calls, opinionated helpers for
-common domains, WebSocket-powered registry + presence lookups, timer /
-template / history / calendar access, and media-player transport control.
+HavenCore's HA MCP server (`mcp_homeassistant_tools`) exposes
+**20 tools** covering generic REST/service calls, single-entity reads,
+opinionated helpers for common domains, WebSocket-powered registry +
+presence lookups, timer / template / history / calendar access, and
+media-player transport control.
 For a structured server-side reference (internals, config, troubleshooting),
 see [MCP Home Assistant](../services/agent/tools/home-assistant.md). The section below focuses on
 what the assistant can do for a user.
@@ -87,6 +88,7 @@ what the assistant can do for a user.
 | Tool | Purpose |
 |------|---------|
 | `ha_list_entities(domain?, area?, include_state?)` | Unified entity lookup. Filter by `domain` (all lights, all thermostats…), by `area` (everything in the kitchen), or both. Domain-only queries include state + curated attributes by default; area queries return bare entity_ids unless `include_state=true`. If a domain has no entities (e.g. `notify`, `tts`, `script`) the response includes a `hint` pointing at `ha_list_services` so the LLM doesn't stall on a dead end. |
+| `ha_get_state(entity_id)` | Cheap single-entity read. Returns state + curated attributes. Use for "is the porch light on?" / "what's the thermostat set to?" instead of pulling a whole domain via `ha_list_entities`. |
 | `ha_list_services(domain)` | Discover what services an HA integration exposes. Most common: `domain="notify"` to find `notify.mobile_app_*`. Also the right tool for `tts`, `script`, and other domains that publish actions rather than entities. |
 | `ha_execute_service(entity_id, service, service_data?)` | Generic escape hatch — call any HA service on any entity. `service_data` is a JSON object (brightness, temperature, volume_level, etc.). |
 
@@ -156,6 +158,7 @@ style questions and to summarize who's home.
 | `ha_evaluate_template(template)` | Renders a Jinja2 template server-side via `POST /api/template`. Use for compound checks (`"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}"`) or anything with `now()` / `states()`. |
 | `ha_get_entity_history(entity_id, hours?)` | Recent state history (last N hours, capped at 168 = one week). Dense series are sampled down to ~200 points. |
 | `ha_get_calendar_events(calendar_entity, days?)` | Upcoming events from a `calendar.*` entity (next N days, capped at 31). |
+| `ha_create_calendar_event(calendar_entity, summary, …)` | Create a new event. Provide either `start_date_time`+`end_date_time` (ISO 8601) or `start_date`+`end_date` (all-day, `YYYY-MM-DD`, end exclusive). Optional `description`, `location`. |
 
 **Voice examples**:
 
@@ -164,12 +167,21 @@ style questions and to summarize who's home.
   `entity_id="cover.garage"`, `hours=24`.
 - "What's on the family calendar this week?" → `ha_get_calendar_events`
   with `calendar_entity="calendar.family"`, `days=7`.
+- "Schedule a dentist appointment next Tuesday at 10am" →
+  `ha_create_calendar_event(calendar.family, summary="Dentist",
+  start_date_time="2026-05-05T10:00:00-04:00",
+  end_date_time="2026-05-05T11:00:00-04:00")`.
 - "Is the back door open and Matt home?" → `ha_evaluate_template` with
   a Jinja expression.
 
 **Prerequisites**: `ha_set_timer` requires timer helpers defined in HA
 (they're not dynamic — add them in `configuration.yaml` or the UI).
 `ha_get_calendar_events` requires at least one calendar integration.
+`ha_create_calendar_event` requires a calendar integration that
+declares the `CREATE_EVENT` feature — CalDav and Local Calendar both do.
+**Edit / delete are not currently exposed**: HA's CalDav integration
+doesn't declare `UPDATE_EVENT` / `DELETE_EVENT`, so the underlying WS
+commands always fail. See `docs/todo.md` for the direct-CalDav follow-up.
 
 ### Media player control
 
@@ -296,7 +308,7 @@ to the trigger list, no per-camera YAML duplication.
           haven/face/trigger/{{
             trigger.to_state.entity_id
               | replace('binary_sensor.', 'camera.')
-              | replace('_person', '_fluent')
+              | replace('_person', '_clear')
           }}
         payload: >-
           {
@@ -309,10 +321,24 @@ to the trigger list, no per-camera YAML duplication.
 ### Camera entity naming convention
 
 The bridge derives the `camera.*` entity from the trigger topic by
-substituting `binary_sensor.` → `camera.` and `_person` → `_fluent`.
-That matches Reolink's HACS integration default. Different cameras use
-different suffixes (`_main`, `_sub`, etc.) — confirm what HA exposes
-for your camera and either rename the HA entity or extend the template.
+substituting `binary_sensor.` → `camera.` and `_person` → `_clear`.
+That points at Reolink HACS's high-resolution stream profile (e.g.
+7680×2160 on the Duo 3 vs the `_fluent` low-res profile's 1536×432).
+
+HA's `camera_proxy` is on-demand: face-recognition pulls a single JPEG
+per call, so having the `_clear` entity exposed in HA does not by itself
+trigger continuous high-res RTSP streaming — only an active live-view
+consumer (HA dashboard, Frigate, etc.) would. Bandwidth cost is one JPEG
+per `binary_sensor.*_person` trip.
+
+Different camera brands use different suffixes (`_main`, `_sub`, etc.).
+Two ways to handle them:
+
+1. **Rename the HA entity** to match the `_clear` convention.
+2. **Register the camera in the `cameras` Postgres table** with the
+   actual entity id you have. The face-recognition discovery endpoint
+   will use the registered value; the trigger automation just needs to
+   publish to `haven/face/trigger/<that_entity_id>`.
 
 ### Discovery / sanity check
 
@@ -325,8 +351,8 @@ drift before the bridge silently fails on it.
 ### Service status
 
 The bridge publishes capture lifecycle to `haven/face/status`
-(`{camera, mode: "idle"|"capturing"|"matching", since}`). v1 uses a
-single global topic without retain — see deferred follow-up #2 in
+(`{camera, mode: "idle"|"capturing"|"matching", since}`) on a single
+global topic without retain — see deferred follow-up #2 in
 [`docs/todo.md`](../todo.md) for the per-camera retained variant.
 
 ## Troubleshooting

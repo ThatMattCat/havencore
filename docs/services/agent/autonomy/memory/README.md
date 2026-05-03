@@ -1,4 +1,4 @@
-# Memory consolidation (AutonomyEngine v2)
+# Memory consolidation
 
 ## Tiers
 - **L1 Ephemeral** — in-turn context.

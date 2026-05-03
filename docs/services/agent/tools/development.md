@@ -238,7 +238,7 @@ class SeleneAgent:
 
 #### 4. Add Environment Configuration
 
-Add any required API keys to `.env.tmpl`:
+Add any required API keys to `.env.example`:
 
 ```bash
 # Cryptocurrency API Configuration (optional)
@@ -1403,6 +1403,10 @@ Swap the module for any of the others:
 | plex | `selene_agent.modules.mcp_plex_tools` |
 | mcp_server_qdrant | `selene_agent.modules.mcp_qdrant_tools` |
 | mqtt | `selene_agent.modules.mcp_mqtt_tools` |
+| face | `selene_agent.modules.mcp_face_tools` |
+| vision | `selene_agent.modules.mcp_vision_tools` |
+| github | `selene_agent.modules.mcp_github_tools` |
+| reminder | `selene_agent.modules.mcp_reminder_tools` |
 
 (The `mcp_server_fetch` entry in `.env` is the upstream `mcp-server-fetch`
 package, not a local module.)

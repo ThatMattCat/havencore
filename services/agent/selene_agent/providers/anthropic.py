@@ -61,6 +61,36 @@ _STOP_REASON_MAP = {
 }
 
 
+# Static context-window sizes (input tokens) for Anthropic models. The API
+# doesn't expose this on a per-model endpoint, so we keep a small map of the
+# models we actually run. Unknown models fall back to ``_ANTHROPIC_DEFAULT``,
+# which matches the long-standing 200K Claude window.
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 200_000
+_ANTHROPIC_MAX_TOKENS_BY_PREFIX = (
+    ("claude-opus-4-7", 200_000),
+    ("claude-opus-4-6", 200_000),
+    ("claude-opus-4-5", 200_000),
+    ("claude-opus-4", 200_000),
+    ("claude-sonnet-4-6", 200_000),
+    ("claude-sonnet-4-5", 200_000),
+    ("claude-sonnet-4", 200_000),
+    ("claude-haiku-4-5", 200_000),
+    ("claude-haiku-4", 200_000),
+    ("claude-3-5", 200_000),
+    ("claude-3-7", 200_000),
+    ("claude-3", 200_000),
+)
+
+
+def _anthropic_max_tokens_for(model: str) -> int:
+    if not model:
+        return _ANTHROPIC_DEFAULT_MAX_TOKENS
+    for prefix, size in _ANTHROPIC_MAX_TOKENS_BY_PREFIX:
+        if model.startswith(prefix):
+            return size
+    return _ANTHROPIC_DEFAULT_MAX_TOKENS
+
+
 _DISALLOWED_TOP_LEVEL_SCHEMA_KEYS = ("oneOf", "allOf", "anyOf")
 
 
@@ -418,3 +448,18 @@ class AnthropicProvider:
         self._last_cache_read = 0
         self._last_cache_create = 0
         return stats
+
+    def pop_last_reasoning(self) -> Optional[str]:
+        # Anthropic's ``thinking`` blocks aren't surfaced through the OpenAI
+        # translation, so there's never anything to pop here. Conform to the
+        # protocol so the orchestrator's ``pop_last_reasoning`` probe doesn't
+        # AttributeError.
+        return None
+
+    async def get_max_model_len(self) -> Optional[int]:
+        """Look up the model's static context window from the prefix map.
+
+        Anthropic doesn't expose per-model max-token info on a public endpoint
+        we can hit cheaply, so the map in this module is the source of truth.
+        Unknown models return the conservative 200K default."""
+        return _anthropic_max_tokens_for(self.model)

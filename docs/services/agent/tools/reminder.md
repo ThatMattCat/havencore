@@ -234,9 +234,9 @@ docker compose logs --tail 100 agent | grep -i autonomy
 ```
 
 Quiet hours can also defer or drop a fire — see
-[autonomy/v3.md → Quiet hours](../autonomy/v3.md). Manual triggers via
-`POST /api/autonomy/trigger/{id}?bypass_quiet=true` will fire even
-inside quiet hours.
+[Autonomy README → Quiet hours](../autonomy/README.md#quiet-hours).
+Manual triggers via `POST /api/autonomy/trigger/{id}?bypass_quiet=true`
+will fire even inside quiet hours.
 
 ### Cron syntax errors
 
@@ -275,9 +275,8 @@ fields are `minute hour day-of-month month day-of-week`. Examples:
 
 ## See also
 
-- [Autonomy v3](../autonomy/v3.md) — full `reminder` config schema and
-  the kind-by-kind config reference.
 - [Autonomy README](../autonomy/README.md) — engine architecture,
-  notifier protocol, agenda data model.
+  notifier protocol, agenda data model, full `reminder` config shape, and
+  the kind-by-kind config reference.
 - [General tools](general.md) — `send_signal_message`, the underlying
   Signal delivery used by `channel='signal'`.

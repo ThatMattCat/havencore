@@ -131,7 +131,9 @@ async def test_end_to_end_consolidation(qdrant_test_env):
     # owns the engine + DB pool (both init in FastAPI lifespan); importing
     # ``app`` from a pytest subprocess gives us an un-started copy with no
     # pool, so we go through the wire instead.
-    agent_base = os.getenv("AGENT_BASE_URL", "http://localhost:6002")
+    # AGENT_BASE_URL is set (often to "") in the container env for the
+    # Signal-link path, so use `or` rather than getenv's default arg.
+    agent_base = os.getenv("AGENT_BASE_URL") or "http://localhost:6002"
     trigger = requests.post(f"{agent_base}/api/memory/runs/trigger", timeout=180)
     trigger.raise_for_status()
     result = trigger.json().get("result", {})

@@ -52,14 +52,14 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 - Serves a custom SvelteKit dashboard (static SPA) with chat, metrics, service playgrounds, Home Assistant views, and live logs
 
 **Key Components**:
-- **Session Orchestrator Pool**: per-session `AgentOrchestrator` instances keyed by `session_id`, with per-session locks, 30s idle sweep, LRU cap (64 sessions), cold-resume from the history DB, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` bypasses it with an ephemeral orchestrator for stateless OpenAI-compat calls.
+- **Session Orchestrator Pool**: per-session `AgentOrchestrator` instances keyed by `session_id`, with per-session locks, a 30s background sweep that summarizes-and-resets sessions on either idle window or token-budget overrun (the budget tracks the active provider's `max_model_len`), LRU cap (64 sessions) with oversized-buffer summarization on eviction, cold-resume from the history DB, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` bypasses it with an ephemeral orchestrator for stateless OpenAI-compat calls.
 - **Orchestrator**: Event-based agent loop with per-turn metrics
 - **MCP Client Manager**: Tool discovery and lifecycle across MCP servers
 - **Conversation Database**: PostgreSQL session and history management — rows keyed by externally-stable `session_id` (dashboard tab UUID, Selene-puck mac-hash) so a single logical device accumulates turns across restarts
 - **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
 - **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 
-**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. The earlier Gradio UI and separate FastAPI app on port 6006 were removed during the 2026 revamp; port 6006 is now used by the unrelated [face-recognition service](services/face-recognition/README.md).
+**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. Port 6006 hosts the [face-recognition service](services/face-recognition/README.md).
 
 ### 3. Speech-to-Text Service (Port 6001)
 **Purpose**: Audio Transcription and Processing
@@ -130,9 +130,18 @@ conversation_histories (
 - Subscribes to `haven/face/trigger/{camera}` (HA fires it on person-detected)
 - Bursts frames via HA `camera_proxy`, picks top-K faces by quality, embeds, kNN against the Qdrant `faces` collection
 - Persists detections + snapshots to Postgres / disk; publishes results to MQTT
-- v1 is log-only — access-control enforcement is deliberately deferred
+- Log-only: detections are recorded and published; access-control enforcement is out of scope
 
 Uses the existing Postgres + Qdrant + Mosquitto + HA primitives rather than introducing new infrastructure. See [Face Recognition](services/face-recognition/README.md) for full reference.
+
+### 10. ntfy (UnifiedPush — Port 8585)
+**Purpose**: Inbound push delivery to the companion Android app
+- `binwiederhier/ntfy` server, no auth, LAN-only
+- The phone-side ntfy app holds a long-lived WebSocket and acts as the user's UnifiedPush distributor
+- The agent's `NtfyFanoutNotifier` (autonomy engine) POSTs payloads to per-device endpoint URLs registered via `/api/push/register`
+- Memorability redirect: `http://<host>/ntfy` → `http://<host>:8585` via nginx (ntfy refuses sub-path hosting, so this is a 301, not a reverse proxy)
+
+See [Companion App integration](integrations/companion-app.md) for the wire format, registration flow, and setup checklist.
 
 ## Data Flow Architecture
 
@@ -198,9 +207,15 @@ services:
   - speech-to-text (STT)
   - text-to-speech (TTS)
   - postgres (database)
-  - vllm (LLM inference)
+  - vllm (chat LLM inference)
+  - vllm-vision (vision LLM inference)
+  - text-to-image (ComfyUI)
+  - face-recognition (InsightFace)
   - qdrant (vector DB)
   - embeddings (text vectors)
+  - mosquitto (MQTT broker)
+  - signal-api (signal-cli REST bridge)
+  - ntfy (UnifiedPush server)
 ```
 
 ### Network Architecture
@@ -273,10 +288,13 @@ services:
 - **Proxy**: Nginx (reverse proxy, load balancer)
 
 ### AI/ML Stack
-- **LLM Inference**: vLLM, LlamaCPP
-- **Speech-to-Text**: OpenAI Whisper
+- **Chat LLM**: vLLM serving `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
+- **Vision LLM**: vLLM serving `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
+- **Speech-to-Text**: Faster-Whisper
 - **Text-to-Speech**: Kokoro TTS
-- **Embeddings**: Various transformer models
+- **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`
+- **Face detect+embed**: InsightFace `buffalo_l` (RetinaFace + ArcFace R100)
+- **Image generation**: ComfyUI
 - **GPU Compute**: CUDA, NVIDIA Container Toolkit
 
 ---

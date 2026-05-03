@@ -49,6 +49,15 @@ SNAPSHOT_DIR = Path(config.SNAPSHOT_DIR)
 AUTO_IMPROVE_DIR = SNAPSHOT_DIR / "auto"
 TOP_K_FACES = 3
 
+# Panoramic-tiling params. Each tile extends 5% past the midpoint, so the
+# seam zone [0.45W, 0.55W] (10% of the frame width) appears in BOTH tiles.
+# Faces straddling the stitch line get caught in at least one tile fully;
+# duplicates in the overlap dedupe by IoU > 0.5 (higher det_score wins).
+# Tuned for Reolink dual-lens stitched panoramas; tuneable if a future
+# camera has a different geometry.
+_PANO_TILE_OVERLAP = 0.05
+_PANO_DEDUP_IOU = 0.5
+
 
 @dataclass
 class _Candidate:
@@ -226,15 +235,99 @@ async def contribute_embedding_for_detection(
     )
 
 
-def _detect_and_score_sync(frames: list[np.ndarray]) -> list[_Candidate]:
+def _iou(a, b) -> float:
+    """IoU of two [x1, y1, x2, y2] bboxes. 0.0 when they don't overlap."""
+    ax1, ay1, ax2, ay2 = float(a[0]), float(a[1]), float(a[2]), float(a[3])
+    bx1, by1, bx2, by2 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _translate_face(face, offset_x: int) -> None:
+    """Shift bbox + kps x-coords by `offset_x` so a tile-relative detection
+    expresses bounds in the original full-frame coordinate system. Mutates
+    the insightface Face's underlying numpy arrays in-place — Face is a dict
+    subclass so attribute assignment also works, but in-place keeps the same
+    array object embedder.detect_and_embed returned.
+    """
+    if offset_x == 0:
+        return
+    face.bbox[0] += offset_x
+    face.bbox[2] += offset_x
+    if face.kps is not None:
+        face.kps[:, 0] += offset_x
+
+
+def _detect_panoramic(frame: np.ndarray) -> list:
+    """Tile a wide stitched frame and run InsightFace per tile.
+
+    Returns a list of insightface Face objects with bboxes and kps already
+    in the full-frame coordinate system, deduped across the seam overlap by
+    IoU. Single-frame fallback if the frame is too narrow to tile usefully.
+    """
+    h, w = frame.shape[:2]
+    # If the frame isn't wide enough for tiling to win, just run once.
+    # 1024 is generous — anything below this and the per-tile resize loses
+    # to the simpler single-pass approach.
+    if w < 1024:
+        return list(embedder.detect_and_embed(frame))
+
+    half = w // 2
+    overlap = int(round(w * _PANO_TILE_OVERLAP))
+    left_x2 = half + overlap
+    right_x1 = half - overlap
+
+    left_tile = frame[:, :left_x2]
+    right_tile = frame[:, right_x1:]
+
+    left_faces = list(embedder.detect_and_embed(left_tile))
+    right_faces = list(embedder.detect_and_embed(right_tile))
+
+    for f in right_faces:
+        _translate_face(f, right_x1)
+
+    combined = left_faces + right_faces
+    if len(combined) <= 1:
+        return combined
+
+    # Higher det_score wins on overlap conflicts. Iteration order (sorted
+    # desc) means the first instance kept is always the best.
+    keep: list = []
+    for f in sorted(combined, key=lambda x: float(x.det_score), reverse=True):
+        if any(_iou(f.bbox, k.bbox) > _PANO_DEDUP_IOU for k in keep):
+            continue
+        keep.append(f)
+    return keep
+
+
+def _detect_and_score_sync(
+    frames: list[np.ndarray], fov_type: str
+) -> list[_Candidate]:
     """Detect + quality-score every face in every frame. Filters by floor.
 
-    Wrapped so the caller can offload it to a thread (insightface inference
-    is blocking C/CUDA work).
+    For ``fov_type='panoramic_dual_lens'``, each frame is split into two
+    horizontally overlapping halves and detection runs per tile, with
+    bboxes translated back to full-frame coords and overlap-dedup'd. Quality
+    scoring runs on the full frame regardless, so quality.score_face's area
+    weighting reflects "face vs full panoramic frame" — same denominator as
+    the snapshot the operator sees in the dashboard.
+
+    Wrapped sync so the caller can offload it to a thread (insightface
+    inference is blocking C/CUDA work).
     """
     candidates: list[_Candidate] = []
     for idx, frame in enumerate(frames):
-        faces = embedder.detect_and_embed(frame)
+        if fov_type == "panoramic_dual_lens":
+            faces = _detect_panoramic(frame)
+        else:
+            faces = embedder.detect_and_embed(frame)
         for face in faces:
             q = score_face(frame, face)
             if q >= config.QUALITY_FLOOR:
@@ -268,6 +361,12 @@ async def process_event(
 
     await _emit("capturing")
     try:
+        # Camera metadata drives FOV-aware detection. An unregistered camera
+        # falls back to 'standard' so the pipeline still works for cameras
+        # the operator hasn't seeded into the cameras table yet.
+        camera_meta = await db.get_camera(camera)
+        fov_type = (camera_meta or {}).get("fov_type") or "standard"
+
         frames = await ha_snapshot.capture_burst(
             camera=camera,
             n=config.BURST_FRAMES,
@@ -288,7 +387,9 @@ async def process_event(
         await _emit("matching")
         # insightface inference is CPU-blocking from asyncio's perspective;
         # offload so the FastAPI event loop stays responsive.
-        candidates = await asyncio.to_thread(_detect_and_score_sync, frames)
+        candidates = await asyncio.to_thread(
+            _detect_and_score_sync, frames, fov_type
+        )
 
         if not candidates:
             logger.info(
@@ -366,6 +467,16 @@ async def process_event(
 
         snapshot_rel_path = _save_snapshot(best_frame, captured_at, event_id)
 
+        # genderage submodel ships in buffalo_l and runs on every face by
+        # default — these come back as estimates, not ground truth, and exist
+        # only for dashboard display. Coerce age to int (insightface returns
+        # numpy.int64 on some installs) so asyncpg's SMALLINT bind doesn't
+        # complain.
+        best_age = getattr(best.face, "age", None)
+        best_sex = getattr(best.face, "sex", None)
+        if best_age is not None:
+            best_age = int(best_age)
+
         detection = await db.insert_face_detection(
             event_id=event_id,
             camera=camera,
@@ -374,6 +485,8 @@ async def process_event(
             confidence=confidence,
             quality_score=best_quality,
             snapshot_path=snapshot_rel_path,
+            age=best_age,
+            sex=best_sex,
         )
         detection_id: uuid.UUID = detection["id"]
 

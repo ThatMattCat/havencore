@@ -17,6 +17,7 @@ from api import admin as admin_api
 from api import cameras as cameras_api
 from api import detections as detections_api
 from api import face_images as face_images_api
+from api import identify as identify_api
 from api import people as people_api
 from db import db
 from embedder import embedder
@@ -29,6 +30,23 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("face-recognition")
+
+# Quiet third-party libraries that log every HTTP call at INFO. The qdrant
+# client routes through httpx for every query; uvicorn's access logger fires
+# on every Docker /health poll (every 30s). Both drown out the lines we
+# actually care about.
+for noisy in ("httpx", "httpcore", "openai"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+class _SuppressHealthAccessLog(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        # uvicorn access format: '127.0.0.1:xxxxx - "GET /health HTTP/1.1" 200 OK'
+        return "/health" not in msg
+
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLog())
 
 
 @asynccontextmanager
@@ -68,6 +86,7 @@ app = FastAPI(title="HavenCore Face Recognition", lifespan=lifespan)
 app.include_router(people_api.router)
 app.include_router(detections_api.router)
 app.include_router(face_images_api.router)
+app.include_router(identify_api.router)
 app.include_router(cameras_api.router)
 app.include_router(admin_api.router)
 

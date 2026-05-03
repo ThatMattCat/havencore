@@ -59,6 +59,63 @@ hostname on each request (cached for the resolver's `valid=` window).
 This is applied to every agent location: `/v1/chat/completions`,
 `/api/`, `/ws/`, and the SPA catch-all `/`.
 
+## Satellite OTA firmware (`/firmware/`)
+
+Nginx also static-serves satellite firmware blobs at `http://<host>/firmware/`,
+on the same gateway port the satellite already uses for `/api/chat`,
+`/v1/audio/transcriptions`, `/v1/audio/speech`, and `/api/status`. Plain HTTP,
+no auth, no signing — LAN-only, matching the rest of the API surface.
+
+| URL | Content-Type | Purpose |
+|-----|--------------|---------|
+| `GET /firmware/satellite.bin`  | `application/octet-stream` | Whole-file firmware blob streamed into `esp_https_ota` on the device |
+| `GET /firmware/satellite.json` | `application/json`         | Optional version sidecar (`{"version", "size", "sha256"}`); satellite-side version-skip logic is future work |
+
+Range requests aren't required (the device does whole-file GETs); `gzip` is
+explicitly off (the firmware client doesn't decompress). Bare `/firmware/`
+returns 403 — `autoindex` is disabled so the directory contents aren't
+enumerable.
+
+### Host-side layout
+
+Blobs live on the host at:
+
+```
+./volumes/firmware/satellite.bin
+./volumes/firmware/satellite.json   (optional)
+```
+
+…bind-mounted read-only into the nginx container at
+`/usr/share/havencore/firmware`. The directory is owned by the host user
+(uid 1000 in the default deployment); the `volumes/**/*` gitignore rule
+keeps the blobs out of git.
+
+### Uploading from a build host (the perms gotcha)
+
+The nginx worker inside the container runs as `nginx` (uid 101). On the
+bind mount that uid is "other" relative to the host owner, so files
+arriving with mode `0600` will return **403 Forbidden** even though the
+route is wired correctly. Files need to be at least `0644` (or
+group-readable with the right group).
+
+`scp` ships the source file's mode bits literally, so a build host that
+writes its manifest under a restrictive umask will trip this on every
+upload. Use `rsync --chmod` to normalize perms in flight regardless of
+source mode:
+
+```bash
+rsync -av --chmod=F644 satellite.bin satellite.json \
+    matt@<host>:~/code/havencore/volumes/firmware/
+```
+
+Plain `scp` works too if the publish script `chmod 644`s before transfer
+or runs a remote `chmod 644` after. Pick whichever fits the build flow.
+
+> **Note**: this is a single-tenant dev setup. In a multi-user
+> deployment the route would need at least an allowlist or a token, and
+> the upload path/owner would need to be parameterized rather than
+> hard-coded to the user's home.
+
 ## Features
 
 - **Load Balancing**: Round-robin across service instances
@@ -100,3 +157,15 @@ server {
 add_header X-Frame-Options DENY;
 add_header X-Content-Type-Options nosniff;
 ```
+
+### Upload size caps
+
+Per-location `client_max_body_size` overrides nginx's 1 MB default:
+
+| Location | Cap | Why |
+|----------|-----|-----|
+| `/v1/audio/speech` | 10 MB | TTS request bodies are small text payloads. |
+| `/v1/audio/transcriptions` / `/v1/audio/translations` | 25 MB | STT accepts uploaded audio files (Whisper). |
+| `/api/` | 300 MB | Agent REST surface — `/api/vision/ask` accepts both phone-camera JPEGs (5–15 MB) and short video clips (a 3-min 1080p H.264 clip is ~150–200 MB; phone footage at 10–15 Mbps can hit ~340 MB). 300 MB covers ~3 min of typical 1080p phone video with margin. **Bind-mount inode pitfall:** atomic-save editors change the inode, so the running container sees the OLD file until `docker compose up -d --force-recreate nginx`; `restart` is not enough. |
+
+Other locations inherit the default 1 MB.

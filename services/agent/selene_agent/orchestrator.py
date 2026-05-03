@@ -6,13 +6,15 @@ that can be consumed by both non-streaming (collect all) and streaming (SSE/WebS
 """
 
 import asyncio
+import contextvars
 import json
+import os
 import re
 import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +28,10 @@ from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
 from selene_agent.utils.mcp_client_manager import MCPClientManager
+from selene_agent.utils.tokens import (
+    estimate_messages_tokens,
+    resolve_context_limit_tokens,
+)
 
 logger = custom_logger.get_logger('loki')
 
@@ -49,6 +55,110 @@ class EventType(str, Enum):
     # turn_metrics — see api/chat.py REST filter and orchestrator.run() where
     # this event is yielded but never appended to self.messages.
     REASONING = "reasoning"
+    # Companion-app side-channel: emitted in addition to the normal
+    # tool_call/tool_result pair when the LLM invokes a device-targeted tool
+    # (see DEVICE_ACTION_TOOLS). The companion app fires the corresponding
+    # platform intent (e.g. AlarmClock.ACTION_SET_ALARM); older app builds
+    # without device_action support drop the event silently.
+    DEVICE_ACTION = "device_action"
+
+
+# Tools whose execution should fan out a DEVICE_ACTION event to the device
+# that owns the session. Adding a new device-side action is one new entry
+# here plus the matching MCP tool definition.
+DEVICE_ACTION_TOOLS = frozenset({
+    "set_alarm",
+    "take_photo",
+    "identify_object_in_photo",
+    "read_text_from_image",
+    "who_is_in_view",
+})
+
+# Subset of DEVICE_ACTION_TOOLS whose ``device_action`` event must be emitted
+# *before* the tool body runs. Camera-style tools fall in this bucket: their
+# server-side handler awaits an upload from the phone, which can't arrive
+# unless the wire event has already gone out. ``set_alarm`` stays on the
+# original post-result emission (the LLM-visible result is the trigger; no
+# round trip is needed).
+PRE_EXECUTE_DEVICE_ACTION_TOOLS = frozenset({
+    "take_photo",
+    "identify_object_in_photo",
+    "read_text_from_image",
+    "who_is_in_view",
+})
+
+# Subset of DEVICE_ACTION_TOOLS whose result is filled by the companion-app
+# upload future, not by an MCP call. The orchestrator routes these through
+# the local pending_uploads registry instead of ``mcp_manager.execute_tool``.
+COMPANION_UPLOAD_TOOLS = frozenset({
+    "take_photo",
+    "identify_object_in_photo",
+    "read_text_from_image",
+    "who_is_in_view",
+})
+
+# Camera tools that, after the upload future resolves, POST the captured
+# JPEG to the face-recognition service for identity matching. Disjoint
+# from VISION_CHAINED_TOOLS — the chains target different sibling services
+# (vllm-vision in-process vs. face-recognition over HTTP).
+FACE_IDENTIFY_TOOLS = frozenset({"who_is_in_view"})
+
+# Vision-chained camera tools: after the upload future resolves, post the
+# image_url to the in-process vision pipeline with the prompt the tool implies
+# and surface the vision response to the LLM as the tool result. Mapping is
+# tool name -> (prompt-builder(args) -> str, max_tokens, temperature). Prompts
+# duplicated from ``mcp_vision_tools.server.DEFAULT_IDENTIFY_PROMPT`` /
+# ``DEFAULT_OCR_PROMPT`` rather than imported because that module's import
+# spins up an MCP stdio server as a side effect.
+_DEFAULT_IDENTIFY_PROMPT = (
+    "Identify the primary subject of this image. Give a concise name and a "
+    "one-sentence description (material, model, species — whatever is most "
+    "salient). If you cannot identify it confidently, say so and offer the "
+    "closest plausible match."
+)
+_DEFAULT_OCR_PROMPT = (
+    "Transcribe all visible text in this image. Preserve line breaks and "
+    "rough layout where it carries meaning (receipts, forms, tables, code). "
+    "If a region is illegible, mark it [illegible]. Do not paraphrase."
+)
+
+
+def _build_identify_prompt(args: Dict[str, Any]) -> str:
+    base = _DEFAULT_IDENTIFY_PROMPT
+    hint = (args.get("hint") or "").strip() if isinstance(args, dict) else ""
+    if hint:
+        base = f"{base}\n\nHint from the user about what this might be: {hint}"
+    return base
+
+
+def _build_ocr_prompt(_args: Dict[str, Any]) -> str:
+    return _DEFAULT_OCR_PROMPT
+
+
+VISION_CHAINED_TOOLS: Dict[str, Dict[str, Any]] = {
+    "identify_object_in_photo": {
+        "prompt": _build_identify_prompt,
+        "max_tokens": 300,
+        "temperature": 0.7,
+        "result_key": "identification",
+    },
+    "read_text_from_image": {
+        "prompt": _build_ocr_prompt,
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "result_key": "text",
+    },
+}
+
+# ContextVar carrying the in-flight tool_call_id for the duration of a single
+# tool invocation. Set in the orchestrator loop right before _execute_tool_call
+# so any in-process helper that looks it up (e.g. companion-upload waiter)
+# can correlate without threading the id through every layer. Out-of-process
+# MCP subprocess handlers cannot read this — they would receive the id via
+# tool arguments instead.
+current_tool_call_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_tool_call_id", default=None
+)
 
 
 @dataclass
@@ -134,14 +244,21 @@ class AgentOrchestrator:
         self.device_name: Optional[str] = None
         self._user_turn_since_reset: bool = False
 
-        # Stash for a summary produced by _check_session_timeout at turn start;
-        # run() reads and clears this to yield a SUMMARY_RESET event before the
-        # first thinking frame so the client sees the compaction inline.
-        self._pending_summary_reset: Optional[str] = None
+        # Stash for a summary produced by _check_session_timeout or
+        # _check_context_size at turn start; run() reads and clears this to
+        # yield a SUMMARY_RESET event before the first thinking frame so the
+        # client sees the compaction inline. Tuple is (reason, summary) so the
+        # event carries the right reason for both idle and size triggers.
+        self._pending_summary_reset: Optional[tuple[str, str]] = None
 
         # Per-turn retrieval injection. Session-pool sessions enable it; the
         # stateless /v1/chat/completions path overrides this to False.
         self.retrieval_enabled: bool = True
+
+        # Context-size summarization gate. Pool-managed sessions leave this on;
+        # autonomy turns flip it off so a one-shot orchestrator can never
+        # trigger a summarize-and-reset on its tiny scratch state.
+        self.context_size_check_enabled: bool = True
 
     def effective_timeout(self) -> int:
         """Idle window in seconds — per-session override or global default.
@@ -192,7 +309,44 @@ class AgentOrchestrator:
         if self.last_query_time and time.time() - self.last_query_time > timeout:
             summary = await self._summarize_and_reset(reason="idle_timeout_summarize")
             if summary:
-                self._pending_summary_reset = summary
+                self._pending_summary_reset = ("idle_timeout_summarize", summary)
+
+    async def _check_context_size(self):
+        """Route into summarize-and-reset when message bytes exceed the budget.
+
+        Threshold tracks the active provider's max_model_len (see
+        ``utils.tokens.resolve_context_limit_tokens``) so a ``--max-model-len``
+        bump in compose flows through automatically. ``idle_timeout=-1`` is
+        unaffected — size is a separate axis from idle. Skipped on autonomy
+        orchestrators (``context_size_check_enabled = False``).
+        """
+        if not self.context_size_check_enabled:
+            return
+        if not self.messages or len(self.messages) <= 1:
+            return
+        try:
+            provider = self.provider_getter()
+        except Exception as e:
+            logger.warning(f"context-size check provider lookup failed: {e}")
+            return
+        threshold = await resolve_context_limit_tokens(provider)
+        if threshold is None:
+            return
+        size = estimate_messages_tokens(self.messages)
+        if size <= threshold:
+            return
+        logger.info(
+            "context_size_threshold_exceeded",
+            extra={
+                "event": "context_size_threshold_exceeded",
+                "session_id": self.session_id,
+                "estimated_tokens": size,
+                "threshold_tokens": threshold,
+            },
+        )
+        summary = await self._summarize_and_reset(reason="context_size_summarize")
+        if summary:
+            self._pending_summary_reset = ("context_size_summarize", summary)
 
     async def _summarize_and_reset(self, reason: str) -> Optional[str]:
         """Persist full history, then reset `messages` to [system, summary, last N exchanges].
@@ -440,12 +594,14 @@ class AgentOrchestrator:
         unique_id = f"query_{int(time.time())}"
 
         await self._check_session_timeout()
+        await self._check_context_size()
         if self._pending_summary_reset:
+            reason, summary_text = self._pending_summary_reset
             yield AgentEvent(
                 type=EventType.SUMMARY_RESET,
                 data={
-                    "reason": "idle_timeout_summarize",
-                    "summary": self._pending_summary_reset,
+                    "reason": reason,
+                    "summary": summary_text,
                 },
             )
             self._pending_summary_reset = None
@@ -551,13 +707,24 @@ class AgentOrchestrator:
                 if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls == []:
                     assistant_message.tool_calls = None
                 dumped_message = assistant_message.model_dump()
-                # Pydantic's model_extra is included in model_dump() by default,
-                # so a reasoning field would otherwise ride along into history and
-                # get re-sent to the LLM on every subsequent turn. vLLM's glm45
-                # parser uses ``reasoning``; other parsers/docs use
-                # ``reasoning_content``. Strip both defensively.
+                # Normalize reasoning into the single field GLM-4.5-Air's
+                # chat_template.jinja reads (``reasoning_content``). vLLM's
+                # glm45 parser writes the legacy alias ``reasoning``; drop it.
+                # The template renders <think>…</think> only for assistant
+                # messages newer than the most recent user message — i.e. the
+                # in-progress agentic tool-call loop, where the model expects
+                # to see its own prior reasoning before the next call. For
+                # already-completed turns it auto-emits empty <think></think>
+                # regardless of what's stored, so retaining the field across
+                # turns is harmless.
                 dumped_message.pop("reasoning", None)
-                dumped_message.pop("reasoning_content", None)
+                combined_reasoning = "\n\n".join(
+                    p.strip() for p in reasoning_parts if p and p.strip()
+                )
+                if combined_reasoning:
+                    dumped_message["reasoning_content"] = combined_reasoning
+                else:
+                    dumped_message.pop("reasoning_content", None)
                 self.messages.append(dumped_message)
 
                 # Execute tool calls
@@ -573,8 +740,26 @@ class AgentOrchestrator:
                             data={"tool": function_name, "args": function_args, "id": tool_call.id},
                         )
 
+                        # Pre-execute device_action: camera tools need the
+                        # phone to act before their handler can return, so
+                        # the wire event has to ship before _execute_tool_call.
+                        if function_name in PRE_EXECUTE_DEVICE_ACTION_TOOLS:
+                            yield AgentEvent(
+                                type=EventType.DEVICE_ACTION,
+                                data={
+                                    "action": function_name,
+                                    "args": function_args,
+                                    "id": tool_call.id,
+                                    "device_id": self.device_name,
+                                },
+                            )
+
                         tool_start = time.perf_counter()
-                        result = await self._execute_tool_call(tool_call)
+                        token = current_tool_call_id.set(tool_call.id)
+                        try:
+                            result = await self._execute_tool_call(tool_call)
+                        finally:
+                            current_tool_call_id.reset(token)
                         tool_ms = (time.perf_counter() - tool_start) * 1000
                         tool_calls_timing.append({"name": function_name, "ms": int(tool_ms)})
 
@@ -587,6 +772,22 @@ class AgentOrchestrator:
                                 "ms": int(tool_ms),
                             },
                         )
+
+                        # Post-result device_action: pre-execute tools already
+                        # emitted theirs above, skip the duplicate.
+                        if (
+                            function_name in DEVICE_ACTION_TOOLS
+                            and function_name not in PRE_EXECUTE_DEVICE_ACTION_TOOLS
+                        ):
+                            yield AgentEvent(
+                                type=EventType.DEVICE_ACTION,
+                                data={
+                                    "action": function_name,
+                                    "args": function_args,
+                                    "id": tool_call.id,
+                                    "device_id": self.device_name,
+                                },
+                            )
 
                         self.messages.append({
                             "role": "tool",
@@ -642,12 +843,17 @@ class AgentOrchestrator:
             yield AgentEvent(type=EventType.ERROR, data={"error": f"ERROR: {str(e)}"})
 
     async def _execute_tool_call(self, tool_call) -> str:
-        """Execute a single tool call via MCP"""
+        """Execute a single tool call via MCP (or the companion-upload path)."""
         try:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
 
             logger.debug(f"Executing tool: {function_name} with args: {function_args}")
+
+            if function_name in COMPANION_UPLOAD_TOOLS:
+                return await self._handle_companion_camera(
+                    function_name, tool_call.id, function_args
+                )
 
             result = await self.mcp_manager.execute_tool(function_name, function_args)
             return truncate_tool_result(str(result))
@@ -655,6 +861,234 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"Error executing tool {tool_call.function.name}: {e}")
             return f"ERROR executing tool: {str(e)}"
+
+    async def _handle_companion_camera(
+        self,
+        function_name: str,
+        tool_call_id: str,
+        function_args: Dict[str, Any],
+    ) -> str:
+        """End-to-end driver for companion-app camera tools.
+
+        Awaits the upload future, then optionally chains: vision-chained
+        tools (identify / OCR) call the in-process vllm-vision pipeline;
+        face-identify tools POST the JPEG to the face-recognition sibling
+        service; bare ``take_photo`` returns the upload metadata as-is.
+        Returns the JSON string the LLM will see as the tool result.
+        """
+        payload = await self._await_companion_upload_payload(
+            function_name, tool_call_id
+        )
+        if isinstance(payload, str):
+            # Already a structured error JSON string — bail before chaining.
+            return payload
+
+        captured_at_iso = self._unix_to_iso(payload.get("captured_at"))
+
+        if function_name in VISION_CHAINED_TOOLS:
+            spec = VISION_CHAINED_TOOLS[function_name]
+            prompt = spec["prompt"](function_args or {})
+            try:
+                vision_text = await self._ask_vision(
+                    image_url=payload.get("image_url"),
+                    prompt=prompt,
+                    max_tokens=spec["max_tokens"],
+                    temperature=spec["temperature"],
+                )
+            except Exception as e:
+                logger.warning(
+                    f"vision chain failed: tool={function_name} "
+                    f"tool_call_id={tool_call_id}: {e}"
+                )
+                return json.dumps({
+                    "status": "vision_error",
+                    "error": str(e),
+                    "image_url": payload.get("image_url"),
+                    "captured_at": captured_at_iso,
+                })
+            result_key = spec["result_key"]
+            return json.dumps({
+                "status": "captured_and_analyzed",
+                "image_url": payload.get("image_url"),
+                "captured_at": captured_at_iso,
+                result_key: vision_text,
+            })
+
+        if function_name in FACE_IDENTIFY_TOOLS:
+            try:
+                identity = await self._chain_face_identify(payload)
+            except Exception as e:
+                logger.warning(
+                    f"face-identify chain failed: tool={function_name} "
+                    f"tool_call_id={tool_call_id}: {e}"
+                )
+                return json.dumps({
+                    "status": "face_identify_error",
+                    "error": str(e),
+                    "image_url": payload.get("image_url"),
+                    "captured_at": captured_at_iso,
+                })
+            return json.dumps({
+                "status": "captured_and_recognized",
+                "image_url": payload.get("image_url"),
+                "captured_at": captured_at_iso,
+                **identity,
+            })
+
+        return json.dumps({
+            "status": "captured",
+            "image_url": payload.get("image_url"),
+            "mime": payload.get("mime"),
+            "captured_at": captured_at_iso,
+            "device_id": payload.get("device_id"),
+        })
+
+    async def _await_companion_upload_payload(
+        self,
+        function_name: str,
+        tool_call_id: str,
+    ):
+        """Wait for the companion-app upload future. Returns the dict payload
+        on success, or a JSON-string error envelope on timeout (caller can
+        return that directly to the LLM)."""
+        # Local import — the api package depends on selene_agent at startup,
+        # so an import-time pull would cycle.
+        from selene_agent.api.companion import (
+            register_pending_upload,
+            pop_pending_upload,
+        )
+
+        timeout = float(getattr(config, "COMPANION_PHOTO_UPLOAD_TIMEOUT_SEC", 25))
+        fut = register_pending_upload(tool_call_id)
+        try:
+            payload = await asyncio.wait_for(fut, timeout=timeout)
+            return payload
+        except asyncio.TimeoutError:
+            pop_pending_upload(tool_call_id)
+            logger.warning(
+                f"companion upload timeout: tool={function_name} "
+                f"tool_call_id={tool_call_id} timeout={timeout}s"
+            )
+            return json.dumps({
+                "status": "timeout",
+                "error": (
+                    f"No upload received within {int(timeout)}s. The companion "
+                    "app may be offline, the user may have cancelled the "
+                    "capture, or the camera permission may be denied."
+                ),
+            })
+        except asyncio.CancelledError:
+            pop_pending_upload(tool_call_id)
+            raise
+        finally:
+            # Clear on success too — payload already consumed.
+            pop_pending_upload(tool_call_id)
+
+    @staticmethod
+    def _unix_to_iso(unix_ts) -> str:
+        ts = float(unix_ts) if unix_ts is not None else time.time()
+        return (
+            datetime.fromtimestamp(ts, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    async def _chain_face_identify(
+        self,
+        upload_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """POST the captured JPEG to the face-recognition service.
+
+        Reads the bytes directly from the in-process BlobStore — the
+        ``image_url`` in the payload points back at this same agent
+        process, so a self-HTTP fetch would just be a round trip. Returns
+        the face-recognition payload (``found`` / ``name`` / etc.) for the
+        caller to merge into the LLM-facing tool result. Raises on
+        transport / HTTP errors so ``_handle_companion_camera`` can wrap
+        them in a structured error envelope.
+        """
+        # Local import — keeps companion module out of orchestrator's
+        # import-time graph and matches the upload-future pattern above.
+        import aiohttp
+        from selene_agent.api.companion import get_blob_store
+
+        blob_token = upload_payload.get("blob_token")
+        mime = upload_payload.get("mime") or "image/jpeg"
+
+        data: Optional[bytes] = None
+        if blob_token:
+            blob = get_blob_store().get(blob_token)
+            if blob is not None:
+                data = blob.data
+
+        if data is None:
+            # Blob already evicted / TTL fired between upload and chain.
+            # Surface as a chain error rather than fall back to self-HTTP
+            # so the failure mode is visible in logs.
+            raise RuntimeError(
+                "blob unavailable for face-identify chain "
+                "(evicted or token missing)"
+            )
+
+        base = os.getenv(
+            "FACE_REC_API_BASE", "http://face-recognition:6006"
+        ).rstrip("/")
+        url = f"{base}/api/identify"
+
+        timeout = aiohttp.ClientTimeout(total=15)
+        form = aiohttp.FormData()
+        form.add_field(
+            "file",
+            data,
+            filename="capture.jpg",
+            content_type=mime,
+        )
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, data=form) as resp:
+                body = await resp.json(content_type=None)
+                if resp.status >= 400:
+                    detail = (
+                        body.get("detail") if isinstance(body, dict) else None
+                    ) or str(body)
+                    raise RuntimeError(
+                        f"face-recognition /api/identify "
+                        f"returned {resp.status}: {detail}"
+                    )
+        logger.info(
+            f"face-identify chain ok: bytes={len(data)} "
+            f"found={body.get('found') if isinstance(body, dict) else None}"
+        )
+        return body if isinstance(body, dict) else {"found": False}
+
+    async def _ask_vision(
+        self,
+        image_url: Optional[str],
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Direct in-process call to the vllm-vision pipeline. Reuses the
+        same ``_call_vision`` helper that powers ``/api/vision/ask_url`` so
+        the chokepoint shape (model, message format) stays in one place."""
+        if not image_url:
+            raise ValueError("vision chain requires image_url")
+        from selene_agent.api.vision import _call_vision  # local import — see _await
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }]
+        content, latency_ms, _usage = await _call_vision(
+            messages, max_tokens=max_tokens, temperature=temperature
+        )
+        logger.info(
+            f"vision chain ok: image_url={image_url} latency_ms={latency_ms} "
+            f"prompt_chars={len(prompt)} response_chars={len(content)}"
+        )
+        return content
 
     @staticmethod
     def _extract_tool_calls_from_content(content: str) -> Optional[list]:

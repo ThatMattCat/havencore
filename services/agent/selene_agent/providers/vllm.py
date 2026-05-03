@@ -7,10 +7,14 @@ preserved exactly.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
+
+
+logger = logging.getLogger(__name__)
 
 
 class VLLMProvider:
@@ -20,6 +24,8 @@ class VLLMProvider:
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "dummy-key")
         self.model = model
         self._last_reasoning: Optional[str] = None
+        self._max_model_len: Optional[int] = None
+        self._max_model_len_fetched: bool = False
 
     @classmethod
     def from_client(cls, *, client: AsyncOpenAI, model: str) -> "VLLMProvider":
@@ -31,6 +37,8 @@ class VLLMProvider:
         p._client = client
         p.model = model
         p._last_reasoning = None
+        p._max_model_len = None
+        p._max_model_len_fetched = False
         return p
 
     async def chat_completion(
@@ -93,3 +101,53 @@ class VLLMProvider:
         value = self._last_reasoning
         self._last_reasoning = None
         return value
+
+    async def get_max_model_len(self) -> Optional[int]:
+        """Fetch ``max_model_len`` from vLLM's ``/v1/models`` once and cache.
+
+        vLLM surfaces the running ``--max-model-len`` value on each model
+        record, so this scales automatically when compose changes. Failures
+        cache ``None`` so we don't pound the endpoint when it's unhealthy.
+        """
+        if self._max_model_len_fetched:
+            return self._max_model_len
+        self._max_model_len_fetched = True
+        try:
+            resp = await self._client.models.list()
+        except Exception as e:
+            logger.warning("vLLM /v1/models query failed: %s", e)
+            self._max_model_len = None
+            return None
+        # Pick the entry that matches our served model name when present;
+        # otherwise fall back to the first model the endpoint reports.
+        chosen = None
+        try:
+            for entry in resp.data:
+                if getattr(entry, "id", None) == self.model:
+                    chosen = entry
+                    break
+            if chosen is None and resp.data:
+                chosen = resp.data[0]
+        except AttributeError:
+            chosen = None
+        if chosen is None:
+            self._max_model_len = None
+            return None
+        # vLLM puts ``max_model_len`` directly on the entry; the OpenAI SDK
+        # doesn't type it, so probe model_extra and direct attrs.
+        candidate: Optional[int] = None
+        extra = getattr(chosen, "model_extra", None)
+        if isinstance(extra, dict):
+            v = extra.get("max_model_len")
+            if isinstance(v, int) and v > 0:
+                candidate = v
+        if candidate is None:
+            v = getattr(chosen, "max_model_len", None)
+            if isinstance(v, int) and v > 0:
+                candidate = v
+        self._max_model_len = candidate
+        if candidate is not None:
+            logger.info("vLLM max_model_len = %d (model=%s)", candidate, self.model)
+        else:
+            logger.warning("vLLM /v1/models did not surface max_model_len for %s", self.model)
+        return self._max_model_len

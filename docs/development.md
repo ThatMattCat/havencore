@@ -23,7 +23,7 @@ This guide covers development setup, contributing to HavenCore, and extending th
 
 ```
 havencore/
-├── .env.tmpl                 # Environment template
+├── .env.example              # Environment template
 ├── compose.yaml              # Docker orchestration
 ├── docs/                     # Documentation (this wiki)
 ├── services/                 # All microservices
@@ -32,21 +32,33 @@ havencore/
 │   │   │   ├── selene_agent.py          # FastAPI app entry point
 │   │   │   ├── orchestrator.py          # Event-based agent loop
 │   │   │   ├── api/                     # REST/WS routers
-│   │   │   ├── modules/                 # Bundled MCP server modules
-│   │   │   │   ├── mcp_homeassistant_tools/
-│   │   │   │   ├── mcp_plex_tools/
+│   │   │   ├── modules/                 # Bundled MCP server modules (11 servers, 68 tools)
 │   │   │   │   ├── mcp_general_tools/
+│   │   │   │   ├── mcp_homeassistant_tools/
+│   │   │   │   ├── mcp_face_tools/
+│   │   │   │   ├── mcp_vision_tools/
+│   │   │   │   ├── mcp_device_action_tools/
+│   │   │   │   ├── mcp_github_tools/
+│   │   │   │   ├── mcp_plex_tools/
+│   │   │   │   ├── mcp_music_assistant_tools/
 │   │   │   │   ├── mcp_qdrant_tools/
+│   │   │   │   ├── mcp_reminder_tools/
 │   │   │   │   └── mcp_mqtt_tools/
+│   │   │   ├── autonomy/                # Background engine (engine, turn, schedule, gating, notifiers)
 │   │   │   └── utils/                   # Config, MCP client, DB
-│   │   ├── dashboard/       # SvelteKit SPA (built into the image)
+│   │   ├── frontend/        # SvelteKit SPA (built into the image)
 │   │   ├── pyproject.toml
 │   │   └── Dockerfile
 │   ├── nginx/               # API gateway
 │   ├── postgres/            # Database initialization
-│   ├── speech-to-text/      # STT service
-│   ├── text-to-speech/      # TTS service
-│   └── vllm/                # LLM backend config
+│   ├── speech-to-text/      # STT service (Faster-Whisper)
+│   ├── text-to-speech/      # TTS service (Kokoro)
+│   ├── text-to-image/       # ComfyUI
+│   ├── vllm/                # Chat LLM backend
+│   ├── vllm-vision/         # Vision LLM backend
+│   ├── face-recognition/    # InsightFace identity service
+│   ├── qdrant/              # Vector DB
+│   └── embeddings/          # text-embeddings-inference
 └── shared/                  # Shared utilities
     ├── configs/             # Common configuration
     └── libs/                # Logger, trace IDs
@@ -67,7 +79,7 @@ git remote add upstream https://github.com/ThatMattCat/havencore.git
 #### 2. Development Environment
 ```bash
 # Copy environment template
-cp .env.tmpl .env
+cp .env.example .env
 
 # Configure for development
 # Edit .env with development settings:
@@ -426,9 +438,12 @@ from selene_agent.modules.mcp_general_tools import mcp_server  # example import
 
 def test_example():
     assert True
+```
 
-# Run tests
-# docker compose exec agent python -m pytest tests/
+Run the agent's pytest suite inside the agent container so imports and env resolve correctly (the suite is `pytest-asyncio` with `asyncio_mode=auto`):
+
+```bash
+docker compose exec -T agent pytest
 ```
 
 ### Integration Testing
@@ -611,8 +626,8 @@ flake8 services/agent/selene_agent/
 # Type checking
 mypy services/agent/selene_agent/
 
-# Run tests
-pytest services/agent/tests/
+# Run tests (inside the agent container so imports and env resolve)
+docker compose exec -T agent pytest
 ```
 
 ---

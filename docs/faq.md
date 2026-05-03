@@ -27,7 +27,7 @@ HavenCore is a self-hosted AI smart home assistant that provides:
 | **Ownership** | You own and control everything | Controlled by corporation |
 | **Integration** | Direct API access, unlimited integrations | Limited to approved partnerships |
 | **Voice Data** | Never leaves your network | Sent to cloud for processing |
-| **Wake Words** | Customizable (future feature) | Fixed wake words |
+| **Wake Words** | Configurable on the satellite firmware | Fixed wake words |
 | **Responses** | Fully customizable AI responses | Predetermined responses |
 
 ### What hardware do I need to run HavenCore?
@@ -36,7 +36,7 @@ HavenCore is a self-hosted AI smart home assistant that provides:
 - **CPU**: Modern multi-core processor (Intel i5/AMD Ryzen 5 or better)
 - **RAM**: 32GB (64GB recommended)
 - **Storage**: 150GB free space for model weights, container images, and Docker volumes
-- **GPU**: NVIDIA GPU(s) with enough VRAM for the default 72B-AWQ model (≈48GB), plus headroom for STT/TTS/vision
+- **GPU**: NVIDIA GPU(s) with enough VRAM for the default GLM-4.5-Air-AWQ-FP16Mix MoE model (≈72GB total, sharded `-tp 4` across 4× 24GB cards), plus headroom on those cards for STT/TTS, plus a dedicated card for vllm-vision and another for face-recognition
 - **Network**: Reliable internet for initial setup and external services
 
 **Recommended Setups**:
@@ -238,16 +238,12 @@ curl -X POST http://localhost/v1/chat/completions \
 
 ### Can HavenCore learn my preferences?
 
-**Current capabilities**:
-- **Conversation history**: Stores conversations for context
-- **Entity recognition**: Learns your device names and preferences
-- **Context awareness**: Remembers recent commands and settings
-
-**Future capabilities** (planned):
-- **User profiles**: Personal preferences and settings
-- **Habit learning**: Automatic routines based on usage patterns
-- **Custom responses**: Personalized assistant personality
-- **Preference memory**: Long-term memory of user choices
+**Capabilities**:
+- **Conversation history**: Stores conversations in PostgreSQL for context and resume
+- **Semantic memory**: Qdrant-backed memory store with tiered retrieval (L2 episodic, L3 consolidated summaries, L4 always-on persistent context). The agent can store, search, and delete memories via the `mcp_qdrant_tools` MCP server.
+- **Per-turn retrieval injection**: The agent injects top-K relevant memories into pool-backed chats automatically (`MEMORY_RETRIEVAL_*` knobs in [`configuration.md`](configuration.md#memory-retrieval--agent-phase))
+- **Nightly consolidation**: A scheduled `memory_review` job promotes recurring L2 entries into L3 summaries and proposes L4 promotions for operator review
+- **Phase-aware system prompts**: `learning` vs `operating` phase changes the volume of retrieved context; flip live from the dashboard or `POST /api/agent/phase`
 
 ### How does HavenCore handle privacy?
 

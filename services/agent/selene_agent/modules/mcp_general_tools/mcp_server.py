@@ -96,35 +96,21 @@ class GeneralToolsServer:
 
             tools.append(Tool(
                 name="query_multimodal_api",
-                description="Query a multimodal AI API with any combination of text, image, audio, and/or video inputs to get AI-generated responses",
+                description="Send an image (and optional text prompt) to the vision LLM for analysis. Use for camera snapshots, photos, screenshots, etc.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "text": {
                             "type": "string",
-                            "description": "The text content to send to the AI for processing"
+                            "description": "The text prompt describing what to analyze in the image (e.g. 'describe what you see', 'is anyone in this image?')."
                         },
                         "image_url": {
                             "type": "string",
-                            "description": "URL or file path (file://) to an image for visual analysis. Supports common image formats like PNG, JPEG, etc."
-                        },
-                        "audio_url": {
-                            "type": "string",
-                            "description": "URL or file path (file://) to an audio file for audio analysis. Supports common audio formats like WAV, MP3, etc."
-                        },
-                        "video_url": {
-                            "type": "string",
-                            "description": "URL or file path (file://) to a video file for video analysis. Supports common video formats like MP4, AVI, etc."
+                            "description": "HTTP(S) URL to an image. Common formats supported (PNG, JPEG, WebP). The vision service fetches the URL itself."
                         }
                     },
-                    "required": [],
-                    "additionalProperties": False,
-                    "anyOf": [
-                        {"required": ["text"]},
-                        {"required": ["image_url"]},
-                        {"required": ["audio_url"]},
-                        {"required": ["video_url"]}
-                    ]
+                    "required": ["image_url"],
+                    "additionalProperties": False
                 }
             ))
 
@@ -235,8 +221,6 @@ class GeneralToolsServer:
                     result = await self.query_multimodal_ai(
                         text=arguments.get("text"),
                         image_url=arguments.get("image_url"),
-                        audio_url=arguments.get("audio_url"),
-                        video_url=arguments.get("video_url")
                     )
                     return [types.TextContent(type="text", text=result)]
 
@@ -578,79 +562,27 @@ Astronomy:
         self,
         text: Optional[str] = None,
         image_url: Optional[str] = None,
-        audio_url: Optional[str] = None,
-        video_url: Optional[str] = None
     ) -> str:
-        """
-        Query a multimodal AI API with text, image, audio, and/or video inputs.
-        
-        Args:
-            text: The text content to send to the AI
-            image_url: URL or file path (file://) to an image
-            audio_url: URL or file path (file://) to an audio file
-            video_url: URL or file path (file://) to a video file
-            system_prompt: System message to set AI behavior
-            
-        Returns:
-            Dict containing the API response
-            
-        Raises:
-            ValueError: If no content is provided
-            aiohttp.ClientError: If the API request fails
-        """
-        # Validate that at least one content type is provided
-        if not any([text, image_url, audio_url, video_url]):
-            raise ValueError("At least one of text, image_url, audio_url, or video_url must be provided")
-        
-        # Build the content array for the user message
-        content = []
-        system_prompt = "You are a helpful assistant."
-        
-        if text:
-            content.append({"type": "text", "text": text})
-        
-        if image_url:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": image_url}
-            })
-        
-        if audio_url:
-            content.append({
-                "type": "audio_url", 
-                "audio_url": {"url": audio_url}
-            })
-        
-        if video_url:
-            content.append({
-                "type": "video_url",
-                "video_url": {"url": video_url}
-            })
-        # Construct the request payload
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content}
-            ]
-        }
-        # logger.info(f"Multimodal API payload: {json.dumps(payload, indent=2)}")
-        
-        # Make the async HTTP request
+        """Query the vision model via the agent's /api/vision/ask_url chokepoint."""
+        if not (text or image_url):
+            raise ValueError("At least one of text or image_url must be provided")
+
+        payload = {"text": text, "image_url": image_url}
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"http://nginx/iav/api",
+                "http://agent:6002/api/vision/ask_url",
                 json=payload,
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=180),
             ) as response:
-                if response.status != 200:
-                    response.raise_for_status()
                 data = await response.json()
-                
-                # Extract content with error handling
+                if response.status >= 400:
+                    detail = data.get("detail") if isinstance(data, dict) else str(data)
+                    raise ValueError(f"Vision API error ({response.status}): {detail}")
                 try:
-                    return data["choices"][0]["message"]["content"]
-                except (KeyError, IndexError) as e:
-                    # Handle missing keys or empty choices array
+                    return data["response"]
+                except (KeyError, TypeError) as e:
                     raise ValueError(f"Unexpected response structure: {e}") from e
 
 

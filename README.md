@@ -23,9 +23,9 @@ Voice in, voice out. Your own LLM. Your own tools. Your data never leaves the bo
 
 **HavenCore** is a production-grade personal AI assistant I built to run entirely on my own hardware — no cloud inference, no data phoned home. It hears you through a wake-word device, transcribes with Whisper, reasons with a local MoE LLM (GLM-4.5-Air-AWQ-FP16Mix on vLLM), calls tools over MCP (Home Assistant, Plex, web search, image gen, etc.), speaks back with Kokoro TTS, and runs proactively on its own schedule when you're not looking.
 
-Everything is one `docker compose up -d` away. Twelve containers, one GPU fleet, one dashboard.
+Everything is one `docker compose up -d` away. Fourteen containers, one GPU fleet, one dashboard.
 
-> The assistant's name is **Selene**. She lives on four RTX 3090s in my shed.
+> The assistant's name is **Selene**. She lives on five RTX 3090s in my shed.
 
 > **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default GLM-4.5-Air-AWQ-FP16Mix stack wants **~72 GB VRAM sharded across 4× 24 GB cards** (MoE, `-tp 4 --enable-expert-parallel`); fewer/smaller GPUs work if you swap in a smaller model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB, or Qwen2.5-14B on a single card). Plan on ~60 GB of disk for images + model weights on first build.
 
@@ -140,7 +140,7 @@ Concurrent users don't share state. A [`SessionOrchestratorPool`](services/agent
 ### MCP all the way down
 Tools aren't a hardcoded registry — they're discovered at startup by a [`MCPClientManager`](services/agent/selene_agent/utils/mcp_client_manager.py) that spawns each tool server as a subprocess and speaks stdio JSON-RPC to it. A `UnifiedTool` abstraction converts MCP tool schemas to OpenAI function-calling format on the fly. Adding a tool server is a new folder with a `__main__.py`.
 
-**7 MCP servers, 48 tools** live today: Home Assistant (18), Plex (5), Music Assistant (7), General — web/Wolfram/Wikipedia/Brave/weather/image-gen/Signal/vision (7), GitHub self-inspection — code search/read + Issues (7), Qdrant memory (3), MQTT cameras (1).
+**11 MCP servers, 68 tools** live today: Home Assistant (20), General — web/Wolfram/Wikipedia/Brave/weather/image-gen/Signal/multimodal (7), Music Assistant (7), GitHub self-inspection — code search/read + Issues (7), Plex (5), Vision — describe/identify/OCR/compare camera snapshots (5), Face — who's at the door, recent visitors, enrollment, access levels (5), Companion-app device actions — phone camera, alarms (5), Qdrant memory (3), Reminders (3), MQTT camera snapshots (1).
 
 ### Autonomy engine with actual guardrails
 Selene runs an asyncio dispatcher in the same process that fires `briefing`, `anomaly_sweep`, user-defined `reminder` / `watch` / `routine` / `memory_review` kinds. Each run:
@@ -187,7 +187,7 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 - vLLM (GLM-4.5-Air-AWQ-FP16Mix, 4× tensor-parallel + expert-parallel)
 - Faster-Whisper (STT)
 - Kokoro TTS
-- Qwen2.5-Omni (vision)
+- Qwen3-VL-32B-Instruct-AWQ (vision, served by a second vLLM)
 - ComfyUI (image gen)
 - BGE-large embeddings (TEI)
 - Qdrant (vectors)
@@ -217,9 +217,9 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 <td>
 
 **Infra**
-- Docker Compose, 12 services
+- Docker Compose, 14 services
 - NVIDIA Container Toolkit
-- 4× RTX 3090 dev box
+- 5× RTX 3090 dev box
 - Optional Grafana Loki push
 - Health-checked services
 - Volume-mounted dev workflow
@@ -241,18 +241,20 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 │  │                                              │                │
 │  │   agent (6002) ─┬─ orchestrator (events) ───────► vLLM (8000) │
 │  │    FastAPI +    │                                             │
-│  │    SvelteKit    ├─ MCP client manager ─► general_tools        │
-│  │                 │                       homeassistant         │
+│  │    SvelteKit    ├─ MCP client manager ─► general / homeassist │
 │  │                 │                       plex / music_assistant│
-│  │                 │                       qdrant_tools          │
-│  │                 │                       mqtt_tools            │
+│  │                 │                       face / vision         │
+│  │                 │                       device_action / mqtt  │
+│  │                 │                       github / qdrant       │
+│  │                 │                       reminder              │
 │  │                 │                                             │
 │  │                 ├─ conversation_db ───► postgres              │
 │  │                 ├─ metrics_db (turn_metrics)                  │
 │  │                 └─ autonomy engine (asyncio)                  │
 │  │                                                               │
-│  │   stt (6001)  tts (6005)  vision (8100)  comfy (8188)         │
-│  │   embeddings (3000)  qdrant (6333)  mosquitto (1883)          │
+│  │   stt (6001)  tts (6005)  vllm-vision (8001)  comfy (8188)    │
+│  │   face-rec (6006)  ntfy (8585)  embeddings (3000)             │
+│  │   qdrant (6333)  mosquitto (1883)  signal-api (127.0.0.1:8080)│
 │  └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -267,7 +269,7 @@ Everything below assumes a Linux box with NVIDIA GPUs, the container toolkit, an
 ```bash
 git clone https://github.com/ThatMattCat/havencore.git
 cd havencore
-cp .env.tmpl .env        # fill in HOST_IP_ADDRESS, HAOS_TOKEN, API keys
+cp .env.example .env     # fill in HOST_IP_ADDRESS, HAOS_TOKEN, API keys
 docker compose up -d     # first build: 60–90 min
                          # first model load: 10–15 min (GLM-4.5-Air-AWQ-FP16Mix, ~70 GB pull)
 open http://localhost    # SvelteKit dashboard
@@ -286,19 +288,20 @@ Full walkthrough, hardware requirements (TL;DR: one 24 GB GPU works with a small
 
 ```
 havencore/
-├── compose.yaml              # 12 services
-├── .env.tmpl                 # every config knob documented inline
+├── compose.yaml              # 14 services
+├── .env.example              # every config knob documented inline
 ├── services/
 │   ├── agent/                # FastAPI + SvelteKit + MCP servers
 │   │   ├── selene_agent/     #   Python package: orchestrator, autonomy, api routers
-│   │   │   ├── modules/      #     MCP tool servers (general, homeassistant, plex, mass, qdrant, mqtt, github)
+│   │   │   ├── modules/      #     11 MCP tool servers (general, homeassistant, plex, music_assistant,
+│   │   │   │                 #       face, vision, device_action, github, qdrant, reminder, mqtt)
 │   │   │   └── autonomy/     #     background engine (schedule, turn, tool gating, notifiers)
 │   │   └── frontend/         #   SvelteKit dashboard (static adapter)
 │   ├── speech-to-text/       # Faster-Whisper
 │   ├── text-to-speech/       # Kokoro
-│   ├── iav-to-text/          # Vision LLM (image/audio/video → text)
+│   ├── vllm/  vllm-vision/   # LLM backends (chat + vision)
 │   ├── text-to-image/        # ComfyUI
-│   ├── vllm/  llamacpp/      # LLM backends (vLLM default)
+│   ├── face-recognition/     # InsightFace buffalo_l
 │   ├── postgres/ qdrant/ embeddings/
 │   ├── nginx/ mosquitto/
 ├── shared/                   # shared_config.py, logger, trace_id
@@ -316,7 +319,7 @@ havencore/
 | [Configuration](docs/configuration.md) | Every env var |
 | [API reference](docs/api-reference.md) | REST, WebSocket, OpenAI-compat |
 | [Agent internals](docs/services/agent/README.md) | Orchestrator, MCP manager, DB layer |
-| [Autonomy engine](docs/services/agent/autonomy/README.md) | v1–v4 design + guardrails |
+| [Autonomy engine](docs/services/agent/autonomy/README.md) | Background dispatcher, agenda kinds, tier-gated tools, guardrails |
 | [Memory tiers](docs/services/agent/autonomy/memory/README.md) | L2/L3/L4 consolidation |
 | [Tool development](docs/services/agent/tools/development.md) | Adding an MCP server |
 | [Home Assistant integration](docs/integrations/home-assistant.md) | HA setup + tool reference |
@@ -339,6 +342,7 @@ This is a real thing I use every day — not a weekend demo. It's also unapologe
 ## Companion projects
 
 - [**havencore-satellite-firmware**](https://github.com/ThatMattCat/havencore-satellite-firmware) — ESP32-S3-BOX-3 voice satellite firmware (wake-word, mic, speaker, on-device "Hey Selene").
+- [**havencore-companion-app**](https://github.com/thatmattcat/havencore-companion-app) — Android companion app: phone-camera tools, alarms, and UnifiedPush notifications (via the self-hosted ntfy server) so the autonomy engine can ping you off-LAN.
 
 ## License
 

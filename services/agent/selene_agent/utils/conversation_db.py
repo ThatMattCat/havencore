@@ -141,6 +141,70 @@ class ConversationHistoryDB:
             logger.error(f"Failed to retrieve conversation history: {e}")
             return None
     
+    async def delete_conversation_history(
+        self,
+        session_id: str,
+        flush_id: int,
+    ) -> Optional[int]:
+        """Delete a single stored flush row, scoped to its session_id for safety.
+
+        Returns the number of rows deleted (0 or 1), or ``None`` on a database
+        error. The (session_id, flush_id) pair must match — a mismatched pair
+        deletes nothing and returns 0, which the API surface treats as 404.
+        """
+        if not self.pool:
+            logger.error("Database pool not initialized")
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                status = await conn.execute(
+                    """
+                    DELETE FROM conversation_histories
+                    WHERE session_id = $1 AND id = $2
+                    """,
+                    session_id,
+                    flush_id,
+                )
+            # asyncpg returns the command tag, e.g. "DELETE 1". The trailing
+            # integer is what we want.
+            try:
+                deleted = int(status.rsplit(" ", 1)[-1])
+            except (ValueError, AttributeError):
+                deleted = 0
+            if deleted:
+                logger.info(
+                    f"Deleted conversation history flush_id={flush_id} session={session_id}"
+                )
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to delete conversation history: {e}")
+            return None
+
+    async def delete_all_conversations(self) -> Optional[int]:
+        """Delete every stored conversation flush.
+
+        Returns the number of rows deleted, or ``None`` on a database error.
+        Live pool sessions are unaffected — their next flush creates fresh
+        rows. Used by the dashboard's bulk-clear control.
+        """
+        if not self.pool:
+            logger.error("Database pool not initialized")
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                status = await conn.execute("DELETE FROM conversation_histories")
+            try:
+                deleted = int(status.rsplit(" ", 1)[-1])
+            except (ValueError, AttributeError):
+                deleted = 0
+            logger.info(f"Deleted all conversation histories ({deleted} rows)")
+            return deleted
+        except Exception as e:
+            logger.error(f"Failed to delete all conversation histories: {e}")
+            return None
+
     async def list_conversations(
         self,
         limit: int = 20,

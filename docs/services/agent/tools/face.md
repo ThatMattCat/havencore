@@ -28,7 +28,7 @@ to guess the exact entity_id.
 | `face_recent_visitors(hours=24, camera=None)` | List of detections newest-first; up to 50 entries. Optional camera filter. |
 | `face_list_known_people()` | Every enrolled person with `image_count` + `access_level`. Use before enrolling to avoid duplicates. |
 | `face_enroll_person(name, source)` | Add a face image to the gallery. `source` is either `"camera:<entity_id>"` (live snapshot) or an `http(s)://` URL. New people are created on the fly when `name` doesn't fuzzy-match an existing one. |
-| `face_set_access_level(name, level)` | `level ∈ {unknown, resident, guest, blocked}`. Persisted on `people.access_level`. v1 has no enforcer — the field is reserved for later automation policies. |
+| `face_set_access_level(name, level)` | `level ∈ {unknown, resident, guest, blocked}`. Persisted on `people.access_level`. The field is reserved for later automation policies — there is no enforcer today. |
 
 ## Fuzzy resolution
 
@@ -52,7 +52,7 @@ ambiguity now surfaces explicitly.)
 The substring + `get_close_matches` cutoff is intentionally generous:
 empirically every natural-language LLM query (`"front door"`,
 `"frontdoor"`, `"front_door"`, `"front"`) needed cutoff ≤ 0.3 to resolve
-against entity_ids like `camera.front_duo_3_fluent`.
+against entity_ids like `camera.front_duo_3_clear`.
 
 ## Configuration
 
@@ -98,7 +98,7 @@ The system prompt encourages composing these tools naturally:
 - **"Who's been around today?"** → `face_recent_visitors(hours=24)`
 - **"Add this person — they're called Sam"** → check
   `face_list_known_people()`, then `face_enroll_person("Sam",
-  "camera:camera.front_duo_3_fluent")`
+  "camera:camera.front_duo_3_clear")`
 - **"Mark Sam as a resident"** → `face_set_access_level("Sam", "resident")`
 
 ## Troubleshooting

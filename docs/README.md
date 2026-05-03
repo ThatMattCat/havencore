@@ -12,6 +12,8 @@ Welcome to the docs for **HavenCore** — a self-hosted AI smart home assistant 
 - [Troubleshooting](troubleshooting.md) — common issues and fixes
 - [FAQ](faq.md)
 - [TODO](todo.md) — forward-looking items not yet scheduled
+- [Stretch goals](stretch-goals.md) — speculative / longer-horizon ideas
+- [Archive](archive/README.md) — historical design docs from completed work
 
 ## Services
 
@@ -23,7 +25,7 @@ Each service has its own folder under [`services/`](services/README.md):
 - [LlamaCPP](services/llamacpp/README.md) — alternative LLM backend
 - [Speech-to-Text](services/speech-to-text/README.md) — Faster Whisper STT
 - [Text-to-Speech](services/text-to-speech/README.md) — Kokoro TTS
-- [IAV-to-Text](services/iav-to-text/README.md) — image/audio/video understanding
+- [vLLM Vision](services/vllm-vision/README.md) — Qwen3-VL image-understanding backend on a dedicated GPU
 - [Text-to-Image](services/text-to-image/README.md) — ComfyUI image generation
 - [Face Recognition](services/face-recognition/README.md) — InsightFace identity for HA cameras
 - [Postgres](services/postgres/README.md) — conversation + metrics storage
@@ -31,11 +33,21 @@ Each service has its own folder under [`services/`](services/README.md):
 - [Embeddings](services/embeddings/README.md) — text-embeddings-inference
 - [Nginx](services/nginx/README.md) — API gateway
 - [Mosquitto](services/mosquitto/README.md) — MQTT broker
+- ntfy — UnifiedPush server for companion-app push notifications. No dedicated service README; the [companion-app integration](integrations/companion-app.md) doc covers setup, ports, and the redirect convenience at `/ntfy` → `:8585`
 
 ## Integrations
 
 - [Home Assistant](integrations/home-assistant.md) — end-user setup and voice examples
 - [Media Control](integrations/media-control.md) — Plex, Music Assistant, and Home Assistant for TV/speaker playback
+- [Companion App (push notifications)](integrations/companion-app.md) — UnifiedPush + ntfy: how the agent wakes the phone with autonomy briefings, anomaly alerts, and reminders
+
+## Related repositories
+
+HavenCore's clients live in their own repos so they can ship and version
+independently from the agent stack:
+
+- [`havencore-satellite-firmware`](https://github.com/ThatMattCat/havencore-satellite-firmware) — ESP-IDF firmware for ESP32-S3-BOX-3 voice satellites (wake-word, mic capture, OTA via the agent's `/firmware/` route).
+- [`havencore-companion-app`](https://github.com/ThatMattCat/havencore-companion-app) — native Kotlin Android app: in-app chat, voice/assistant-slot, and push notifications. Under active development; consult its own README for current scope.
 
 ## Project overview
 

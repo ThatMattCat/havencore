@@ -1,7 +1,7 @@
 # mosquitto
 
-MQTT broker. Used by the autonomy engine's reactive v3 tier to
-subscribe to live topic feeds (HA state changes, external sensors) and
+MQTT broker. Used by the autonomy engine's reactive subscriber to
+listen on live topic feeds (HA state changes, external sensors) and
 by `mcp_mqtt_tools` for agent-initiated publish/subscribe.
 
 | | |

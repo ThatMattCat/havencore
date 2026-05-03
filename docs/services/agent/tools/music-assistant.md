@@ -18,7 +18,7 @@ labor vs. Plex and HA) lives in
 | Server name | `havencore-music-assistant` |
 | MA client library | `music-assistant-client` (async WebSocket — the same client the HA MA integration uses) |
 | HA client | None — MA talks directly to its own providers; transport control lives on `ha_control_media_player` |
-| Tool count | 6 |
+| Tool count | 7 |
 
 The server connects to a running Music Assistant instance over its
 WebSocket API. MA itself handles the per-provider details (Plex for
@@ -41,6 +41,7 @@ playback start, queue inspection, shuffle/repeat, clearing).
 | `mass_play_media(uri, player_name, mode?)` | Start playback of a `uri` (from a prior search) on a named speaker. `mode` is `replace` (default — clear queue, play now), `next` (insert after current), or `add` (append). `player_name` resolves exact-first, then substring match. |
 | `mass_get_queue(player_name, item_limit?)` | Read the active queue. Returns `state`, `shuffle`, `repeat`, `current`, `upcoming[…]`, and `total_items`. Powers "what's playing?" / "what's next?". |
 | `mass_queue_clear(player_name)` | Empty the queue and stop playback. |
+| `mass_play_announcement(player_name, url, volume?, pre_announce?)` | Play a short audio clip (typically TTS) on a named speaker. MA ducks any currently playing track and resumes it when the clip finishes. Used by the autonomy engine's `speak` delivery channel. |
 | `mass_playback_control(player_name, action)` | Queue-level actions: `shuffle_on`, `shuffle_off`, `repeat_off`, `repeat_one`, `repeat_all`. Pause/resume/skip stay on `ha_control_media_player`. |
 
 ### Tool-design notes
