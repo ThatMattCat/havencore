@@ -235,8 +235,8 @@ class AgentOrchestrator:
         self.session_id: str = session_id or str(uuid.uuid4())
         self._session_id_pinned: bool = session_id is not None
 
-        self.temperature = 0.7
-        self.top_p = 0.8
+        self.temperature = 0.3
+        self.top_p = 1.0
         self.max_tokens = 1024
         self._l4_pending = True
 
