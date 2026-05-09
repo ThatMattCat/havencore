@@ -450,6 +450,7 @@
 					<option value="anomaly_sweep">anomaly_sweep</option>
 					<option value="memory_review">memory_review</option>
 					<option value="reminder">reminder</option>
+					<option value="warmup">warmup</option>
 					<option value="watch">watch</option>
 					<option value="routine">routine</option>
 				</select>

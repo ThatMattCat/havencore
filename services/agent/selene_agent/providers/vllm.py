@@ -24,6 +24,8 @@ class VLLMProvider:
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "dummy-key")
         self.model = model
         self._last_reasoning: Optional[str] = None
+        self._last_cache_read: int = 0
+        self._last_cache_create: int = 0
         self._max_model_len: Optional[int] = None
         self._max_model_len_fetched: bool = False
 
@@ -37,6 +39,8 @@ class VLLMProvider:
         p._client = client
         p.model = model
         p._last_reasoning = None
+        p._last_cache_read = 0
+        p._last_cache_create = 0
         p._max_model_len = None
         p._max_model_len_fetched = False
         return p
@@ -65,6 +69,7 @@ class VLLMProvider:
             kwargs["top_p"] = top_p
         response = await self._client.chat.completions.create(**kwargs)
         self._capture_reasoning(response)
+        self._capture_cache_stats(response)
         return response
 
     def _capture_reasoning(self, response: ChatCompletion) -> None:
@@ -94,8 +99,53 @@ class VLLMProvider:
                 break
         self._last_reasoning = picked
 
+    def _capture_cache_stats(self, response: ChatCompletion) -> None:
+        """Pull prefix-cache hit counts off the response.
+
+        vLLM (>= 0.6) reports prompt-cache hits via the OpenAI-shaped
+        ``usage.prompt_tokens_details.cached_tokens`` field. ``read`` is
+        the cached-input slice; ``create`` is the rest of the prompt that
+        had to be prefilled this call. Naming mirrors the Anthropic provider
+        so the dashboard's per-turn metrics surface either backend uniformly.
+        """
+        self._last_cache_read = 0
+        self._last_cache_create = 0
+        try:
+            usage = response.usage
+        except (AttributeError, IndexError):
+            return
+        if usage is None:
+            return
+        cached = 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            v = getattr(details, "cached_tokens", None)
+            if isinstance(v, int):
+                cached = v
+            else:
+                extra = getattr(details, "model_extra", None) or {}
+                if isinstance(extra, dict):
+                    v = extra.get("cached_tokens")
+                    if isinstance(v, int):
+                        cached = v
+        if not cached:
+            extra = getattr(usage, "model_extra", None) or {}
+            if isinstance(extra, dict):
+                nested = extra.get("prompt_tokens_details") or {}
+                if isinstance(nested, dict):
+                    v = nested.get("cached_tokens")
+                    if isinstance(v, int):
+                        cached = v
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        cached = max(0, int(cached or 0))
+        self._last_cache_read = cached
+        self._last_cache_create = max(0, prompt_tokens - cached)
+
     def pop_last_cache_stats(self) -> Dict[str, int]:
-        return {"read": 0, "create": 0}
+        out = {"read": self._last_cache_read, "create": self._last_cache_create}
+        self._last_cache_read = 0
+        self._last_cache_create = 0
+        return out
 
     def pop_last_reasoning(self) -> Optional[str]:
         value = self._last_reasoning

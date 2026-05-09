@@ -93,12 +93,17 @@ async def runs(
     trigger_source: Optional[str] = None,
     offset: int = 0,
 ):
+    # Hide high-cadence maintenance pings from the default view so a quick
+    # glance at run history shows real autonomy activity. Pass kind=warmup to
+    # inspect them explicitly (the dropdown filter exposes the option).
+    exclude_kinds = ["warmup"] if not kind else None
     data = await autonomy_db.list_runs(
         limit=max(1, min(500, limit)),
         include_messages=bool(include_messages),
         kind=kind,
         status=status,
         trigger_source=trigger_source,
+        exclude_kinds=exclude_kinds,
         offset=max(0, offset),
     )
     return {"runs": data, "limit": limit, "offset": offset}
@@ -328,7 +333,10 @@ async def ws_runs(ws: WebSocket):
     try:
         await listener_conn.add_listener("autonomy_runs_ch", _notify)
         # Prime with the most recent 25 runs so fresh clients have context.
-        recent = await autonomy_db.list_runs(limit=25, include_messages=False)
+        # Drop warmup pings here too — same reason as /autonomy/runs above.
+        recent = await autonomy_db.list_runs(
+            limit=25, include_messages=False, exclude_kinds=["warmup"]
+        )
         for r in reversed(recent):
             await ws.send_text(json.dumps({"type": "run", "run": r}))
 
@@ -355,11 +363,16 @@ async def ws_runs(ws: WebSocket):
                     break
                 run_id = get_task.result()
                 run = await autonomy_db.get_run(run_id, include_messages=False)
-                if run is not None:
-                    try:
-                        await ws.send_text(json.dumps({"type": "run", "run": run}))
-                    except Exception:
-                        break
+                if run is None:
+                    continue
+                # Skip warmup pings on the live feed for the same reason the
+                # priming list excludes them — they'd dominate every client.
+                if run.get("kind") == "warmup":
+                    continue
+                try:
+                    await ws.send_text(json.dumps({"type": "run", "run": run}))
+                except Exception:
+                    break
         finally:
             pump_task.cancel()
     except WebSocketDisconnect:

@@ -188,6 +188,12 @@ async def ensure_default_agenda() -> None:
                 "llm_call_cap": config.AUTONOMY_MEMORY_LLM_CALL_CAP,
             },
         },
+        {
+            "kind": "warmup",
+            "cron": config.AUTONOMY_WARMUP_CRON,
+            "autonomy_level": "observe",
+            "cfg": {},
+        },
     ]
 
     async with pool.acquire() as conn:
@@ -763,6 +769,7 @@ async def list_runs(
     kind: Optional[str] = None,
     status: Optional[str] = None,
     trigger_source: Optional[str] = None,
+    exclude_kinds: Optional[List[str]] = None,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
     pool = conversation_db.pool
@@ -773,6 +780,9 @@ async def list_runs(
     if kind:
         args.append(kind)
         clauses.append(f"kind = ${len(args)}")
+    elif exclude_kinds:
+        args.append(list(exclude_kinds))
+        clauses.append(f"kind <> ALL(${len(args)}::text[])")
     if status:
         args.append(status)
         clauses.append(f"status = ${len(args)}")
