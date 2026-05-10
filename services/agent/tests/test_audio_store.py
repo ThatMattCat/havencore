@@ -18,14 +18,20 @@ async def test_put_returns_token_and_get_round_trips():
 
 
 @pytest.mark.asyncio
-async def test_get_is_single_fetch():
+async def test_get_allows_multiple_reads_within_ttl():
     from selene_agent.services.audio_store import AudioStore
 
     store = AudioStore()
     token = await store.put(b"once")
-    assert await store.get(token) is not None
-    # Second read returns None — the blob evicted after first fetch.
-    assert await store.get(token) is None
+    # Music Assistant (and Chromecast players) issue more than one HTTP
+    # request per announcement URL — probe + stream, sometimes plus a
+    # Range follow-up. The store must serve every fetch within the TTL,
+    # not pop on the first read (single-fetch eviction caused 404s on the
+    # second request and tripped MA's retry path → duplicated playback).
+    first = await store.get(token)
+    second = await store.get(token)
+    assert first is not None and first[0] == b"once"
+    assert second is not None and second[0] == b"once"
 
 
 @pytest.mark.asyncio

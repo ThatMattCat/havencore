@@ -183,7 +183,7 @@ AUTONOMY_DEFAULT_EVENT_RATE_LIMIT="10/min"
 AUTONOMY_SPEAKER_DEFAULT_DEVICE=""       # MA player name
 AUTONOMY_SPEAKER_DEFAULT_VOICE="af_heart"
 AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5      # 0.0-1.0 (normalized to 0-100)
-AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore single-fetch TTL
+AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore entry TTL
 
 # act tier — flagged off by default
 AUTONOMY_ACT_ENABLED=false
@@ -262,7 +262,7 @@ Optional `cfg` keys for the `ntfy` branch:
 - `ntfy_session_id` — populates the wire envelope's `session_id` so a tap on the resulting Android notification deep-links to that chat session in the companion app.
 - `ntfy_type` — one of `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` (default). Reserved for future per-type notification-channel splitting on the phone.
 
-The speaker channel parks Kokoro TTS audio in an in-process `AudioStore` (random `secrets.token_urlsafe(16)` token, single-fetch TTL — default 10 min via `AUTONOMY_TTS_AUDIO_TTL_SEC`) and hands MA a URL of the form `{AGENT_BASE_URL}/api/tts/audio/{token}.mp3`. The dashboard's "Speak to device" card on `/playgrounds/tts` and `/autonomy` uses the same pipeline through `POST /api/tts/announce`.
+The speaker channel parks Kokoro TTS audio in an in-process `AudioStore` (random `secrets.token_urlsafe(16)` token, TTL default 10 min via `AUTONOMY_TTS_AUDIO_TTL_SEC`) and hands MA a URL of the form `{AGENT_BASE_URL}/api/tts/audio/{token}.mp3`. The dashboard's "Speak to device" card on `/playgrounds/tts` and `/autonomy` uses the same pipeline through `POST /api/tts/announce`. Entries are *not* evicted on first read — Music Assistant (and downstream Chromecast / Google Home players) typically fetch each announcement URL more than once (probe for codec/duration, then stream), so the store serves every request until the TTL passes.
 
 ## Reactive trigger matching
 

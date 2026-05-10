@@ -1,12 +1,15 @@
 """Token-keyed in-memory audio blob store.
 
 Used by ``SpeakerNotifier`` to stage TTS-rendered audio behind a short-lived
-random URL. Music Assistant fetches the URL; we serve the bytes once (or
-until the TTL) and drop them.
+random URL. Music Assistant fetches the URL; entries live until their TTL
+expires. No persistence — a process restart evicts everything.
 
-No persistence — a process restart evicts everything. That's deliberate:
-if MA couldn't fetch an announcement inside the TTL window, retrying on the
-old URL shouldn't suddenly succeed later.
+Multi-fetch within the TTL is intentional: Music Assistant (and downstream
+players like Chromecast / Google Home) typically issue more than one HTTP
+request per announcement — a probe to read codec/duration, then the actual
+stream, sometimes plus a Range follow-up. An earlier single-fetch design
+caused 404s on the second request, which tripped MA's retry path and
+manifested as announcements playing twice.
 """
 from __future__ import annotations
 
@@ -30,8 +33,9 @@ class AudioStore:
     Semantics:
     - ``put(data)`` -> returns a url-safe token (16 random bytes encoded).
     - ``get(token)`` -> returns ``(bytes, content_type)`` or ``None`` if the
-      token is unknown, expired, or already consumed. Entries evict after
-      first successful ``get`` (single-fetch) or when their TTL passes.
+      token is unknown or expired. Entries are not popped on read; the same
+      token can be fetched repeatedly until its TTL passes (Music Assistant
+      and Chromecast players legitimately re-fetch announcement URLs).
     - ``max_entries`` caps total staged blobs; oldest entries are evicted
       first when the cap is exceeded, so a stuck MA consumer can't fill the
       process heap.
@@ -81,8 +85,6 @@ class AudioStore:
             if entry.expires_at <= time.monotonic():
                 self._entries.pop(token, None)
                 return None
-            # Single-fetch semantics: pop on successful read.
-            self._entries.pop(token, None)
             return entry.data, entry.content_type
 
     async def size(self) -> int:

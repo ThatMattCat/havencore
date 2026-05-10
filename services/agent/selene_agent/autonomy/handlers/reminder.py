@@ -169,7 +169,16 @@ async def handle(
                 image_attached = True
 
     notifier = _make_notifier(channel, to, mcp_manager, cfg)
-    send_kwargs: Dict[str, Any] = {"title": title, "body": body}
+    # When the user (or the LLM scheduling on their behalf) didn't supply a
+    # distinct body, the MCP tool defaults body to title — both fields hold
+    # the same string. SignalNotifier and SpeakerNotifier concatenate title
+    # and body, which would render the reminder twice in one message / TTS
+    # synthesis. Drop the title in that case so the text is rendered once.
+    # HAPushNotifier uses title as a separate header field; an empty header
+    # is harmless. (If personalization rewrote the body, title still differs
+    # and we keep both.)
+    notify_title = title if title.strip() != body.strip() else ""
+    send_kwargs: Dict[str, Any] = {"title": notify_title, "body": body}
     if attachments and channel == "signal":
         send_kwargs["attachments"] = attachments
     delivered = await notifier.send(**send_kwargs)
