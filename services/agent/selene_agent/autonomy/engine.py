@@ -25,6 +25,7 @@ from selene_agent.autonomy.handlers import briefing as briefing_handler
 from selene_agent.autonomy.handlers import memory_review as memory_review_handler
 from selene_agent.autonomy.handlers import reminder as reminder_handler
 from selene_agent.autonomy.handlers import routine as routine_handler
+from selene_agent.autonomy.handlers import warmup as warmup_handler
 from selene_agent.autonomy.handlers import watch as watch_handler
 from selene_agent.autonomy.handlers import watch_llm as watch_llm_handler
 from selene_agent.autonomy.notifiers import (
@@ -53,6 +54,7 @@ _HANDLERS = {
     "anomaly_sweep": anomaly_handler.handle,
     "memory_review": memory_review_handler.handle,
     "reminder": reminder_handler.handle,
+    "warmup": warmup_handler.handle,
     "watch": watch_handler.handle,
     "watch_llm": watch_llm_handler.handle,
     "routine": routine_handler.handle,
@@ -387,8 +389,10 @@ class AutonomyEngine:
                 await self._advance(item, triggered_at)
                 return {"status": "skipped_quiet_hours"}
 
-            # Rate limit gate (skips manual triggers intentionally — operator override).
-            if not manual:
+            # Rate limit gate (skips manual triggers intentionally — operator
+            # override). Warmup is a fixed-cadence maintenance ping; it must
+            # not consume budget meant for user-facing runs.
+            if not manual and kind != "warmup":
                 runs = await autonomy_db.count_runs_since(
                     triggered_at - timedelta(hours=1)
                 )

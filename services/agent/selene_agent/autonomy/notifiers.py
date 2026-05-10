@@ -218,8 +218,13 @@ class SpeakerNotifier:
             logger.error(f"[SpeakerNotifier] MA tool failed: {e}")
             return False
         ok, detail = _tool_result_ok(result)
-        # The MA tool returns ``{"played": true|false, ...}``; _tool_result_ok
-        # checks for success:false JSON. Add a played:false check on top.
+        # The MA tool returns ``{"played": true|false, ...}`` on the normal
+        # path and a bare ``{"error": "..."}`` envelope (no ``played`` key)
+        # when its dispatcher caught an exception (e.g. PlayerCommandFailed
+        # because MA couldn't fetch the announcement URL). Both shapes mean
+        # delivery failed — treat them as such so the autonomy run is logged
+        # accurately instead of recording ``notified_via=speaker`` for a
+        # playback that never happened.
         if ok and isinstance(result, (dict, str)):
             payload_check: Any = result
             if isinstance(result, str):
@@ -227,11 +232,17 @@ class SpeakerNotifier:
                     payload_check = json.loads(result)
                 except (ValueError, TypeError):
                     payload_check = {}
-            if isinstance(payload_check, dict) and payload_check.get("played") is False:
-                logger.error(
-                    f"[SpeakerNotifier] MA reported not played: {payload_check.get('error')}"
-                )
-                return False
+            if isinstance(payload_check, dict):
+                if payload_check.get("played") is False:
+                    logger.error(
+                        f"[SpeakerNotifier] MA reported not played: {payload_check.get('error')}"
+                    )
+                    return False
+                if payload_check.get("played") is not True and payload_check.get("error"):
+                    logger.error(
+                        f"[SpeakerNotifier] MA tool error: {payload_check.get('error')}"
+                    )
+                    return False
         if ok:
             logger.info(f"[SpeakerNotifier] announcement queued on {self.device}: {detail}")
         else:

@@ -25,6 +25,7 @@ The engine is the same FastAPI process that serves the dashboard, so a single re
 | `routine` | Goal-oriented LLM turn — fresh `AutonomousTurn` with a per-item prompt, optional `tools_override` (must be a subset of the current tier's allow-list), result delivered via `deliver.channel`. | Cron |
 | `act` | Two-phase, permission-gated actuation. Plan-only `observe`-tier turn produces a strict-JSON step list; engine validates each step against a per-item `action_allow_list` and either executes inline or parks `status='awaiting_confirmation'` with a deep-link to confirm. **Flagged off by default** — set `AUTONOMY_ACT_ENABLED=true` to enable. | Cron |
 | `memory_review` | Nightly memory-tier consolidation pass. See [memory/README.md](memory/README.md). | Cron |
+| `warmup` | 1-token vLLM ping with the live chat system prompt + tools schema. Refreshes the prefix cache's LRU position so user turns hit a warm cache between idle stretches. Bypasses `AUTONOMY_MAX_RUNS_PER_HOUR` (it's a maintenance ping, not a budgeted run) and is hidden from the default run-history view. | Cron (default `*/5 * * * *`) |
 
 Camera/sensor events plug into the same surface via a generic `haven/<domain>/<kind>` MQTT topic schema — face-recognition is the first source, vehicles/motion/doorbell can drop in the same way. Camera-to-zone mapping lives in Postgres + a `/cameras` dashboard page so the LLM reasons about zones rather than raw camera entity_ids. See [cameras.md](cameras.md).
 
@@ -91,6 +92,7 @@ Code lives in `services/agent/selene_agent/autonomy/`:
 | `handlers/watch_llm.py` | Triage gather + LLM JSON judgment → notification; severity floor |
 | `handlers/routine.py` | Generic `AutonomousTurn` with per-item tools_override and delivery channel |
 | `handlers/act.py` | Plan / validate / execute three-phase actuator pipeline; awaiting-confirmation persistence |
+| `handlers/warmup.py` | Direct vLLM 1-token ping with the live chat prefix; rebuilds the system prompt the same way `AgentOrchestrator.initialize()` does so the rendered prefix matches byte-for-byte |
 
 REST router: `services/agent/selene_agent/api/autonomy.py`. Wired into the FastAPI lifespan at `services/agent/selene_agent/selene_agent.py`.
 
@@ -103,7 +105,7 @@ Two Postgres tables, created on agent startup via `autonomy.db.ensure_schema()` 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | uuid primary key | |
-| `kind` | text | `briefing` / `anomaly_sweep` / `reminder` / `watch` / `watch_llm` / `routine` / `act` / `memory_review` |
+| `kind` | text | `briefing` / `anomaly_sweep` / `reminder` / `watch` / `watch_llm` / `routine` / `act` / `memory_review` / `warmup` |
 | `name` | text | optional operator-facing label |
 | `schedule_cron` | text | nullable for reactive items; standard 5-field cron in `CURRENT_TIMEZONE`, stored UTC |
 | `trigger_spec` | jsonb | nullable; `{source: 'mqtt'\|'webhook', match: {...}}` |
@@ -117,7 +119,7 @@ Two Postgres tables, created on agent startup via `autonomy.db.ensure_schema()` 
 
 Table-level `CHECK`: `schedule_cron IS NOT NULL OR trigger_spec IS NOT NULL`.
 
-Two default rows are seeded on startup (idempotent upsert keyed on `(kind, created_by='system')`): one `briefing`, one `anomaly_sweep`. The `schedule_cron` and `config` fields are refreshed from env each startup so operators can tune via `.env` without touching the DB. `enabled` is preserved across restarts so a manual pause survives.
+Four default rows are seeded on startup (idempotent upsert keyed on `(kind, created_by='system')`): `briefing`, `anomaly_sweep`, `memory_review`, `warmup`. The `schedule_cron` and `config` fields are refreshed from env each startup so operators can tune via `.env` without touching the DB. `enabled` is preserved across restarts so a manual pause survives.
 
 ### `autonomy_runs`
 
@@ -158,6 +160,7 @@ AUTONOMY_TURN_TIMEOUT_SEC=60
 # Built-in agenda items
 AUTONOMY_BRIEFING_CRON="0 8 * * *"
 AUTONOMY_ANOMALY_CRON="*/15 * * * *"
+AUTONOMY_WARMUP_CRON="*/5 * * * *"        # vLLM prefix-cache warmup ping
 AUTONOMY_ANOMALY_COOLDOWN_MIN=30
 AUTONOMY_BRIEFING_NOTIFY_TO=""           # Signal recipient for the morning briefing
 AUTONOMY_HA_NOTIFY_TARGET=""             # e.g. notify.mobile_app_pixel_8
@@ -180,7 +183,7 @@ AUTONOMY_DEFAULT_EVENT_RATE_LIMIT="10/min"
 AUTONOMY_SPEAKER_DEFAULT_DEVICE=""       # MA player name
 AUTONOMY_SPEAKER_DEFAULT_VOICE="af_heart"
 AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5      # 0.0-1.0 (normalized to 0-100)
-AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore single-fetch TTL
+AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore entry TTL
 
 # act tier — flagged off by default
 AUTONOMY_ACT_ENABLED=false
@@ -259,7 +262,7 @@ Optional `cfg` keys for the `ntfy` branch:
 - `ntfy_session_id` — populates the wire envelope's `session_id` so a tap on the resulting Android notification deep-links to that chat session in the companion app.
 - `ntfy_type` — one of `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` (default). Reserved for future per-type notification-channel splitting on the phone.
 
-The speaker channel parks Kokoro TTS audio in an in-process `AudioStore` (random `secrets.token_urlsafe(16)` token, single-fetch TTL — default 10 min via `AUTONOMY_TTS_AUDIO_TTL_SEC`) and hands MA a URL of the form `{AGENT_BASE_URL}/api/tts/audio/{token}.mp3`. The dashboard's "Speak to device" card on `/playgrounds/tts` and `/autonomy` uses the same pipeline through `POST /api/tts/announce`.
+The speaker channel parks Kokoro TTS audio in an in-process `AudioStore` (random `secrets.token_urlsafe(16)` token, TTL default 10 min via `AUTONOMY_TTS_AUDIO_TTL_SEC`) and hands MA a URL of the form `{AGENT_BASE_URL}/api/tts/audio/{token}.mp3`. The dashboard's "Speak to device" card on `/playgrounds/tts` and `/autonomy` uses the same pipeline through `POST /api/tts/announce`. Entries are *not* evicted on first read — Music Assistant (and downstream Chromecast / Google Home players) typically fetch each announcement URL more than once (probe for codec/duration, then stream), so the store serves every request until the TTL passes.
 
 ## Reactive trigger matching
 

@@ -94,10 +94,26 @@ async def test_staged_audio_readable_via_store():
     url = _mcp_last_url(notifier)
     assert url  # sanity
     token = url.rsplit("/", 1)[1].replace(".mp3", "")
-    # Single-fetch: the router will pop, so reading here asserts it was stored.
-    data = await store.get(token)
-    assert data is not None
-    assert data[0] == b"fake-mp3-bytes"
+    # MA may fetch the URL more than once (probe + stream); the store
+    # must serve every fetch within the TTL window.
+    first = await store.get(token)
+    second = await store.get(token)
+    assert first is not None and first[0] == b"fake-mp3-bytes"
+    assert second is not None and second[0] == b"fake-mp3-bytes"
+
+
+@pytest.mark.asyncio
+async def test_send_ma_exception_envelope_marks_failure():
+    # When the MA dispatcher catches an exception (e.g. PlayerCommandFailed
+    # from a 404 on the announcement URL) it returns a bare {"error": ...}
+    # JSON dict with no `played` key. SpeakerNotifier must treat that as
+    # delivery failure so the autonomy run isn't recorded as `ok`.
+    import json
+    notifier, _mcp, _tts, _store = _make_notifier(
+        mcp_tool_return=json.dumps({"error": "PlayerCommandFailed: 404 Not Found"})
+    )
+    ok = await notifier.send(title="t", body="b")
+    assert ok is False
 
 
 def _mcp_last_url(notifier):

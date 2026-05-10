@@ -262,6 +262,65 @@ async def test_reminder_personalize_falls_back_when_llm_returns_unchanged_body(m
 
 
 @pytest.mark.asyncio
+async def test_reminder_drops_title_when_identical_to_body(monkeypatch):
+    """When the LLM scheduled with only `title=` (no body), the MCP tool stores
+    body=title. Without dedup, SignalNotifier/SpeakerNotifier concatenate the
+    same string twice — Signal renders the reminder twice in one message,
+    speaker channel synthesizes TTS for the text twice. The handler must pass
+    title="" to the notifier when title and body are identical."""
+    from selene_agent.autonomy.handlers import reminder
+
+    fake_notifier = MagicMock()
+    fake_notifier.send = AsyncMock(return_value=True)
+    monkeypatch.setattr(reminder, "_make_notifier", lambda *a, **kw: fake_notifier)
+
+    item = {
+        "id": "r-dup",
+        "config": {
+            "title": "Take out the trash",
+            "body": "Take out the trash",
+            "channel": "signal",
+            "personalize": False,
+        },
+    }
+    await reminder.handle(
+        item, client=None, mcp_manager=MagicMock(), model_name="m", base_tools=[]
+    )
+
+    sent_kwargs = fake_notifier.send.await_args.kwargs
+    assert sent_kwargs["title"] == ""
+    assert sent_kwargs["body"] == "Take out the trash"
+
+
+@pytest.mark.asyncio
+async def test_reminder_keeps_title_when_distinct_from_body(monkeypatch):
+    """When title and body are intentionally different (user set both, or
+    personalization rewrote the body), keep both — they convey separate info."""
+    from selene_agent.autonomy.handlers import reminder
+
+    fake_notifier = MagicMock()
+    fake_notifier.send = AsyncMock(return_value=True)
+    monkeypatch.setattr(reminder, "_make_notifier", lambda *a, **kw: fake_notifier)
+
+    item = {
+        "id": "r-distinct",
+        "config": {
+            "title": "Laundry",
+            "body": "Move it to the dryer",
+            "channel": "signal",
+            "personalize": False,
+        },
+    }
+    await reminder.handle(
+        item, client=None, mcp_manager=MagicMock(), model_name="m", base_tools=[]
+    )
+
+    sent_kwargs = fake_notifier.send.await_args.kwargs
+    assert sent_kwargs["title"] == "Laundry"
+    assert sent_kwargs["body"] == "Move it to the dryer"
+
+
+@pytest.mark.asyncio
 async def test_reminder_personalize_image_gen_failure_sends_text_only(monkeypatch):
     """LLM rewrite succeeds; image gen tool throws → handler still delivers
     the personalized text, just without an attachment."""

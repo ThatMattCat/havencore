@@ -436,8 +436,82 @@ async def test_pop_last_cache_stats_captures_and_resets(monkeypatch):
     assert provider.pop_last_cache_stats() == {"read": 0, "create": 0}
 
 
-def test_vllm_and_openai_pop_last_cache_stats_returns_zeros():
+def test_vllm_pop_last_cache_stats_initial_zero():
     from selene_agent.providers.vllm import VLLMProvider
 
     vllm = VLLMProvider(base_url="http://x", api_key="", model="gpt-3.5-turbo")
+    # No request fired yet → nothing to report.
     assert vllm.pop_last_cache_stats() == {"read": 0, "create": 0}
+
+
+@pytest.mark.asyncio
+async def test_vllm_pop_last_cache_stats_captures_and_resets():
+    """vLLM (>=0.6) reports prefix-cache hits via usage.prompt_tokens_details.
+    The provider must surface those on pop_last_cache_stats so per-turn metrics
+    show real hit rates instead of always-zero stubs."""
+    from selene_agent.providers.vllm import VLLMProvider
+
+    provider = VLLMProvider(base_url="http://x", api_key="", model="gpt-3.5-turbo")
+
+    async def _fake_create(**kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", model_extra={}),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(
+                prompt_tokens=12000,
+                completion_tokens=1,
+                total_tokens=12001,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=10240),
+            ),
+        )
+
+    provider._client.chat = SimpleNamespace(
+        completions=SimpleNamespace(create=_fake_create)
+    )
+
+    await provider.chat_completion(
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.0,
+        max_tokens=1,
+    )
+
+    # read = cached_tokens; create = prompt_tokens - cached_tokens.
+    assert provider.pop_last_cache_stats() == {"read": 10240, "create": 1760}
+    # Second pop is zeroed — no double-count.
+    assert provider.pop_last_cache_stats() == {"read": 0, "create": 0}
+
+
+@pytest.mark.asyncio
+async def test_vllm_pop_last_cache_stats_handles_missing_details():
+    """Older vLLM builds may omit prompt_tokens_details entirely. The provider
+    must report read=0 / create=prompt_tokens in that case rather than crash."""
+    from selene_agent.providers.vllm import VLLMProvider
+
+    provider = VLLMProvider(base_url="http://x", api_key="", model="gpt-3.5-turbo")
+
+    async def _fake_create(**kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", model_extra={}),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(
+                prompt_tokens=500,
+                completion_tokens=1,
+                total_tokens=501,
+            ),
+        )
+
+    provider._client.chat = SimpleNamespace(
+        completions=SimpleNamespace(create=_fake_create)
+    )
+
+    await provider.chat_completion(
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.0,
+        max_tokens=1,
+    )
+
+    assert provider.pop_last_cache_stats() == {"read": 0, "create": 500}

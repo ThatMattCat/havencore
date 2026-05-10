@@ -331,10 +331,19 @@ AUTONOMY_DISPATCH_INTERVAL_SECONDS=30
 AUTONOMY_BRIEFING_CRON="0 8 * * *"
 AUTONOMY_ANOMALY_CRON="*/15 * * * *"
 
+# vLLM prefix-cache warmup — fires a 1-token completion with the live
+# chat system prompt + tools schema so the prefix stays resident in the
+# KV-cache LRU. Without it, autonomy turns with their own system prompts
+# evict the chat prefix between user turns and the next chat pays a cold
+# prefill (~10s for a 12k-token prefix vs. ~100ms warm). Disable via the
+# row's enabled flag in /autonomy if you'd rather not run it.
+AUTONOMY_WARMUP_CRON="*/5 * * * *"
+
 # Anomaly-sweep cooldown: minutes before re-notifying on the same signature
 AUTONOMY_ANOMALY_COOLDOWN_MIN=30
 
-# Global ceiling on scheduled dispatches per rolling hour
+# Global ceiling on scheduled dispatches per rolling hour. The `warmup`
+# kind is exempt — it's a maintenance ping, not a budgeted run.
 AUTONOMY_MAX_RUNS_PER_HOUR=20
 
 # Per-turn hard timeout (seconds)
