@@ -61,6 +61,39 @@ TTS_LANGUAGE="a"     # Kokoro TTS language option
 TTS_VOICE="af_heart" # Voice model selection
 ```
 
+#### Pronunciation Tuning
+
+Both speech services have optional knobs for handling the assistant's proper
+name (or any other word that one side gets wrong). All are opt-in — defaults
+are populated from `AGENT_NAME` and only activate if you set the name or hit a
+homophone case like Selene/Celine.
+
+```bash
+# STT — bias Whisper toward the correct spelling.
+# initial_prompt is a short context string the decoder is conditioned on.
+# Default repeats AGENT_NAME in several varied sentences.
+STT_INITIAL_PROMPT="My name is Selene. Hey Selene. Hi Selene, how are you? Selene is your AI assistant. Thanks, Selene."
+
+# Extra prompt-context tokens prepended per segment (helps once a name has
+# appeared earlier in the same turn). Default = AGENT_NAME.
+STT_HOTWORDS="Selene"
+
+# Post-transcription substitutions for homophones Whisper can't pick the
+# correct spelling for via prompt biasing alone. JSON object, word-boundary,
+# case-preserving regex sub. Default fixes the Selene/Celine homophone.
+STT_TRANSCRIPT_SUBSTITUTIONS='{"Celine":"Selene"}'
+
+# TTS — misaki phonemes Kokoro uses for AGENT_NAME. Default forces the
+# 2-syllable pronunciation "Suh-LEEN" instead of misaki's default
+# 3-syllable "Sell-uh-nee". Misaki accepts characters from its
+# American-English IPA-like inventory.
+TTS_AGENT_NAME_PHONEMES="səˈlin"
+```
+
+See `docs/services/speech-to-text/README.md` and
+`docs/services/text-to-speech/README.md` for the rationale behind each layer
+and how to extend them to other names.
+
 #### Model Tokens
 ```bash
 # Hugging Face access token
