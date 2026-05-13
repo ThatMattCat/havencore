@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import re
 import tempfile
 import uuid
 from typing import Optional
@@ -18,24 +19,82 @@ if not os.environ.get("CUDA_VISIBLE_DEVICES"):
 logger = logger_module.get_logger('loki')
 
 
+def _configure_asr(asr: FasterWhisperASR) -> FasterWhisperASR:
+    """Apply process-wide transcription biases to a FasterWhisperASR instance.
+
+    `transcribe_kargs` is forwarded as **kwargs into WhisperModel.transcribe(),
+    so we use it to inject `hotwords` — extra prompt-context tokens that help
+    on second-and-later occurrences but don't fully override the cold-start
+    spelling pick for homophones.
+    """
+    if config.STT_HOTWORDS:
+        asr.transcribe_kargs["hotwords"] = config.STT_HOTWORDS
+    return asr
+
+
+_substitution_pattern = None
+
+
+def _apply_substitutions(text: str) -> str:
+    """Post-transcription homophone fix-ups (e.g., Celine -> Selene).
+
+    Whisper's prompt biasing can't override the cold-start spelling of a
+    homophone like /səˈlin/ -> "Celine". This sub runs after the transcript
+    is assembled, with word boundaries and case preservation.
+    """
+    global _substitution_pattern
+    subs = getattr(config, "STT_TRANSCRIPT_SUBSTITUTIONS", None)
+    if not subs:
+        return text
+    if _substitution_pattern is None:
+        keys = sorted(subs.keys(), key=len, reverse=True)
+        _substitution_pattern = re.compile(
+            r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b",
+            re.IGNORECASE,
+        )
+
+    def _sub(m):
+        matched = m.group(1)
+        for k, v in subs.items():
+            if k.lower() == matched.lower():
+                if matched.isupper():
+                    return v.upper()
+                if matched.islower():
+                    return v.lower()
+                if matched[:1].isupper():
+                    return v[:1].upper() + v[1:]
+                return v
+        return matched
+
+    return _substitution_pattern.sub(_sub, text)
+
+
 class WhisperTranscriber:
     @with_trace
     def __init__(self):
-        self.asr = FasterWhisperASR(shared_config.SRC_LAN, config.WHISPER_MODEL)
-        self.asr.transcribe(config.WARMUP_FILE)
+        self.asr = _configure_asr(
+            FasterWhisperASR(shared_config.SRC_LAN, config.WHISPER_MODEL)
+        )
+        self.asr.transcribe(config.WARMUP_FILE, init_prompt=config.STT_INITIAL_PROMPT)
 
     @with_trace
     async def transcribe_file(self, audio_file_path: str, language: Optional[str] = None) -> str:
         """Transcribe an audio file using FasterWhisper."""
         trace_id = get_trace_id()
-        file_asr = FasterWhisperASR(
-            language or shared_config.SRC_LAN,
-            config.WHISPER_MODEL,
+        file_asr = _configure_asr(
+            FasterWhisperASR(
+                language or shared_config.SRC_LAN,
+                config.WHISPER_MODEL,
+            )
         )
 
         logger.info(f"Transcribing file: {audio_file_path}", extra={'trace_id': trace_id})
 
-        segments = await asyncio.to_thread(file_asr.transcribe, audio_file_path)
+        segments = await asyncio.to_thread(
+            file_asr.transcribe,
+            audio_file_path,
+            init_prompt=config.STT_INITIAL_PROMPT,
+        )
 
         transcript_parts = []
         for segment in segments:
@@ -49,6 +108,7 @@ class WhisperTranscriber:
                 logger.warning(f"Unknown segment format: {type(segment)}", extra={'trace_id': trace_id})
 
         transcript = " ".join(transcript_parts).strip()
+        transcript = _apply_substitutions(transcript)
         logger.info(f"File transcription complete: {transcript[:100]}...", extra={'trace_id': trace_id})
         return transcript
 

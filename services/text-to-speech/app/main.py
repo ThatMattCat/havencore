@@ -24,6 +24,34 @@ os.makedirs(config.AUDIO_DIR, exist_ok=True)
 
 pipeline = KPipeline(lang_code=config.LANGUAGE, device=config.MODEL_DEVICE if torch.cuda.is_available() else 'cpu')
 
+
+def _apply_pronunciation_overrides(pipe):
+    """Inject custom pronunciations into misaki's Lexicon.
+
+    Misaki has no inline phoneme syntax — the only way to force a word's
+    pronunciation is to add it to the gold/silver dict consulted during G2P.
+    Only English G2P (lang_code 'a'/'b') exposes a Lexicon; other languages
+    are silently skipped.
+    """
+    overrides = getattr(config, "TTS_PRONUNCIATIONS", None)
+    if not overrides:
+        return
+    lex = getattr(getattr(pipe, "g2p", None), "lexicon", None)
+    if lex is None or not hasattr(lex, "golds"):
+        logger.warning(
+            "TTS_PRONUNCIATIONS configured but active G2P has no Lexicon "
+            "(lang_code=%r); skipping",
+            getattr(pipe, "lang_code", None),
+        )
+        return
+    for word, phon in overrides.items():
+        for variant in {word, word.lower(), word.capitalize(), word.upper()}:
+            lex.golds[variant] = phon
+        logger.info("TTS pronunciation override: %r -> %r", word, phon)
+
+
+_apply_pronunciation_overrides(pipeline)
+
 # Kokoro v1 voices, keyed by the language code the pipeline must run under.
 # G2P is language-specific, so only voices whose prefix matches the configured
 # LANGUAGE are exposed. Keep this in sync with hexgrad/Kokoro-82M on HF Hub.
