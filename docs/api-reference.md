@@ -202,6 +202,16 @@ Convert text to spoken audio using Kokoro TTS.
 #### Response
 Returns raw audio binary data with appropriate Content-Type header.
 
+**Optional response header**: `X-Visemes: <base64 JSON>` carries a
+Rhubarb Lip Sync viseme timeline (Preston-Blair 9-shape phonemes)
+aligned to the audio body, for avatar lip-sync. Decoded JSON shape:
+`{"metadata":{"duration":<sec>}, "mouthCues":[{"start":<sec>,"end":<sec>,"value":"X|A..H"}, ...]}`.
+Soft dependency — if the `rhubarb` binary is missing or errors, the
+header is omitted and the audio body is unchanged. The agent's
+`/api/tts/speak` proxy (below) forwards this header unchanged. See
+`docs/services/text-to-speech/README.md` for the full contract and a
+curl smoke test.
+
 #### Example Request
 ```bash
 curl -X POST http://localhost/v1/audio/speech \
@@ -384,7 +394,7 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. Rows also carry `cache_read_tokens` and `cache_creation_tokens` (Anthropic prompt-cache counters summed across the turn's LLM calls; `0` for vLLM turns and legacy rows). |
 | `GET`  | `/api/metrics/summary` | Daily aggregates, p95. Also exposes `cache_read_total` / `cache_create_total` (sums of the per-turn cache counters over the window) and a derived `cache_hit_rate = read / (read + create)`, guarded against zero. |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
-| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) |
+| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary). Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. |
 | `GET`  | `/api/tts/voices` | Voice alias list |
 | `POST` | `/api/stt/transcribe` | Multipart transcription proxy |
 | `POST` | `/api/vision/ask` | Multipart `file` (image OR short video) + `prompt` to the vision LLM (`vllm-vision`). MIME branches the upload to an `image_url` vs `video_url` chat-completion content part; unknown MIME → 415. The legacy `image` field name is still accepted. Returns `{response, latency_ms, usage, model, media_type}`. Used by the dashboard playground. nginx cap on `/api/` is 100 MB. |

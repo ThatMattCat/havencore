@@ -63,7 +63,20 @@ async def speak(payload: SpeakRequest):
                 content_type = resp.headers.get("Content-Type") or CONTENT_TYPES.get(
                     payload.format or "mp3", "audio/mpeg"
                 )
-                return Response(content=data, media_type=content_type)
+                # Forward the Rhubarb viseme timeline (base64 JSON) when the
+                # TTS service produced one, so the companion app's Live2D
+                # overlay can lip-sync against it. Header name follows the
+                # contract documented in services/text-to-speech/main.py.
+                forward_headers: dict[str, str] = {}
+                visemes = resp.headers.get("X-Visemes")
+                if visemes:
+                    forward_headers["X-Visemes"] = visemes
+                    forward_headers["Access-Control-Expose-Headers"] = "X-Visemes"
+                return Response(
+                    content=data,
+                    media_type=content_type,
+                    headers=forward_headers,
+                )
     except aiohttp.ClientError as e:
         logger.error(f"TTS proxy error: {e}")
         raise HTTPException(status_code=502, detail=f"TTS service unreachable: {e}")

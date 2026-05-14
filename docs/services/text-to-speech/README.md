@@ -104,6 +104,59 @@ print('phonemes:', result.phonemes)
 
 **Actual output**: always WAV regardless of request.
 
+## Lip-sync viseme timeline (`X-Visemes` header)
+
+For consumers that want to lip-sync a Live2D / 3D avatar against the
+TTS audio, every `/v1/audio/speech` response carries an `X-Visemes`
+header containing a base64-encoded Rhubarb Lip Sync JSON timeline.
+The agent's `/api/tts/speak` proxy forwards this header unchanged.
+
+```
+HTTP/1.1 200 OK
+Content-Type: audio/wav
+Content-Length: 150044
+X-Visemes: eyJtZXRhZGF0YSI6...    ← base64 JSON, optional
+Access-Control-Expose-Headers: X-Visemes
+```
+
+Decoded JSON (Rhubarb `--machineReadable` `-f json`):
+
+```json
+{
+  "metadata": {"duration": 3.12},
+  "mouthCues": [
+    {"start": 0.00, "end": 0.25, "value": "X"},
+    {"start": 0.25, "end": 0.39, "value": "C"},
+    ...
+  ]
+}
+```
+
+Values use Preston-Blair 9-shape phonemes: `A B C D E F G H X` (X is
+silence). The companion app's `VisemeScheduler` plays these against
+ExoPlayer playback position — see `havencore-companion-app/docs/avatar-overlay.md`.
+
+**Soft-fail behavior**: if `rhubarb` is missing, hits the 10s timeout,
+or exits non-zero, the response omits the header and the body is
+unchanged. Clients should treat absent `X-Visemes` as "no lip-sync
+data — use closed-mouth playback".
+
+Tunables (env vars, all optional):
+- `RHUBARB_BIN` — binary path, default `rhubarb`
+- `RHUBARB_TIMEOUT_SEC` — kill subprocess after N seconds, default `10`
+- `RHUBARB_RECOGNIZER` — `phonetic` (fast) or `pocketSphinx`, default `phonetic`
+
+Quick smoke test:
+
+```bash
+curl -sS -D /tmp/h.txt -X POST http://<host>:6005/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Hello, this is a test.","voice":"af_heart","response_format":"wav"}' \
+  -o /tmp/say.wav
+grep -i '^X-Visemes:' /tmp/h.txt | sed 's/^X-Visemes: //;s/\r$//' \
+  | base64 -d | python3 -m json.tool
+```
+
 ## Dashboard playground
 
 Use the agent dashboard at `http://localhost/playgrounds/tts` for in-browser testing (text input, voice/format selection, inline playback, synthesis latency). The dashboard proxies to the TTS service.

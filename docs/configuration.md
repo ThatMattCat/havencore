@@ -94,6 +94,33 @@ See `docs/services/speech-to-text/README.md` and
 `docs/services/text-to-speech/README.md` for the rationale behind each layer
 and how to extend them to other names.
 
+#### Lip-sync (Rhubarb)
+
+The TTS service shells out to [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync)
+after Kokoro synthesizes each clip, attaches the resulting viseme
+timeline as an `X-Visemes` response header (base64-encoded JSON), and
+the agent's `/api/tts/speak` proxy forwards it unchanged. The companion
+app's Live2D avatar overlay drives mouth shapes against this timeline.
+Soft dependency — if `rhubarb` is unavailable or errors, the header is
+omitted and the audio body is unchanged.
+
+```bash
+# Binary location (path or PATH-resolvable name).
+# The Dockerfile installs the upstream Linux release to /usr/local/bin/rhubarb.
+RHUBARB_BIN="rhubarb"
+
+# Subprocess timeout in seconds. Generation is typically 50-200ms for a
+# few-second clip; the timeout is a safety net against hangs.
+RHUBARB_TIMEOUT_SEC="10"
+
+# Recognizer mode: "phonetic" (fast, language-agnostic) or "pocketSphinx"
+# (slower, English-only, slightly more accurate consonant timing).
+RHUBARB_RECOGNIZER="phonetic"
+```
+
+See `docs/services/text-to-speech/README.md` for the wire-protocol
+contract and a curl smoke test.
+
 #### Model Tokens
 ```bash
 # Hugging Face access token

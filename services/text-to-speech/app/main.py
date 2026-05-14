@@ -1,5 +1,8 @@
+import base64
 import io
 import os
+import subprocess
+import tempfile
 import time
 import uuid
 import json
@@ -87,6 +90,14 @@ DEFAULT_VOICE = config.VOICE if config.VOICE in AVAILABLE_VOICES else 'af_heart'
 
 SAMPLE_RATE = 24000
 
+# Rhubarb Lip Sync: produces a viseme timeline the companion app's
+# Live2D overlay schedules against ExoPlayer playback position. Soft
+# dependency — if the binary is missing or errors, the response just
+# omits X-Visemes and the client falls back to closed-mouth playback.
+RHUBARB_BIN = os.environ.get('RHUBARB_BIN', 'rhubarb')
+RHUBARB_TIMEOUT_SEC = float(os.environ.get('RHUBARB_TIMEOUT_SEC', '10'))
+RHUBARB_RECOGNIZER = os.environ.get('RHUBARB_RECOGNIZER', 'phonetic')
+
 # Formats libsndfile can encode directly from raw samples. mp3/aac/pcm are
 # handled separately (mp3/aac fall back to WAV since libsndfile can't
 # produce them without extra codec libs).
@@ -135,6 +146,59 @@ def encode_audio(samples: np.ndarray, fmt: str) -> tuple[bytes, str]:
         sf.write(buf, samples, SAMPLE_RATE, format='WAV', subtype='PCM_16')
         content_type = 'audio/wav'
     return buf.getvalue(), content_type
+
+
+def compute_visemes(samples: np.ndarray) -> dict | None:
+    """Run Rhubarb on ``samples`` and return the parsed viseme timeline.
+
+    Returns ``None`` if Rhubarb is unavailable, times out, or errors —
+    callers should treat the absence of an X-Visemes header as the
+    soft-fallback signal (client renders silent mouth).
+    """
+    wav_fd, wav_path = tempfile.mkstemp(suffix='.wav', prefix='tts_visemes_')
+    os.close(wav_fd)
+    json_fd, json_path = tempfile.mkstemp(suffix='.json', prefix='tts_visemes_')
+    os.close(json_fd)
+    try:
+        # Rhubarb requires 16-bit PCM WAV; libsndfile's float default is rejected.
+        sf.write(wav_path, samples, SAMPLE_RATE, format='WAV', subtype='PCM_16')
+        result = subprocess.run(
+            [RHUBARB_BIN, '-f', 'json', '-r', RHUBARB_RECOGNIZER,
+             '-o', json_path, wav_path],
+            capture_output=True,
+            timeout=RHUBARB_TIMEOUT_SEC,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "rhubarb exited %d: %s",
+                result.returncode,
+                (result.stderr or '').strip()[:500],
+            )
+            return None
+        with open(json_path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.warning(
+            "rhubarb binary not found at %r; X-Visemes header disabled",
+            RHUBARB_BIN,
+        )
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "rhubarb timed out after %.1fs; skipping visemes",
+            RHUBARB_TIMEOUT_SEC,
+        )
+        return None
+    except Exception as e:
+        logger.warning("rhubarb failed: %s", e)
+        return None
+    finally:
+        for p in (wav_path, json_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 class OpenAICompatibleHandler(BaseHTTPRequestHandler):
@@ -208,15 +272,32 @@ class OpenAICompatibleHandler(BaseHTTPRequestHandler):
 
             audio_data, content_type = encode_audio(samples, response_format)
 
+            visemes = compute_visemes(samples)
+            visemes_b64 = None
+            if visemes is not None:
+                try:
+                    visemes_b64 = base64.b64encode(
+                        json.dumps(visemes, separators=(',', ':')).encode()
+                    ).decode('ascii')
+                except Exception as e:
+                    logger.warning("failed to base64-encode visemes: %s", e)
+
             self.send_response(200)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(len(audio_data)))
+            if visemes_b64:
+                self.send_header('X-Visemes', visemes_b64)
+                # Browser clients (dashboard) can only read X-* response
+                # headers when explicitly exposed via CORS.
+                self.send_header('Access-Control-Expose-Headers', 'X-Visemes')
             self.end_headers()
             self.wfile.write(audio_data)
 
+            cue_count = len(visemes.get('mouthCues', [])) if visemes else 0
             logger.info(
                 f"OpenAI API: served {len(audio_data)} bytes as {content_type} "
-                f"(requested response_format='{response_format}')"
+                f"(requested response_format='{response_format}', "
+                f"visemes={'omitted' if visemes is None else f'{cue_count} cues'})"
             )
 
         except Exception as e:
