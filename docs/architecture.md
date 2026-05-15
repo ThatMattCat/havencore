@@ -74,11 +74,13 @@ Audio Input → Preprocessing → Whisper Model → Text Output
   Format Detection  Normalization  GPU Inference  Post-processing
 ```
 
-### 4. Text-to-Speech Service (Port 6005)
+### 4. Text-to-Speech Service (Ports 6005, 6015)
 **Purpose**: Audio Generation and Voice Synthesis
-- Converts text to natural speech using Kokoro TTS
-- OpenAI-compatible API at `POST /v1/audio/speech`
-- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service)
+- Two engines run in parallel and expose the same OpenAI-compatible `/v1/audio/speech` surface plus the same `X-Visemes` Rhubarb header:
+  - `text-to-speech` (port 6005) — Kokoro TTS, the v1 fallback engine
+  - `text-to-speech-v2` (port 6015) — Chatterbox-Turbo, the v2 expressive engine with voice cloning and inline paralinguistic tags
+- The agent's TTS client + `/api/tts/*` proxy route to whichever engine is active based on `TTS_PROVIDER` in `.env` (default `v2`). Both services keep running, so switching providers and `docker compose up -d agent` is the rollback path in either direction.
+- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service) — same page works for either engine, plus voice cloning + runtime-default voice management when v2 is active.
 
 ### 5. PostgreSQL Database (Port 5432)
 **Purpose**: Persistent Data Storage

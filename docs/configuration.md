@@ -96,13 +96,76 @@ and how to extend them to other names.
 
 #### Lip-sync (Rhubarb)
 
-The TTS service shells out to [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync)
-after Kokoro synthesizes each clip, attaches the resulting viseme
-timeline as an `X-Visemes` response header (base64-encoded JSON), and
-the agent's `/api/tts/speak` proxy forwards it unchanged. The companion
-app's Live2D avatar overlay drives mouth shapes against this timeline.
-Soft dependency — if `rhubarb` is unavailable or errors, the header is
-omitted and the audio body is unchanged.
+Both TTS engines shell out to [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync)
+after synthesis, attach the resulting viseme timeline as an `X-Visemes`
+response header (base64-encoded JSON), and the agent's `/api/tts/speak`
+proxy forwards it unchanged. The companion app's Live2D avatar overlay
+drives mouth shapes against this timeline. Soft dependency — if `rhubarb`
+is unavailable or errors, the header is omitted and the audio body is
+unchanged. v1 and v2 emit byte-identical header format, so the companion
+app's decoder needs no changes when switching engines.
+
+#### TTS provider selection (v1 ↔ v2)
+
+Two TTS engines run in parallel and expose the same `/v1/audio/speech`
+surface. The agent picks one via `TTS_PROVIDER`:
+
+- `v1` → [text-to-speech](services/text-to-speech/README.md) (Kokoro, port 6005) — small, fast, fixed voices
+- `v2` → [text-to-speech-v2](services/text-to-speech-v2/README.md) (Chatterbox-Turbo, port 6015) — expressive, voice cloning, inline paralinguistic tags
+
+Switching providers is a one-line `.env` change and `docker compose up -d
+agent`. Both services keep running so rollback in either direction is
+instant. Companion app, satellites, and dashboard playground all follow
+the active provider automatically because they reach TTS through the
+agent.
+
+```bash
+# Which TTS engine the agent's client + /api/tts/* proxy use.
+TTS_PROVIDER="v2"
+
+# Engine base URLs (defaults work for the in-compose hostnames).
+TTS_V1_BASE_URL="http://text-to-speech:6005"
+TTS_V2_BASE_URL="http://text-to-speech-v2:6015"
+```
+
+#### Chatterbox-Turbo (v2) tunables
+
+```bash
+# GPU pinning. Chatterbox has no tensor-parallel support — runs on a
+# single GPU. CHATTERBOX_GPU sets CUDA_VISIBLE_DEVICES on the container;
+# inside the container the model always sees the chosen card as cuda:0.
+CHATTERBOX_GPU="2"
+CHATTERBOX_DEVICE="cuda:0"
+
+# Default voice. Must match a clip name in /app/voices/ (uploads) or
+# /opt/chatterbox-voices/ (bundled). The runtime-override set via the
+# voice-cloning UI (/playgrounds/tts → Voices card) takes precedence
+# when present and is persisted in postgres (agent_state.tts_default_voice).
+CHATTERBOX_VOICE="Olivia"
+
+# Optional text substitutions applied before synthesis. Chatterbox has no
+# lexicon-injection hook upstream, so the workaround is to rewrite the
+# input spelling. Distinct from v1's TTS_AGENT_NAME_PHONEMES which uses
+# IPA — v2 expects plain pseudo-phonetic English. Empty by default;
+# Chatterbox handles most proper nouns reasonably without help.
+#TTS_V2_PRONUNCIATIONS='{"Selene":"Suh-leen"}'
+```
+
+#### Paralinguistic tags (v2 only)
+
+Chatterbox-Turbo natively renders these inline reaction tags when they
+appear in the input text:
+
+```
+[laugh] [chuckle] [sigh] [gasp] [groan] [cough] [sniff] [clear throat] [shush]
+```
+
+The agent's system prompt is automatically extended with guidance teaching
+the LLM to use these sparingly (see
+`selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM`) —
+but **only when `TTS_PROVIDER=v2`**. Under v1 the addendum is omitted
+because Kokoro would speak the brackets aloud. No env var to toggle this;
+it follows `TTS_PROVIDER` automatically.
 
 ```bash
 # Binary location (path or PATH-resolvable name).

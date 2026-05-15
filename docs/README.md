@@ -24,7 +24,8 @@ Each service has its own folder under [`services/`](services/README.md):
 - [vLLM](services/vllm/README.md) — primary LLM backend
 - [LlamaCPP](services/llamacpp/README.md) — alternative LLM backend
 - [Speech-to-Text](services/speech-to-text/README.md) — Faster Whisper STT
-- [Text-to-Speech](services/text-to-speech/README.md) — Kokoro TTS
+- [Text-to-Speech (v1)](services/text-to-speech/README.md) — Kokoro TTS (fallback engine)
+- [Text-to-Speech v2](services/text-to-speech-v2/README.md) — Chatterbox-Turbo (expressive, voice cloning)
 - [vLLM Vision](services/vllm-vision/README.md) — Qwen3-VL image-understanding backend on a dedicated GPU
 - [Text-to-Image](services/text-to-image/README.md) — ComfyUI image generation
 - [Face Recognition](services/face-recognition/README.md) — InsightFace identity for HA cameras

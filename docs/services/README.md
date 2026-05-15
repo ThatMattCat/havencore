@@ -9,7 +9,8 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [Nginx Gateway](nginx/README.md) | 80 | API gateway / reverse proxy | Nginx Alpine |
 | [Agent Service](agent/README.md) | 6002 | AI logic, tool calling, SvelteKit dashboard | Python, FastAPI, SvelteKit |
 | [Speech-to-Text](speech-to-text/README.md) | 6001 | Audio transcription | Python, Faster Whisper, CUDA |
-| [Text-to-Speech](text-to-speech/README.md) | 6005 | Speech synthesis | Python, Kokoro TTS, CUDA |
+| [Text-to-Speech (v1)](text-to-speech/README.md) | 6005 | Speech synthesis — Kokoro engine, fallback path | Python, Kokoro TTS, CUDA |
+| [Text-to-Speech v2](text-to-speech-v2/README.md) | 6015 | Speech synthesis — Chatterbox-Turbo, expressive + voice cloning | Python, Chatterbox-TTS, CUDA |
 | [vLLM Vision](vllm-vision/README.md) | 8001 | Image / short-video understanding (Qwen3-VL on a dedicated GPU) | vLLM, CUDA |
 | [Text-to-Image](text-to-image/README.md) | 8188 | Image generation | ComfyUI |
 | [vLLM](vllm/README.md) | 8000 | Primary LLM inference | vLLM, CUDA |
@@ -31,7 +32,8 @@ agent → postgres:5432
 agent → vllm:8000
 agent → qdrant:6333
 agent → embeddings:3000
-agent → text-to-speech:6005     (TTS playground proxy)
+agent → text-to-speech:6005     (TTS v1 — Kokoro, when TTS_PROVIDER=v1)
+agent → text-to-speech-v2:6015  (TTS v2 — Chatterbox-Turbo, when TTS_PROVIDER=v2)
 agent → speech-to-text:6001     (STT playground proxy)
 agent → vllm-vision:8000        (Vision playground proxy + query_multimodal_api chokepoint)
 agent → text-to-image:8188      (ComfyUI playground proxy)

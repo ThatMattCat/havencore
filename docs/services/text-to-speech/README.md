@@ -1,6 +1,8 @@
-# Text-to-Speech Service
+# Text-to-Speech Service (v1, Kokoro)
 
 High-quality speech synthesis using Kokoro TTS, exposed as an OpenAI-compatible endpoint.
+
+> **Two TTS engines run in parallel.** This is the v1 service (Kokoro, port 6005). A second engine — [text-to-speech-v2](../text-to-speech-v2/README.md) (Chatterbox-Turbo, port 6015) — runs alongside it and exposes the same `/v1/audio/speech` surface and `X-Visemes` header. The agent picks one via `TTS_PROVIDER` (`v1` or `v2`) in `.env`; companion app and satellites follow that switch automatically because they reach TTS through the agent. v2 is the current default for most users; v1 stays as the always-on fallback.
 
 ## Purpose
 
