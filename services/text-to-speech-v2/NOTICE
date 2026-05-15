@@ -1,0 +1,17 @@
+HavenCore text-to-speech-v2
+===========================
+
+This service builds on the following open-source components.
+
+Chatterbox-TTS — Resemble AI
+  https://github.com/resemble-ai/chatterbox
+  MIT License
+
+Rhubarb Lip Sync — Daniel S. Wolf
+  https://github.com/DanielSWolf/rhubarb-lip-sync
+  MIT License
+
+Bundled reference voice clips ("voices.bundled/*.wav")
+  Sourced from devnen/Chatterbox-TTS-Server
+  https://github.com/devnen/Chatterbox-TTS-Server
+  MIT License — Copyright (c) 2025 devnen

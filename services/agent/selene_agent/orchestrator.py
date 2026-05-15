@@ -286,6 +286,11 @@ class AgentOrchestrator:
         except Exception as e:
             logger.warning(f"phase addendum lookup failed: {e}")
 
+        # Only teach the LLM about paralinguistic tags when the active TTS
+        # engine actually renders them. Kokoro would speak the brackets.
+        if config.TTS_PROVIDER == "v2":
+            system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
+
         try:
             from selene_agent.utils.l4_context import build_l4_block
             block = await build_l4_block()

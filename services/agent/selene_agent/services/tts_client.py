@@ -1,8 +1,10 @@
 """Async TTS client — thin wrapper around the text-to-speech service.
 
-Targets the Kokoro TTS container directly (``text-to-speech:6005``), not
-the agent's ``/api/tts/speak`` proxy, to keep the autonomy path free of
-self-referential HTTP hops.
+Targets whichever engine ``TTS_PROVIDER`` selects (v1=Kokoro at 6005,
+v2=Chatterbox-Turbo at 6015) directly, not the agent's ``/api/tts/speak``
+proxy, to keep the autonomy path free of self-referential HTTP hops. Both
+engines accept the same request shape and emit the same X-Visemes header,
+so the only thing that changes is the base URL.
 """
 from __future__ import annotations
 
@@ -10,37 +12,55 @@ from typing import Optional
 
 import aiohttp
 
-TTS_BASE_DEFAULT = "http://text-to-speech:6005"
+from selene_agent.utils import config
+
+TTS_BASE_DEFAULT = config.TTS_BASE_URL
 
 
 class TTSClient:
     def __init__(
         self,
-        base_url: str = TTS_BASE_DEFAULT,
+        base_url: Optional[str] = None,
         *,
         timeout_sec: float = 60.0,
     ):
-        self._base_url = base_url.rstrip("/")
+        self._base_url = (base_url or config.TTS_BASE_URL).rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout_sec)
 
     async def synth(
         self,
         text: str,
         *,
-        voice: str = "af_heart",
+        voice: Optional[str] = None,
         response_format: str = "mp3",
         speed: float = 1.0,
     ) -> bytes:
-        """Render ``text`` to audio bytes. Raises ``RuntimeError`` on failure."""
+        """Render ``text`` to audio bytes. Raises ``RuntimeError`` on failure.
+
+        Voice resolution: explicit ``voice`` arg → runtime default override
+        (set via the voice-management UI) → engine fallback. Forwarded
+        as-is once resolved; either engine reduces unknown names to its
+        own default with a warning log.
+        """
         if not text or not text.strip():
             raise ValueError("TTSClient.synth: empty text")
-        body = {
+        body: dict = {
             "input": text,
             "model": "tts-1",
-            "voice": voice or "af_heart",
             "response_format": response_format or "mp3",
             "speed": speed or 1.0,
         }
+        # Lazy import — keeps this client usable from non-DB contexts (tests,
+        # standalone scripts) where agent_state's pool isn't initialized.
+        resolved = voice
+        if not resolved:
+            try:
+                from selene_agent.utils import agent_state
+                resolved = await agent_state.get_default_voice()
+            except Exception:
+                resolved = None
+        if resolved:
+            body["voice"] = resolved
         async with aiohttp.ClientSession(timeout=self._timeout) as session:
             async with session.post(
                 f"{self._base_url}/v1/audio/speech", json=body

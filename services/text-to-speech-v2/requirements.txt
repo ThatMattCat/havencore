@@ -1,0 +1,10 @@
+# chatterbox-tts 0.1.7 already pins torch==2.6.0 / torchaudio==2.6.0 /
+# transformers==5.2.0; we let those flow through. We don't list torchvision
+# explicitly — the matching version ships in the pytorch/pytorch:2.6.0 base
+# image and we don't want pip to silently swap it for an incompatible wheel.
+chatterbox-tts==0.1.7
+fastapi
+uvicorn[standard]
+soundfile==0.13.1
+numpy>=1.24.0,<2.0.0
+pydantic>=2

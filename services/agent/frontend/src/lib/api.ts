@@ -194,9 +194,20 @@ export function getScenes(): Promise<{ scenes: any[]; count: number }> {
 
 // --- TTS ---
 
+export interface TtsVoice {
+	id: string;
+	label: string;
+	kind?: 'user' | 'bundled';
+	deletable?: boolean;
+}
+
 export interface TtsVoicesResponse {
-	voices: { id: string; label: string }[];
+	voices: TtsVoice[];
 	formats: string[];
+	default: string;
+	default_override?: string | null;
+	user_voices?: string[];
+	bundled_voices?: string[];
 }
 
 export function getTtsVoices(): Promise<TtsVoicesResponse> {
@@ -223,6 +234,46 @@ export async function ttsSpeak(body: {
 
 export function getTtsHealth(): Promise<{ status: string }> {
 	return fetchJSON('/api/tts/health');
+}
+
+export async function setTtsDefaultVoice(voice: string | null): Promise<{ voice: string | null }> {
+	const res = await fetch('/api/tts/voices/default', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ voice }),
+	});
+	if (!res.ok) {
+		const detail = await res.text().catch(() => res.statusText);
+		throw new Error(`${res.status}: ${detail}`);
+	}
+	return res.json();
+}
+
+export async function uploadTtsVoice(name: string, file: File): Promise<{
+	name: string;
+	path: string;
+	duration_sec: number;
+	original_sample_rate: number;
+	stored_sample_rate: number;
+}> {
+	const form = new FormData();
+	form.append('name', name);
+	form.append('file', file);
+	const res = await fetch('/api/tts/voices/upload', { method: 'POST', body: form });
+	if (!res.ok) {
+		const detail = await res.text().catch(() => res.statusText);
+		throw new Error(`${res.status}: ${detail}`);
+	}
+	return res.json();
+}
+
+export async function deleteTtsVoice(name: string): Promise<{ deleted: string }> {
+	const res = await fetch(`/api/tts/voices/${encodeURIComponent(name)}`, { method: 'DELETE' });
+	if (!res.ok) {
+		const detail = await res.text().catch(() => res.statusText);
+		throw new Error(`${res.status}: ${detail}`);
+	}
+	return res.json();
 }
 
 // --- STT ---

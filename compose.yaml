@@ -108,6 +108,47 @@ services:
       - ./services/text-to-speech/app/config.py:/app/config.py
       - ./shared:/app/shared:ro
     restart: unless-stopped
+  text-to-speech-v2:
+    # Chatterbox-Turbo TTS (Resemble AI). Parallel to text-to-speech (Kokoro)
+    # for A/B testing — both expose the same /v1/audio/speech surface and the
+    # same X-Visemes response header so clients can swap by URL. Pinned to
+    # GPU 0 via CUDA_VISIBLE_DEVICES (same pattern as vllm-vision /
+    # face-recognition); ~1.5-2 GB peak VRAM for single-user inference.
+    build:
+      context: ./services/text-to-speech-v2
+      dockerfile: Dockerfile
+    image: text-to-speech-v2:${VERSION:-latest}
+    ports:
+      - "6015:6015" # OpenAI API-compatible /v1/audio/speech
+    env_file:
+      - .env
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CHATTERBOX_GPU:-0}
+      # Single-user TTS allocates a small model (~3 GB) then grows activations
+      # per request. Expandable segments cut peak resident by ~10-20% on the
+      # 3090s — important when sharing a GPU with vLLM/embeddings.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6015/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Chatterbox-Turbo cold-start is slower than Kokoro: model load to GPU
+      # plus first-call CUDA graph compilation can take 30-60s on a 3090.
+      start_period: 120s
+    deploy:
+      resources:
+        reservations: # GPU device selected via CUDA_VISIBLE_DEVICES env var
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./services/text-to-speech-v2/app:/app
+      - ./services/text-to-speech-v2/voices:/app/voices
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./shared:/app/shared:ro
+    restart: unless-stopped
   vllm:
     # Pinned to vLLM v0.19.0 — last version verified working on NVIDIA driver 580.x.
     # Floating `:latest` has shipped builds requiring driver newer than our host.
@@ -407,7 +448,7 @@ services:
     environment:
       - MODEL_ID=BAAI/bge-large-en-v1.5
       - PORT=3000
-      - CUDA_VISIBLE_DEVICES=2  # Set to the GPU index you want to use (e.g., 3)
+      - CUDA_VISIBLE_DEVICES=0  # Set to the GPU index you want to use (e.g., 3)
     deploy:
       resources:
         reservations: # GPU Device to use is configured in shared_config.py
