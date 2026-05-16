@@ -316,6 +316,38 @@ upper bound.
 - Upload form with 10–30 s guidance and accepted formats
 - List of every voice with "Set as default" and "Delete" (only on uploaded clones)
 
+### Delivery toggle (Stream / Buffered)
+
+The Input card surfaces a **Delivery** toggle for A/B-ing the two TTS surfaces:
+
+- **Stream** — calls `/api/tts/speak/stream`, decodes per-sentence NDJSON
+  audio events, and plays them as they arrive. The Output card switches
+  from `<audio controls>` to a live status panel showing TTFA (time to
+  first audio chunk in ms), chunk count, and total synthesized speech ms
+  once `done` lands. A red **Stop streaming** button replaces the Speak
+  button while a stream is in flight. WAV is forced on this path, so the
+  Format and Speed inputs are disabled (Chatterbox-Turbo has no speed knob
+  regardless).
+- **Buffered** — calls `/api/tts/speak`, waits for the whole audio blob,
+  and renders an `<audio controls>` element plus a download link. Useful
+  for comparing TTFA against the streaming path, and for grabbing a
+  single-file render to play outside the dashboard.
+
+The toggle defaults to Stream when v2 is active; under v1 (Kokoro) it
+collapses to Buffered-only because the upstream has no streaming endpoint.
+The page detects engine support automatically from the voice-list label
+embedded in `GET /api/tts/voices`.
+
+### /chat auto-speak
+
+The Chat page's speaker icon (auto-speak) uses the streaming endpoint
+unconditionally — there is no toggle there. When enabled, each assistant
+turn that completes is synthesized and played sentence-by-sentence
+through the same Blob-queue/`'ended'`-advance pattern the playground
+uses. Stop is wired to the existing playback indicator: navigating away,
+sending a new message, or toggling auto-speak off cancels the in-flight
+stream and revokes every queued blob URL.
+
 ## Troubleshooting
 
 ```bash
