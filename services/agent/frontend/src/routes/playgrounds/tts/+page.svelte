@@ -61,7 +61,10 @@
 		}
 		const started = performance.now();
 		try {
-			const blob = await ttsSpeak({ text, voice, format, speed });
+			// The playground is the one surface that bypasses the runtime
+		// default — the user explicitly picked a voice to test, even if
+		// they pick something other than the configured default.
+		const blob = await ttsSpeak({ text, voice, format, speed, force_voice: true });
 			audioUrl = URL.createObjectURL(blob);
 			latencyMs = Math.round(performance.now() - started);
 		} catch (e) {

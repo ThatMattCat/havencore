@@ -231,7 +231,10 @@
 		stopPlayback();
 		speaking = true;
 		try {
-			const blob = await ttsSpeak({ text, voice: 'af_heart', format: 'mp3', speed: 1.0 });
+			// No voice field — the agent applies the configured assistant
+			// voice (runtime override → engine default) so the speaker toggle
+			// on Chat follows whatever is set in /playgrounds/tts → Voices.
+			const blob = await ttsSpeak({ text, format: 'mp3', speed: 1.0 });
 			const url = URL.createObjectURL(blob);
 			const audio = new Audio(url);
 			currentAudio = audio;

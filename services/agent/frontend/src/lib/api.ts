@@ -219,6 +219,12 @@ export async function ttsSpeak(body: {
 	voice?: string;
 	format?: string;
 	speed?: number;
+	/**
+	 * Bypass the runtime-default voice override and use `voice` as given.
+	 * Only the TTS playground sets this — every other caller should follow
+	 * the assistant's currently-configured voice.
+	 */
+	force_voice?: boolean;
 }): Promise<Blob> {
 	const res = await fetch('/api/tts/speak', {
 		method: 'POST',

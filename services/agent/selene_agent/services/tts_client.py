@@ -37,10 +37,13 @@ class TTSClient:
     ) -> bytes:
         """Render ``text`` to audio bytes. Raises ``RuntimeError`` on failure.
 
-        Voice resolution: explicit ``voice`` arg → runtime default override
-        (set via the voice-management UI) → engine fallback. Forwarded
-        as-is once resolved; either engine reduces unknown names to its
-        own default with a warning log.
+        Voice resolution: the runtime default override (set via the voice-
+        management UI) wins unconditionally — internal callers (autonomy
+        speaker, etc.) all represent "the assistant" and should follow the
+        configured voice, not a per-call argument. Falls back to the
+        passed ``voice``, then to the engine's configured default. The
+        playground bypass lives on the HTTP proxy (``force_voice`` field),
+        not here.
         """
         if not text or not text.strip():
             raise ValueError("TTSClient.synth: empty text")
@@ -52,13 +55,13 @@ class TTSClient:
         }
         # Lazy import — keeps this client usable from non-DB contexts (tests,
         # standalone scripts) where agent_state's pool isn't initialized.
-        resolved = voice
-        if not resolved:
-            try:
-                from selene_agent.utils import agent_state
-                resolved = await agent_state.get_default_voice()
-            except Exception:
-                resolved = None
+        override: Optional[str] = None
+        try:
+            from selene_agent.utils import agent_state
+            override = await agent_state.get_default_voice()
+        except Exception:
+            override = None
+        resolved = override or voice
         if resolved:
             body["voice"] = resolved
         async with aiohttp.ClientSession(timeout=self._timeout) as session:

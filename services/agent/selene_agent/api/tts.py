@@ -50,6 +50,11 @@ class SpeakRequest(BaseModel):
     format: Optional[str] = "mp3"
     speed: Optional[float] = 1.0
     model: Optional[str] = "tts-1"
+    # Bypass the runtime-default override and use ``voice`` as-is. Only the
+    # /playgrounds/tts page should set this — every other surface (chat
+    # dashboard, companion app, satellites, autonomy speaker) is expected
+    # to follow the assistant's current voice, which the override controls.
+    force_voice: Optional[bool] = False
 
 
 @router.post("/tts/speak")
@@ -63,9 +68,15 @@ async def speak(payload: SpeakRequest):
         "response_format": payload.format or "mp3",
         "speed": payload.speed or 1.0,
     }
-    # Resolution: explicit voice → runtime default override (from voice-mgmt
-    # UI) → engine fallback. Forward the resolved name when we have one.
-    voice = payload.voice or await agent_state.get_default_voice()
+    # Resolution: runtime override wins unconditionally (one assistant voice
+    # everywhere), unless the caller passes ``force_voice: true`` — which
+    # only the voice-testing playground does. Falls through to caller's
+    # ``voice``, then to the engine's configured default.
+    override = await agent_state.get_default_voice()
+    if payload.force_voice and payload.voice:
+        voice = payload.voice
+    else:
+        voice = override or payload.voice
     if voice:
         body["voice"] = voice
 
