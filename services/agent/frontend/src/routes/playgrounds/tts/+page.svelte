@@ -5,6 +5,8 @@
 	import {
 		getTtsVoices,
 		ttsSpeak,
+		ttsSpeakStream,
+		base64ToBlob,
 		setTtsDefaultVoice,
 		uploadTtsVoice,
 		deleteTtsVoice,
@@ -22,6 +24,19 @@
 	let loading = $state(false);
 	let error = $state('');
 	let latencyMs = $state(0);
+
+	// --- Mode: stream (NDJSON, sentence-by-sentence) vs buffered (one blob).
+	// Streaming is the production path; buffered stays for A/B comparison
+	// and as a regression fallback. v1 (Kokoro) only supports buffered, so
+	// we force-disable the toggle there.
+	let mode = $state('stream');
+	let streamSupported = $state(true);
+	let streamSession = $state(null);  // active per-utterance state
+	let ttfaMs = $state(0);
+	let streamTotalMs = $state(0);
+	let streamChunks = $state(0);
+	let streamRunning = $state(false);
+	let streamStartTs = 0;
 
 	// --- voice cloning / management state ---
 	let uploadName = $state('');
@@ -44,6 +59,15 @@
 			if (!voices.find(v => v.id === voice)) {
 				voice = defaultVoice;
 			}
+			// The agent's /api/tts/voices proxy embeds the active engine name
+			// in each voice's label ("(Chatterbox-Turbo)" vs "(Kokoro)"), so
+			// we can derive streaming support without an extra endpoint. v1
+			// (Kokoro) doesn't have a streaming surface — the upstream
+			// /v1/audio/speech/stream only exists on text-to-speech-v2.
+			streamSupported = res.voices.some(v => v.label?.includes('Chatterbox-Turbo'));
+			if (!streamSupported && mode === 'stream') {
+				mode = 'buffered';
+			}
 		} catch (e) {
 			// keep defaults
 		}
@@ -53,24 +77,137 @@
 
 	async function speak() {
 		if (!text.trim()) return;
-		loading = true;
-		error = '';
+		// Cancel any in-flight stream before starting a new utterance.
+		stopStream();
 		if (audioUrl) {
 			URL.revokeObjectURL(audioUrl);
 			audioUrl = '';
 		}
+		error = '';
+		if (mode === 'stream' && streamSupported) {
+			return speakStream();
+		}
+		return speakBuffered();
+	}
+
+	async function speakBuffered() {
+		loading = true;
 		const started = performance.now();
 		try {
 			// The playground is the one surface that bypasses the runtime
-		// default — the user explicitly picked a voice to test, even if
-		// they pick something other than the configured default.
-		const blob = await ttsSpeak({ text, voice, format, speed, force_voice: true });
+			// default — the user explicitly picked a voice to test, even if
+			// they pick something other than the configured default.
+			const blob = await ttsSpeak({ text, voice, format, speed, force_voice: true });
 			audioUrl = URL.createObjectURL(blob);
 			latencyMs = Math.round(performance.now() - started);
 		} catch (e) {
 			error = e.message || String(e);
 		} finally {
 			loading = false;
+		}
+	}
+
+	function stopStream() {
+		const s = streamSession;
+		if (!s) return;
+		s.stopped = true;
+		try { s.cancel?.(); } catch {}
+		if (s.audio) {
+			try { s.audio.pause(); } catch {}
+			s.audio = null;
+		}
+		for (const url of s.urls) {
+			try { URL.revokeObjectURL(url); } catch {}
+		}
+		streamSession = null;
+		streamRunning = false;
+	}
+
+	async function speakStream() {
+		streamRunning = true;
+		ttfaMs = 0;
+		streamTotalMs = 0;
+		streamChunks = 0;
+		streamStartTs = performance.now();
+
+		const session = {
+			stopped: false,
+			cancel: null,
+			audio: null,
+			queue: [],
+			urls: [],
+			streamDone: false,
+		};
+		streamSession = session;
+
+		const finishIfDrained = () => {
+			if (streamSession !== session) return;
+			if (session.streamDone && !session.audio && session.queue.length === 0) {
+				streamRunning = false;
+				streamSession = null;
+			}
+		};
+
+		const advance = () => {
+			if (session.stopped || streamSession !== session) return;
+			const next = session.queue.shift();
+			if (!next) {
+				session.audio = null;
+				finishIfDrained();
+				return;
+			}
+			const audio = new Audio(next);
+			session.audio = audio;
+			const onDone = () => {
+				if (session.audio === audio) {
+					try { URL.revokeObjectURL(next); } catch {}
+					session.audio = null;
+					advance();
+				}
+			};
+			audio.onended = onDone;
+			audio.onerror = onDone;
+			audio.play().catch(onDone);
+		};
+
+		try {
+			const handle = ttsSpeakStream(
+				{ text, voice, format, speed, force_voice: true },
+				(event) => {
+					if (session.stopped || streamSession !== session) return;
+					if (event.type === 'audio') {
+						if (streamChunks === 0) {
+							// First audible chunk — capture TTFA before the
+							// player kicks off so the displayed number is
+							// purely network + server, not browser-side queue.
+							ttfaMs = Math.round(performance.now() - streamStartTs);
+						}
+						streamChunks++;
+						const blob = base64ToBlob(event.data, 'audio/wav');
+						const url = URL.createObjectURL(blob);
+						session.urls.push(url);
+						session.queue.push(url);
+						if (!session.audio) advance();
+					} else if (event.type === 'done') {
+						streamTotalMs = event.total_ms ?? 0;
+					} else if (event.type === 'error') {
+						error = `TTS stream error: ${event.detail}`;
+						stopStream();
+					}
+				},
+			);
+			session.cancel = handle.cancel;
+			await handle.done;
+			if (streamSession === session) {
+				session.streamDone = true;
+				finishIfDrained();
+			}
+		} catch (e) {
+			if (e?.name === 'AbortError') return;
+			if (streamSession === session) {
+				error = e.message || String(e);
+				stopStream();
+			}
 		}
 	}
 
@@ -181,7 +318,7 @@
 				</label>
 				<label class="field">
 					<span>Format</span>
-					<select bind:value={format}>
+					<select bind:value={format} disabled={mode === 'stream'}>
 						{#each formats as f}
 							<option value={f}>{f}</option>
 						{/each}
@@ -189,18 +326,83 @@
 				</label>
 				<label class="field">
 					<span>Speed</span>
-					<input type="number" min="0.5" max="2" step="0.1" bind:value={speed} />
+					<input
+						type="number"
+						min="0.5"
+						max="2"
+						step="0.1"
+						bind:value={speed}
+						disabled={mode === 'stream'}
+					/>
 				</label>
 			</div>
 
-			<button onclick={speak} disabled={loading || !text.trim()}>
-				{loading ? 'Synthesizing…' : 'Speak'}
-			</button>
+			<div class="mode-row">
+				<span class="mode-label">Delivery</span>
+				<div class="mode-toggle">
+					<button
+						class="mode-btn"
+						class:active={mode === 'stream'}
+						onclick={() => (mode = 'stream')}
+						disabled={!streamSupported}
+						title={streamSupported
+							? 'Sentence-shaped NDJSON stream (v2). Audio chunks play as they arrive.'
+							: 'Streaming requires TTS_PROVIDER=v2 (Chatterbox-Turbo).'}
+					>
+						Stream
+					</button>
+					<button
+						class="mode-btn"
+						class:active={mode === 'buffered'}
+						onclick={() => (mode = 'buffered')}
+						title="Full utterance synthesized first, returned as one audio file."
+					>
+						Buffered
+					</button>
+				</div>
+				{#if mode === 'stream'}
+					<span class="mode-hint">WAV-framed, format + speed ignored on this path.</span>
+				{/if}
+			</div>
+
+			{#if streamRunning}
+				<button class="stop-btn" onclick={stopStream}>Stop streaming</button>
+			{:else}
+				<button onclick={speak} disabled={loading || !text.trim()}>
+					{loading ? 'Synthesizing…' : 'Speak'}
+				</button>
+			{/if}
 		</Card>
 
 		<Card title="Output">
 			{#if error}
 				<div class="error">{error}</div>
+			{:else if mode === 'stream'}
+				{#if streamRunning || streamChunks > 0}
+					<div class="stream-status">
+						<div class="stream-row">
+							<span class="stream-label">TTFA</span>
+							<span class="stream-value">{ttfaMs ? `${ttfaMs} ms` : '…'}</span>
+						</div>
+						<div class="stream-row">
+							<span class="stream-label">Chunks</span>
+							<span class="stream-value">{streamChunks}</span>
+						</div>
+						<div class="stream-row">
+							<span class="stream-label">Total speech</span>
+							<span class="stream-value">
+								{streamTotalMs ? `${streamTotalMs} ms` : streamRunning ? 'streaming…' : '—'}
+							</span>
+						</div>
+					</div>
+					<div class="meta">
+						{streamRunning
+							? `Streaming WAV chunks · audio plays as it arrives`
+							: `Completed · audio remained as in-memory chunks (no single-file download)`}
+					</div>
+				{:else}
+					<p class="muted">Submit text to stream synthesized speech sentence-by-sentence.</p>
+				{/if}
 			{:else if audioUrl}
 				<audio controls src={audioUrl} autoplay></audio>
 				<div class="meta">Generated in {latencyMs} ms · {format}</div>
@@ -522,4 +724,87 @@
 		letter-spacing: 0.05em;
 	}
 	.voice-actions { display: flex; gap: 6px; }
+
+	.mode-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 0 0 12px;
+		flex-wrap: wrap;
+	}
+	.mode-label {
+		font-size: 12px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: #6b7280;
+	}
+	.mode-toggle {
+		display: inline-flex;
+		background: #0f1117;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+		padding: 2px;
+		gap: 2px;
+	}
+	.mode-btn {
+		background: transparent;
+		border: none;
+		color: #9ca3af;
+		font-size: 12px;
+		font-weight: 500;
+		padding: 5px 12px;
+		border-radius: 6px;
+		cursor: pointer;
+	}
+	.mode-btn:hover:not(:disabled) {
+		color: #e1e4e8;
+	}
+	.mode-btn.active {
+		background: rgba(99, 102, 241, 0.18);
+		color: #c4b5fd;
+	}
+	.mode-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+	.mode-hint {
+		font-size: 11px;
+		color: #6b7280;
+		font-style: italic;
+	}
+	.stop-btn {
+		background: rgba(239, 68, 68, 0.15);
+		border: 1px solid rgba(239, 68, 68, 0.45);
+		color: #fca5a5;
+	}
+	.stop-btn:hover:not(:disabled) {
+		background: rgba(239, 68, 68, 0.25);
+	}
+
+	.stream-status {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 12px;
+		background: #0f1117;
+		border: 1px solid #2d3148;
+		border-radius: 8px;
+	}
+	.stream-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 16px;
+		font-size: 13px;
+	}
+	.stream-label {
+		color: #6b7280;
+		text-transform: uppercase;
+		font-size: 11px;
+		letter-spacing: 0.05em;
+	}
+	.stream-value {
+		color: #e1e4e8;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	}
 </style>

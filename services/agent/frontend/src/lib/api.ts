@@ -242,6 +242,139 @@ export function getTtsHealth(): Promise<{ status: string }> {
 	return fetchJSON('/api/tts/health');
 }
 
+// --- TTS streaming ---
+//
+// NDJSON event stream from `POST /api/tts/speak/stream`. Server emits one
+// JSON object per line: a `start`, then alternating `audio` + `visemes`
+// keyed by `seq`, then `done` (or `error`). Audio chunks are base64-encoded
+// self-contained WAV files; clients decode + enqueue them into a sequential
+// player and align visemes via `offset_ms`. The full event schema lives in
+// `services/text-to-speech-v2/app/streaming.py`.
+
+export type TtsVisemeCue = { start: number; end: number; value: string };
+
+export type TtsStreamEvent =
+	| {
+			type: 'start';
+			stream_id: string;
+			sample_rate: number;
+			audio_format: string;
+			audio_mime: string;
+			total_sentences: number;
+			voice: string | null;
+	  }
+	| { type: 'audio'; seq: number; offset_ms: number; duration_ms: number; data: string }
+	| {
+			type: 'visemes';
+			seq: number;
+			offset_ms: number;
+			duration_ms: number;
+			cues: TtsVisemeCue[];
+	  }
+	| { type: 'done'; total_ms: number; sentences: number }
+	| { type: 'error'; seq: number; detail: string };
+
+export interface TtsStreamHandle {
+	/** Abort the stream. Safe to call after the stream finishes (no-op). */
+	cancel: () => void;
+	/** Resolves when the server side has closed the connection. */
+	done: Promise<void>;
+}
+
+/**
+ * Decode a base64 string to a Blob with the given MIME type.
+ *
+ * Built for the streaming path's `audio` event, where each chunk is a
+ * self-contained WAV file delivered as base64. Kept generic so other
+ * streaming surfaces (image generation, etc.) can reuse it.
+ */
+export function base64ToBlob(b64: string, mime: string): Blob {
+	const bin = atob(b64);
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	return new Blob([bytes], { type: mime });
+}
+
+/**
+ * Start a streaming TTS synthesis. The returned handle lets the caller
+ * cancel mid-stream (via `AbortController`) and await final completion.
+ *
+ * The `onEvent` callback fires synchronously per parsed NDJSON line as
+ * chunks arrive — for a 3-sentence input the order is:
+ *   start → audio(0) → visemes(0) → audio(1) → visemes(1) → audio(2) → visemes(2) → done.
+ *
+ * Malformed lines are dropped silently so a single bad line doesn't
+ * abort the stream; a server-side fault produces an `error` event
+ * followed by stream close, which the caller should treat as terminal.
+ */
+export function ttsSpeakStream(
+	body: {
+		text: string;
+		voice?: string;
+		format?: string;
+		speed?: number;
+		force_voice?: boolean;
+	},
+	onEvent: (event: TtsStreamEvent) => void,
+): TtsStreamHandle {
+	const ctrl = new AbortController();
+
+	const done = (async () => {
+		const res = await fetch('/api/tts/speak/stream', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+			signal: ctrl.signal,
+		});
+		if (!res.ok) {
+			const detail = await res.text().catch(() => res.statusText);
+			throw new Error(`${res.status}: ${detail}`);
+		}
+		if (!res.body) throw new Error('Streaming TTS returned an empty body');
+
+		const reader = res.body.getReader();
+		const decoder = new TextDecoder('utf-8');
+		let buf = '';
+		try {
+			while (true) {
+				const { value, done: streamDone } = await reader.read();
+				if (streamDone) break;
+				buf += decoder.decode(value, { stream: true });
+				// Drain every complete line currently in the buffer. The tail
+				// (after the last newline) is held until the next chunk.
+				let nl: number;
+				while ((nl = buf.indexOf('\n')) !== -1) {
+					const line = buf.slice(0, nl).trim();
+					buf = buf.slice(nl + 1);
+					if (!line) continue;
+					try {
+						onEvent(JSON.parse(line) as TtsStreamEvent);
+					} catch {
+						// Malformed line — keep streaming rather than aborting.
+					}
+				}
+			}
+			// Flush a trailing line if the server didn't end with `\n`.
+			const tail = buf.trim();
+			if (tail) {
+				try {
+					onEvent(JSON.parse(tail) as TtsStreamEvent);
+				} catch {
+					// ignore
+				}
+			}
+		} finally {
+			try {
+				reader.releaseLock();
+			} catch {
+				// ignore
+			}
+		}
+	})();
+
+	return { cancel: () => ctrl.abort(), done };
+}
+
 export async function setTtsDefaultVoice(voice: string | null): Promise<{ voice: string | null }> {
 	const res = await fetch('/api/tts/voices/default', {
 		method: 'POST',

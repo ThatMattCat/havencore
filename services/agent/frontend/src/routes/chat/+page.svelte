@@ -2,7 +2,7 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { messages, isConnected, isProcessing, connectionState, currentSessionId, currentDeviceName, connect, sendMessage, disconnect, clearMessages, retryNow, startNewChat } from '$lib/stores/chat';
 	import ToolCallCard from '$lib/components/ToolCallCard.svelte';
-	import { sttTranscribe, ttsSpeak } from '$lib/api';
+	import { sttTranscribe, ttsSpeakStream, base64ToBlob } from '$lib/api';
 	import { marked } from 'marked';
 
 	let inputText = $state('');
@@ -195,11 +195,22 @@
 	}
 
 	// --- Auto-speak (TTS on assistant done) ---
+	//
+	// Playback uses the streaming endpoint: the server emits sentence-shaped
+	// NDJSON events, the client enqueues each `audio` chunk and advances on
+	// the player's `'ended'` callback. Time-to-first-audio on a multi-sentence
+	// reply is ~1s vs ~5s for the buffered path. `viseme` events are received
+	// but not yet consumed — Phase C will wire a Live2D scheduler here.
 	let autoSpeak = $state(false);
-	let currentAudio = $state(null);
 	let speaking = $state(false);
 	let lastSpokenIndex = -1;
 	let speakInitialized = false;
+
+	// Single per-utterance playback session. Holds the stream-cancel hook,
+	// the active <audio> element, the pending Blob-URL queue, and every URL
+	// we've minted (so stopPlayback can revoke them all even if some are
+	// still queued and unplayed).
+	let playback = null;
 
 	function persistAutoSpeak() {
 		try {
@@ -214,14 +225,17 @@
 	}
 
 	function stopPlayback() {
-		if (currentAudio) {
-			try {
-				currentAudio.pause();
-			} catch {}
-			try {
-				URL.revokeObjectURL(currentAudio.src);
-			} catch {}
-			currentAudio = null;
+		if (playback) {
+			playback.stopped = true;
+			try { playback.cancel?.(); } catch {}
+			if (playback.audio) {
+				try { playback.audio.pause(); } catch {}
+				playback.audio = null;
+			}
+			for (const url of playback.urls) {
+				try { URL.revokeObjectURL(url); } catch {}
+			}
+			playback = null;
 		}
 		speaking = false;
 	}
@@ -230,28 +244,80 @@
 		if (!text || !text.trim()) return;
 		stopPlayback();
 		speaking = true;
+
+		const session = {
+			stopped: false,
+			cancel: null,
+			audio: null,
+			queue: [],   // pending Blob-URLs to play next
+			urls: [],    // every URL minted this session (for revoke-on-stop)
+			streamDone: false,
+		};
+		playback = session;
+
+		const checkFinished = () => {
+			if (playback !== session) return;
+			if (session.streamDone && !session.audio && session.queue.length === 0) {
+				// Everything synthesized has played out — release the session.
+				playback = null;
+				speaking = false;
+			}
+		};
+
+		const advance = () => {
+			if (session.stopped || playback !== session) return;
+			const next = session.queue.shift();
+			if (!next) {
+				session.audio = null;
+				checkFinished();
+				return;
+			}
+			const audio = new Audio(next);
+			session.audio = audio;
+			const onDone = () => {
+				if (session.audio === audio) {
+					try { URL.revokeObjectURL(next); } catch {}
+					session.audio = null;
+					advance();
+				}
+			};
+			audio.onended = onDone;
+			audio.onerror = onDone;
+			audio.play().catch(onDone);
+		};
+
 		try {
 			// No voice field — the agent applies the configured assistant
 			// voice (runtime override → engine default) so the speaker toggle
-			// on Chat follows whatever is set in /playgrounds/tts → Voices.
-			const blob = await ttsSpeak({ text, format: 'mp3', speed: 1.0 });
-			const url = URL.createObjectURL(blob);
-			const audio = new Audio(url);
-			currentAudio = audio;
-			audio.onended = () => {
-				speaking = false;
-				try { URL.revokeObjectURL(url); } catch {}
-				if (currentAudio === audio) currentAudio = null;
-			};
-			audio.onerror = () => {
-				speaking = false;
-				try { URL.revokeObjectURL(url); } catch {}
-				if (currentAudio === audio) currentAudio = null;
-			};
-			await audio.play();
+			// follows whatever is set in /playgrounds/tts → Voices.
+			const handle = ttsSpeakStream({ text }, (event) => {
+				if (session.stopped || playback !== session) return;
+				if (event.type === 'audio') {
+					const blob = base64ToBlob(event.data, 'audio/wav');
+					const url = URL.createObjectURL(blob);
+					session.urls.push(url);
+					session.queue.push(url);
+					if (!session.audio) advance();
+				} else if (event.type === 'error') {
+					micError = `TTS stream error: ${event.detail}`;
+					stopPlayback();
+				}
+				// `start` / `visemes` / `done` are no-ops here. visemes will
+				// drive Live2D once that pipeline lands; `done` is detected
+				// via the awaited promise below.
+			});
+			session.cancel = handle.cancel;
+			await handle.done;
+			if (playback === session) {
+				session.streamDone = true;
+				checkFinished();
+			}
 		} catch (e) {
-			speaking = false;
-			micError = `TTS failed: ${e.message || e}`;
+			if (e?.name === 'AbortError') return;
+			if (playback === session) {
+				micError = `TTS failed: ${e.message || e}`;
+				stopPlayback();
+			}
 		}
 	}
 
