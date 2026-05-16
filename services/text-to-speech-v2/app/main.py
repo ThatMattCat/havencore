@@ -295,6 +295,7 @@ def delete_voice(name: str) -> JSONResponse:
             )
         raise HTTPException(status_code=404, detail=f"Voice {name!r} not found")
     os.unlink(user_path)
+    streaming.invalidate_conds_cache(user_path)
     logger.info("Deleted uploaded voice %r", name)
     return JSONResponse({"deleted": name})
 

@@ -26,6 +26,7 @@ import asyncio
 import base64
 import io
 import logging
+import os
 import threading
 import uuid
 from typing import AsyncIterator
@@ -50,6 +51,41 @@ logger = logging.getLogger("text-to-speech-v2.streaming")
 # acquire this lock today — on this single-user host concurrent TTS is
 # rare enough that the pre-existing race is accepted rather than retrofit.
 _model_lock = threading.Lock()
+
+# Cache of ``Conditionals`` objects produced by
+# ``ChatterboxTurboTTS.prepare_conditionals``. That call is the dominant
+# TTFA cost (~3-4 s of librosa load + loudness norm + voice-encoder +
+# s3gen.embed_ref + s3 tokenizer) and runs once per stream today. On this
+# single-user host the same voice is reused turn after turn, so caching
+# the resulting conds object lets subsequent streams skip the prep step
+# entirely. Cache key is ``(absolute path, mtime)`` so any rewrite of the
+# voice file (re-upload, manual edit) naturally invalidates. No LRU —
+# bundled (~20) + user-uploaded (typically 0-5) voices fit comfortably
+# in GPU memory at ~tens of MB each. Reads + writes happen under
+# ``_model_lock`` to avoid a race where one stream's cache-hit assignment
+# of ``model.conds`` clobbers another stream's prep mid-generate.
+_conds_cache: dict[tuple[str, float], object] = {}
+
+
+def invalidate_conds_cache(audio_prompt_path: str) -> None:
+    """Purge any cached conds for ``audio_prompt_path`` (any mtime).
+
+    Called from ``main.py:delete_voice`` so a deleted voice doesn't keep
+    a Conditionals object pinned in GPU memory and so a later re-upload
+    at the same path can't accidentally hit a stale cache entry if the
+    new file lands at the same mtime (unlikely but possible).
+    """
+    abs_path = os.path.abspath(audio_prompt_path)
+    with _model_lock:
+        stale = [k for k in _conds_cache if k[0] == abs_path]
+        for k in stale:
+            _conds_cache.pop(k, None)
+    if stale:
+        logger.info(
+            "conds cache: purged %d entr%s for %s",
+            len(stale), "y" if len(stale) == 1 else "ies",
+            os.path.basename(abs_path),
+        )
 
 
 def _samples_from_tensor(wav) -> np.ndarray:
@@ -121,9 +157,32 @@ async def synthesize_stream(
     loop = asyncio.get_event_loop()
 
     def _prep() -> None:
+        if not audio_prompt_path:
+            return
+        abs_path = os.path.abspath(audio_prompt_path)
+        try:
+            mtime = os.path.getmtime(abs_path)
+            key: tuple[str, float] | None = (abs_path, mtime)
+        except OSError:
+            # File vanished between voices.resolve() and now; let
+            # prepare_conditionals raise its own clear error.
+            key = None
         with _model_lock:
-            if audio_prompt_path:
-                model.prepare_conditionals(audio_prompt_path)
+            cached = _conds_cache.get(key) if key is not None else None
+            if cached is not None:
+                # Conditionals.to(device) was already applied when the
+                # entry was first stored; reassignment is a pointer swap,
+                # no GPU work.
+                model.conds = cached
+                logger.debug("conds cache hit: %s", os.path.basename(abs_path))
+                return
+            model.prepare_conditionals(audio_prompt_path)
+            if key is not None:
+                _conds_cache[key] = model.conds
+                logger.info(
+                    "conds cache miss: prepared and stored %s (size=%d)",
+                    os.path.basename(abs_path), len(_conds_cache),
+                )
 
     try:
         await loop.run_in_executor(None, _prep)

@@ -207,6 +207,40 @@ calls `model.generate(text)` (no `audio_prompt_path`) per sentence, which
 reuses the cached `model.conds`. TTFA on a 3-sentence input is ~1.1 s vs
 ~5 s for the buffered path on the same text.
 
+### Performance — conds cache (cross-stream)
+
+The hoist above only saves work *within* a stream. Across streams the
+same reference voice still re-ran the full prompt pipeline. A module-level
+`_conds_cache` in `app/streaming.py` now memoizes the `Conditionals`
+object produced by `prepare_conditionals`, keyed by
+`(absolute audio_prompt_path, mtime)`. On a cache hit the prep step is a
+pointer-swap into `model.conds` and the stream goes straight to the first
+sentence's `generate`. Re-uploading the same voice file gets a fresh
+mtime and naturally invalidates the entry; `DELETE /v1/voices/{name}`
+calls `streaming.invalidate_conds_cache(...)` to purge explicitly. No
+LRU — bundled (~20) + user-uploaded (typically 0-5) voices fit
+comfortably at tens of MB each, and the single-user host re-uses the
+same voice turn after turn. Reads + writes happen under the same
+`_model_lock` that guards `prepare_conditionals` and per-sentence
+`generate`, so a cache-hit assignment can't race a concurrent prep.
+
+Measured directly against the localhost endpoint with a 3-sentence
+input on `Olivia` (Chatterbox-Turbo, GPU 0):
+
+| Scenario               | TTFA   |
+|------------------------|--------|
+| Cold (first after restart, miss) | ~2.4 s |
+| Warm (same voice, hit) | ~1.0 s |
+| New voice (miss, GPU warm)       | ~1.1 s |
+
+End-to-end through the agent proxy + companion app, warm TTFA on a real
+chat turn drops from ~5.4 s to ~1.5 s. The buffered `/v1/audio/speech`
+endpoint calls `prepare_conditionals` *inside* `model.generate(...)` and
+does not consult this cache — that path is autonomy / Music Assistant /
+external SDK clients only, none of which are TTFA-sensitive in the same
+way. Extending the cache there is a clean follow-up if the buffered TTFA
+ever matters.
+
 ### Concurrency
 
 The model's reference-voice conditionals live in `model.conds` as mutable
