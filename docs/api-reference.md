@@ -184,6 +184,15 @@ The agent's `/api/tts/speak` proxy routes to whichever is selected via
 endpoint stays pinned to v1 (Kokoro on port 6005) for backward
 compatibility with external OpenAI-SDK clients.
 
+**Streaming alternative (v2 only)**: `POST /api/tts/speak/stream` returns
+an NDJSON stream of per-sentence `audio` + `visemes` events instead of a
+single audio blob. First audio reaches the client in ~1 s (vs ~5 s on the
+buffered path for a 3-sentence reply), and the viseme timeline rides the
+response body so there's no header-size ceiling. See the entry in the
+[dashboard REST table](#rest-api) and
+[Text-to-Speech v2 → Streaming](services/text-to-speech-v2/README.md#streaming-post-v1audiospeechstream)
+for the event schema.
+
 **Endpoint**: `POST http://localhost/v1/audio/speech`
 
 #### Request Body
@@ -406,7 +415,8 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. Rows also carry `cache_read_tokens` and `cache_creation_tokens` (Anthropic prompt-cache counters summed across the turn's LLM calls; `0` for vLLM turns and legacy rows). |
 | `GET`  | `/api/metrics/summary` | Daily aggregates, p95. Also exposes `cache_read_total` / `cache_create_total` (sums of the per-turn cache counters over the window) and a derived `cache_hit_rate = read / (read + create)`, guarded against zero. |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
-| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary). Routes to v1 (Kokoro) or v2 (Chatterbox-Turbo) based on `TTS_PROVIDER`. When `voice` is omitted in the body the agent applies the runtime-override default (see `POST /api/tts/voices/default`) before forwarding upstream. Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. |
+| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary). Routes to v1 (Kokoro) or v2 (Chatterbox-Turbo) based on `TTS_PROVIDER`. When `voice` is omitted in the body the agent applies the runtime-override default (see `POST /api/tts/voices/default`) before forwarding upstream. Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. The agent's aiohttp client to the upstream uses `max_field_size=65536` (vs the 8190-byte default) so the `X-Visemes` header doesn't overflow on long utterances. |
+| `POST` | `/api/tts/speak/stream` | **v2 only** — NDJSON streaming synthesis. Same request body as `/api/tts/speak` (`text`, `voice`, `format`, `speed`, `force_voice`), with the same runtime-override voice resolution. Response is `application/x-ndjson`: one JSON event per line, ending with `done` (or `error`). Audio chunks are base64-encoded self-contained WAV files keyed by `seq` and `offset_ms`; visemes ship inline as JSON cue arrays instead of an HTTP header. Returns 501 when `TTS_PROVIDER=v1`. See [Text-to-Speech v2 → Streaming](services/text-to-speech-v2/README.md#streaming-post-v1audiospeechstream) for the full event schema and rationale. |
 | `GET`  | `/api/tts/voices` | Voice catalog + dashboard metadata. Returns `{voices, formats, default, default_override, user_voices, bundled_voices}`. Each entry in `voices` carries `{id, label, kind: "user"\|"bundled", deletable}`. `default_override` is the persisted runtime default (or `null`). Labels reflect the active engine (`(Kokoro)` vs `(Chatterbox-Turbo)`). |
 | `POST` | `/api/tts/voices/upload` | **v2 only** — multipart upload of a reference clip to clone. Form fields: `name` (1-40 chars, `[A-Za-z0-9_-]`) and `file` (WAV/FLAC/OGG, 3-120 s, 10-30 s recommended). Saved under the v2 service's `/app/voices/` (volume-mounted, persisted). Returns `{name, path, duration_sec, original_sample_rate, stored_sample_rate}`. Returns 501 when `TTS_PROVIDER=v1` (Kokoro can't clone). |
 | `DELETE` | `/api/tts/voices/{name}` | **v2 only** — delete an uploaded clone. Bundled voices 403. If the deleted voice was the runtime-override default, the override is cleared automatically. |

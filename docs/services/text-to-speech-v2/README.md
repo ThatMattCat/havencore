@@ -26,7 +26,7 @@ Chatterbox-Turbo is a 350M-parameter model with a distilled 1-step decoder. Sub-
 
 | Port | Purpose | Features |
 |------|---------|----------|
-| 6015 | OpenAI-compatible API | `/v1/audio/speech`, `/v1/voices`, `/v1/voices/upload`, `/v1/voices/{name}` (DELETE), `/health` |
+| 6015 | OpenAI-compatible API | `/v1/audio/speech` (buffered), `/v1/audio/speech/stream` (NDJSON per-sentence), `/v1/voices`, `/v1/voices/upload`, `/v1/voices/{name}` (DELETE), `/health` |
 
 For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` — same page as v1, but the controls and labels switch automatically when `TTS_PROVIDER=v2`. The Voices card on that page is where voice uploads and the runtime-default voice are managed.
 
@@ -142,6 +142,110 @@ curl -X POST http://localhost:6015/v1/audio/speech \
 
 `user` and `bundled` are v2-only additions that the dashboard uses to render delete buttons. The agent's `/api/tts/voices` proxy adds a `default_override` field with the current runtime-override voice (or `null`).
 
+## Streaming (`POST /v1/audio/speech/stream`)
+
+Buffered synthesis returns the whole utterance in one response — fine for short
+replies, but a 30 s reply means ~5 s of dead air before any audio plays, and
+the base64 Rhubarb timeline ends up in a single `X-Visemes` response header
+that overflows aiohttp's default 8190-byte `max_field_size` past ~30 s. The
+streaming endpoint splits the input by sentence, synthesizes each in turn, and
+emits NDJSON events over chunked HTTP. Clients queue audio chunks gaplessly
+and append visemes at the cumulative `offset_ms` the server reports.
+
+Same request schema as `/v1/audio/speech`; `response_format` and `speed` are
+ignored on this path (audio is always WAV-framed; Chatterbox has no speed
+knob). Response is `Content-Type: application/x-ndjson` with
+`X-Accel-Buffering: no` + `Cache-Control: no-store` so reverse proxies flush
+each event as it's written.
+
+### Event schema
+
+One JSON object per line, newline-terminated:
+
+```json
+{"type":"start","stream_id":"<uuid>","sample_rate":24000,"audio_format":"wav","audio_mime":"audio/wav","total_sentences":N,"voice":"Olivia"}
+{"type":"audio","seq":0,"offset_ms":0,"duration_ms":2100,"data":"<base64 WAV bytes for sentence 0>"}
+{"type":"visemes","seq":0,"offset_ms":0,"duration_ms":2100,"cues":[{"start":0.00,"end":0.05,"value":"X"}, ...]}
+{"type":"audio","seq":1,"offset_ms":2100,"duration_ms":1800,"data":"..."}
+{"type":"visemes","seq":1,"offset_ms":2100,"duration_ms":1800,"cues":[...]}
+{"type":"done","total_ms":29960,"sentences":N}
+```
+
+Errors are terminal: `{"type":"error","seq":N,"detail":"..."}` — clients
+surface and stop. Per-sentence failures emit the error event and bail (no
+partial-audio gaps). Empty / whitespace-only input emits a single
+`error` event with `detail:"empty input"`. Each audio chunk is a
+self-contained WAV file (full RIFF header), so a streaming `ConcatenatingMediaSource`
+on Android or a sequential `Audio` element on the web can play them
+without bitstream splicing.
+
+### Sentence splitting
+
+`app/sentences.py` (pure, unit-testable). Rules:
+
+1. Split on `re.split(r'(?<=[.!?])\s+', text)` — keeps terminal punctuation on
+   the preceding sentence so prosody falls naturally.
+2. Merge sub-30-char fragments into the next chunk. Avoids 200 ms tail chunks
+   between full sentences. The trailing fragment, having no "next chunk" to
+   merge into, is emitted as its own event.
+3. Hard cap at 280 chars per chunk; oversize chunks split on the nearest
+   whitespace inside the window.
+
+Known limitation: `"Dr. Smith said hello."` splits wrong. Acceptable today
+(assistant output doesn't lean on medical/honorific titles); a heavier
+splitter (NLTK Punkt, spaCy) is overkill for this scope.
+
+### Performance — voice-prompt hoist
+
+`chatterbox.tts_turbo.ChatterboxTurboTTS.generate(audio_prompt_path=...)`
+calls `prepare_conditionals()` on every invocation — librosa load, loudness
+normalization, `s3gen.embed_ref()`, voice-encoder forward pass, and S3
+tokenizer all rerun per call. Naively re-passing `audio_prompt_path` per
+sentence would amortize that pipeline N times. Streaming instead calls
+`model.prepare_conditionals(audio_prompt_path)` once at stream start, then
+calls `model.generate(text)` (no `audio_prompt_path`) per sentence, which
+reuses the cached `model.conds`. TTFA on a 3-sentence input is ~1.1 s vs
+~5 s for the buffered path on the same text.
+
+### Concurrency
+
+The model's reference-voice conditionals live in `model.conds` as mutable
+process-global state. A module-level `threading.Lock` in `app/streaming.py`
+guards both the `prepare_conditionals` call and every per-sentence
+`generate` call for the duration of a stream. The buffered endpoint does
+not acquire this lock — on this single-user host, concurrent TTS is rare
+enough that the pre-existing race between two buffered callers (or one
+buffered + one streaming) is accepted rather than retrofit.
+
+Rhubarb runs serially with the next sentence's synthesis today (one
+sentence's mouth-cue subprocess blocks the next sentence's synth from
+starting). Overlapping is a clean follow-up but isn't wired yet.
+
+### When to use which endpoint
+
+- **`/v1/audio/speech` (buffered)** — autonomy speaker (Music Assistant
+  needs a single URL it can play), external OpenAI-SDK clients pointed at
+  port 80, debugging, regression tests, or any caller that wants a single
+  blob back. v1 (Kokoro) only exposes this surface.
+- **`/v1/audio/speech/stream` (streaming)** — dashboard chat + playground,
+  companion app, and any future Live2D pipeline. TTFA win matters whenever
+  the reply is more than one sentence long. v2 only.
+
+### Curl smoke test
+
+```bash
+curl -N -X POST http://localhost:6015/v1/audio/speech/stream \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello there. This is a test of streaming. The mouth should move smoothly.","voice":"Olivia"}' \
+  | head -20
+```
+
+Expect: a `start` event, then alternating `audio` / `visemes` events keyed
+by `seq`, then `done`. The same request through the agent's
+[`POST /api/tts/speak/stream`](../../api-reference.md#tts) proxy applies
+the runtime-override default voice and adds the same NDJSON pass-through
+framing.
+
 ## Configuration
 
 ```bash
@@ -194,6 +298,14 @@ Access-Control-Expose-Headers: X-Visemes
 Decoded JSON shape and tunables are identical to v1 — see [text-to-speech/README.md](../text-to-speech/README.md#lip-sync-viseme-timeline-x-visemes-header) for the full reference.
 
 **Soft-fail behavior**: if `rhubarb` is missing, hits the timeout, or exits non-zero, the response omits the header and the body is unchanged. Same env knobs as v1 (`RHUBARB_BIN`, `RHUBARB_TIMEOUT_SEC`, `RHUBARB_RECOGNIZER`).
+
+The header has a structural ceiling: past ~30 s of speech the base64-encoded
+viseme JSON exceeds aiohttp's default 8190-byte `max_field_size`. The agent
+bumps that limit to 65536 on its buffered TTS sessions (`api/tts.py:speak`
+and `services/tts_client.py:synth`) to push the ceiling out, but the
+permanent fix is the [streaming endpoint](#streaming-post-v1audiospeechstream) —
+viseme cues ride the response body there, not a header, so there is no
+upper bound.
 
 ## Dashboard playground
 
