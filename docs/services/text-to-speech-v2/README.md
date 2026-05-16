@@ -286,7 +286,7 @@ Same as v1: `wav`, `flac`, `ogg`, `opus`, `pcm` encode directly via libsndfile; 
 
 ## Lip-sync viseme timeline (`X-Visemes` header)
 
-**Byte-compatible with v1.** Every `/v1/audio/speech` response carries an `X-Visemes` header containing the same base64-encoded Rhubarb Lip Sync JSON timeline that the v1 service emits. The companion app's `VisemeScheduler` / `VisemeTimeline` decoder (see `havencore-companion-app/.../voice/avatar/`) is unchanged — switching providers requires zero client-side work.
+**Byte-compatible with v1.** Every `/v1/audio/speech` response carries an `X-Visemes` header containing the same base64-encoded Rhubarb Lip Sync JSON timeline that the v1 service emits. The header is still consumed by the buffered-path callers (autonomy speaker, external OpenAI-SDK clients, the dashboard's Buffered toggle). The companion app and the dashboard chat / playground-stream paths now consume cues out of the streaming NDJSON body instead (one `visemes` event per chunk, shifted by `offset_ms` into the cumulative time base) — see [Streaming](#streaming-post-v1audiospeechstream) below. The companion app's `VisemeScheduler` / `VisemeTimeline` (in `havencore-companion-app/app/src/main/kotlin/.../voice/avatar/`) still drives Live2D lip-sync; only the input path moved off the header.
 
 ```
 HTTP/1.1 200 OK
