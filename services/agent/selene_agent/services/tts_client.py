@@ -64,7 +64,13 @@ class TTSClient:
         resolved = override or voice
         if resolved:
             body["voice"] = resolved
-        async with aiohttp.ClientSession(timeout=self._timeout) as session:
+        # max_field_size=65536 (default 8190) — the upstream's X-Visemes
+        # header is base64-encoded Rhubarb JSON, which overflows the default
+        # on ~30 s utterances. Bumped defensively here even though autonomy
+        # speak-tier replies are usually short.
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, max_field_size=65536,
+        ) as session:
             async with session.post(
                 f"{self._base_url}/v1/audio/speech", json=body
             ) as resp:

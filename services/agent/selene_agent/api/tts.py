@@ -15,7 +15,7 @@ from typing import Optional
 
 import aiohttp
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from selene_agent.utils import agent_state, config
@@ -81,7 +81,13 @@ async def speak(payload: SpeakRequest):
         body["voice"] = voice
 
     try:
-        async with aiohttp.ClientSession() as session:
+        # max_field_size=65536 (default 8190) — the upstream's X-Visemes
+        # header is base64-encoded Rhubarb JSON, which overflows the default
+        # on ~30 s utterances. Streaming bypasses headers entirely, but the
+        # buffered path is still used by autonomy / Music Assistant / the
+        # external OpenAI-SDK surface, so the limit is bumped defensively
+        # here too.
+        async with aiohttp.ClientSession(max_field_size=65536) as session:
             async with session.post(
                 f"{_tts_base()}/v1/audio/speech",
                 json=body,
@@ -114,6 +120,89 @@ async def speak(payload: SpeakRequest):
     except aiohttp.ClientError as e:
         logger.error(f"TTS proxy error: {e}")
         raise HTTPException(status_code=502, detail=f"TTS service unreachable: {e}")
+
+
+@router.post("/tts/speak/stream")
+async def speak_stream(payload: SpeakRequest):
+    """NDJSON-streaming proxy of the v2 TTS engine's per-sentence pipeline.
+
+    Same request schema and voice-resolution rules as ``/tts/speak`` — the
+    runtime default override wins unless ``force_voice=true`` (only the
+    voice-testing playground sets that). Response is ``application/
+    x-ndjson``: one JSON event per line. See ``services/text-to-speech-v2/
+    app/streaming.py`` for the event schema.
+
+    Only v2 (Chatterbox-Turbo) exposes the streaming endpoint upstream.
+    v1 (Kokoro) returns 404 for the underlying path; we surface a 501 here
+    so callers get an actionable error rather than a confusing upstream
+    pass-through.
+    """
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    if config.TTS_PROVIDER != "v2":
+        raise HTTPException(
+            status_code=501,
+            detail="Streaming TTS requires TTS_PROVIDER=v2 (Chatterbox-Turbo).",
+        )
+
+    body: dict = {
+        "input": payload.text,
+        "model": payload.model or "tts-1",
+        # Honored only as a hint; the streaming path always emits WAV chunks.
+        "response_format": payload.format or "wav",
+        "speed": payload.speed or 1.0,
+    }
+    override = await agent_state.get_default_voice()
+    if payload.force_voice and payload.voice:
+        voice = payload.voice
+    else:
+        voice = override or payload.voice
+    if voice:
+        body["voice"] = voice
+
+    # Per-chunk read timeout instead of total — a 30 s utterance with 5
+    # sentences should see a new chunk every 1–3 s; 120 s of silence means
+    # the upstream is wedged. Total=None so streams of any length are OK.
+    timeout = aiohttp.ClientTimeout(total=None, sock_read=120, sock_connect=10)
+    session = aiohttp.ClientSession(max_field_size=65536, timeout=timeout)
+    try:
+        resp = await session.post(
+            f"{_tts_base()}/v1/audio/speech/stream", json=body,
+        )
+    except aiohttp.ClientError as e:
+        await session.close()
+        logger.error(f"TTS stream proxy error: {e}")
+        raise HTTPException(status_code=502, detail=f"TTS service unreachable: {e}")
+
+    if resp.status >= 400:
+        try:
+            err = await resp.read()
+            detail = err.decode(errors="replace")[:500]
+        finally:
+            resp.release()
+            await session.close()
+        raise HTTPException(status_code=resp.status, detail=detail)
+
+    async def _proxy():
+        # iter_any yields whatever the upstream flushed without waiting for
+        # a full buffer fill, so an upstream that emits one NDJSON line per
+        # sentence reaches the client immediately rather than at chunk-size
+        # boundaries.
+        try:
+            async for chunk in resp.content.iter_any():
+                yield chunk
+        finally:
+            resp.release()
+            await session.close()
+
+    return StreamingResponse(
+        _proxy(),
+        media_type="application/x-ndjson",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/tts/voices")

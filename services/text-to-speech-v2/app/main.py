@@ -28,17 +28,20 @@ import os
 
 import re
 
+import json as _json
+
 import numpy as np
 import soundfile as sf
 import torch
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import config
 import pronunciation
 import rhubarb
+import streaming
 import voices
 
 # Logging — match v1's pattern: prefer the shared Loki logger when running
@@ -349,6 +352,58 @@ def speech(req: SpeechRequest) -> Response:
     )
 
     return Response(content=audio_bytes, media_type=content_type, headers=headers)
+
+
+@app.post("/v1/audio/speech/stream")
+async def speech_stream(req: SpeechRequest) -> StreamingResponse:
+    """Streaming TTS — emits NDJSON events per synthesized sentence.
+
+    Same request schema as ``/v1/audio/speech``; ``response_format`` and
+    ``speed`` are ignored (stream is always WAV-framed; Chatterbox has no
+    speed knob). The buffered endpoint stays alive for autonomy / Music
+    Assistant / external OpenAI-SDK clients that expect a single audio
+    blob.
+
+    Response framing: ``Content-Type: application/x-ndjson`` with
+    ``X-Accel-Buffering: no`` so nginx (and any reverse proxy that honors
+    the header) flushes each event as it's written instead of coalescing
+    the whole response. The event schema is documented in
+    ``app/streaming.py`` and in ``docs/api-reference.md``.
+    """
+    if not req.input:
+        raise HTTPException(status_code=400, detail="Missing required parameter 'input'")
+
+    voice_name, audio_prompt_path = voices.resolve(req.voice)
+    logger.info(
+        "stream request: voice=%r prompt=%r len(input)=%d preview=%r",
+        voice_name,
+        os.path.basename(audio_prompt_path) if audio_prompt_path else None,
+        len(req.input),
+        req.input[:100],
+    )
+
+    async def _gen():
+        async for event in streaming.synthesize_stream(
+            model,
+            text=req.input,
+            audio_prompt_path=audio_prompt_path,
+            voice_name=voice_name,
+            sample_rate=SAMPLE_RATE,
+        ):
+            # NDJSON: one JSON object per line, newline-terminated.
+            yield (_json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
+
+    return StreamingResponse(
+        _gen(),
+        media_type="application/x-ndjson",
+        headers={
+            # Defeat intermediate buffering. nginx, traefik, and most
+            # ingress proxies honor X-Accel-Buffering; Cache-Control
+            # discourages browsers / SWs from holding the response.
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 if __name__ == "__main__":
