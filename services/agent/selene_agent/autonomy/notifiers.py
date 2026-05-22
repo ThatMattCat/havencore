@@ -148,7 +148,7 @@ class SpeakerNotifier:
     ):
         self.mcp_manager = mcp_manager
         self.device = device or getattr(config, "AUTONOMY_SPEAKER_DEFAULT_DEVICE", "") or ""
-        self.voice = voice or getattr(config, "AUTONOMY_SPEAKER_DEFAULT_VOICE", "af_heart")
+        self.voice = voice or getattr(config, "AUTONOMY_SPEAKER_DEFAULT_VOICE", "Olivia")
         default_vol = getattr(config, "AUTONOMY_SPEAKER_DEFAULT_VOLUME", None)
         self.volume = volume if volume is not None else default_vol
         self._tts = tts_client  # lazy-init below if None

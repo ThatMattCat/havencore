@@ -56,9 +56,6 @@ WEATHER_API_KEY = os.getenv('WEATHER_API_KEY', "NO_WEATHER_TOKEN_CONFIGURED")
 
 SRC_LAN = os.getenv('SRC_LAN', "en")
 SOURCE_IP = os.getenv('SOURCE_IP', "10.0.0.100") # edge device IP address, TODO: remove this and ensure IP passed by edge devices
-TTS_LANGUAGE = os.getenv('TTS_LANGUAGE', "a") # Kokoro TTS AI Model language option
-TTS_VOICE = os.getenv('TTS_VOICE', "af_heart")
-TTS_DEVICE = os.getenv('TTS_DEVICE', "cuda:0") # GPU index to use for text-to-speech model
 
 STT_DEVICE = os.getenv('STT_DEVICE', "0") # GPU index to use for speech-to-text model
 
@@ -94,7 +91,7 @@ AUTONOMY_DEFAULT_EVENT_RATE_LIMIT = os.getenv('AUTONOMY_DEFAULT_EVENT_RATE_LIMIT
 
 # --- v4 voice + actuation ---
 AUTONOMY_SPEAKER_DEFAULT_DEVICE = os.getenv('AUTONOMY_SPEAKER_DEFAULT_DEVICE', '')
-AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv('AUTONOMY_SPEAKER_DEFAULT_VOICE', 'af_heart')
+AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv('AUTONOMY_SPEAKER_DEFAULT_VOICE', 'Olivia')
 AUTONOMY_SPEAKER_DEFAULT_VOLUME = float(os.getenv('AUTONOMY_SPEAKER_DEFAULT_VOLUME', '0.5'))
 AUTONOMY_TTS_AUDIO_TTL_SEC = int(os.getenv('AUTONOMY_TTS_AUDIO_TTL_SEC', '600'))
 AUTONOMY_ACT_ENABLED = os.getenv('AUTONOMY_ACT_ENABLED', 'false').lower() == 'true'

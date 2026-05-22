@@ -1,8 +1,8 @@
 """Voice registry — resolves a ``voice`` request field to a reference WAV path.
 
 Chatterbox-Turbo is zero-shot; to get a stable named voice the model needs a
-short reference clip per generation. We mirror v1's "named voices + OpenAI
-aliases" surface so callers see the same `voice` field semantics.
+short reference clip per generation. We expose a "named voices + OpenAI
+aliases" surface so callers get familiar `voice` field semantics.
 
 The registry is built by scanning two dirs on each query (cheap — these
 directories hold at most a few dozen tiny files) so newly uploaded clips
@@ -25,10 +25,10 @@ from pathlib import Path
 
 import config
 
-logger = logging.getLogger("text-to-speech-v2.voices")
+logger = logging.getLogger("text-to-speech.voices")
 
-# Same aliases as v1 so OpenAI-SDK clients pointed at hardcoded voice names
-# keep working when the agent flips TTS_PROVIDER=v2.
+# OpenAI's stock voice names — accepted so OpenAI-SDK clients pointed at
+# hardcoded voice names keep working; they resolve to the configured default.
 OPENAI_VOICE_ALIASES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
 
 

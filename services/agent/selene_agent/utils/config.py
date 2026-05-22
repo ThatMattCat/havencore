@@ -55,16 +55,10 @@ MASS_TOKEN = os.getenv("MASS_TOKEN", "")
 
 LOKI_URL = os.getenv("LOKI_URL", "")
 
-# TTS engine selection. Two text-to-speech services run in parallel:
-#   v1 (Kokoro)            on text-to-speech:6005
-#   v2 (Chatterbox-Turbo)  on text-to-speech-v2:6015
-# Both expose the same OpenAI-compat /v1/audio/speech surface and emit the
-# same X-Visemes response header. The agent's TTS client and /api/tts/*
-# proxy resolve TTS_BASE_URL from this provider at module import.
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "v1").lower()
-TTS_V1_BASE_URL = os.getenv("TTS_V1_BASE_URL", "http://text-to-speech:6005")
-TTS_V2_BASE_URL = os.getenv("TTS_V2_BASE_URL", "http://text-to-speech-v2:6015")
-TTS_BASE_URL = TTS_V2_BASE_URL if TTS_PROVIDER == "v2" else TTS_V1_BASE_URL
+# TTS service — Chatterbox-Turbo, reached at text-to-speech:6005. Exposes an
+# OpenAI-compatible /v1/audio/speech surface plus an X-Visemes response
+# header. The agent's TTS client and /api/tts/* proxy use TTS_BASE_URL.
+TTS_BASE_URL = os.getenv("TTS_BASE_URL", "http://text-to-speech:6005")
 
 parsed_url = urlparse(HAOS_URL)
 HAOS_HOST = parsed_url.hostname
@@ -148,7 +142,7 @@ AUTONOMY_DEFAULT_EVENT_RATE_LIMIT = os.getenv("AUTONOMY_DEFAULT_EVENT_RATE_LIMIT
 
 # --- v4 voice + actuation ---
 AUTONOMY_SPEAKER_DEFAULT_DEVICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_DEVICE", "")
-AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOICE", "af_heart")
+AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOICE", "Olivia")
 AUTONOMY_SPEAKER_DEFAULT_VOLUME = float(os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOLUME", "0.5"))
 AUTONOMY_TTS_AUDIO_TTL_SEC = int(os.getenv("AUTONOMY_TTS_AUDIO_TTL_SEC", "600"))
 AUTONOMY_ACT_ENABLED = os.getenv("AUTONOMY_ACT_ENABLED", "false").lower() == "true"
@@ -230,9 +224,9 @@ SYSTEM_PROMPT_OPERATING_ADDENDUM = """
 You know the user reasonably well. Create memories only when genuinely new durable facts emerge, search when past context would improve the response, and use `delete_memory` (after `search_memories`) whenever the user asks to forget or correct something.
 """
 
-# Appended only when TTS_PROVIDER=v2 — Chatterbox-Turbo natively handles
-# inline paralinguistic tags. Kokoro (v1) would speak the brackets aloud,
-# so the addendum is gated on the engine actually supporting it.
+# Appended to every system prompt — Chatterbox-Turbo natively renders these
+# inline paralinguistic tags as spoken reactions rather than reading the
+# brackets aloud.
 SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM = """
 ### Voice expression
 Your responses are spoken by a TTS engine that understands a small set of inline reaction tags. Drop them sparingly into your text where a natural human reaction would land — never to fill space, never more than once or twice per response.

@@ -40,7 +40,7 @@ import pronunciation
 import rhubarb
 from sentences import split_sentences
 
-logger = logging.getLogger("text-to-speech-v2.streaming")
+logger = logging.getLogger("text-to-speech.streaming")
 
 # Chatterbox-Turbo stores the reference-voice conditionals in
 # ``model.conds`` as mutable instance state. A concurrent request that

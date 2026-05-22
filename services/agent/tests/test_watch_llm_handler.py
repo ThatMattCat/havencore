@@ -152,7 +152,7 @@ async def test_speaker_notify_cfg_passthrough(monkeypatch):
             "notify": {
                 "channel": "speaker",
                 "device": "Living Room",
-                "voice": "af_heart",
+                "voice": "Olivia",
                 "volume": 0.5,
             },
         },
@@ -164,7 +164,7 @@ async def test_speaker_notify_cfg_passthrough(monkeypatch):
     assert result["_notify_channel"] == "speaker"
     speaker = result["_notify_cfg"]["speaker"]
     assert speaker["device"] == "Living Room"
-    assert speaker["voice"] == "af_heart"
+    assert speaker["voice"] == "Olivia"
     assert speaker["volume"] == 0.5
 
 

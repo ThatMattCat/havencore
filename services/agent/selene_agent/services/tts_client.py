@@ -1,10 +1,8 @@
 """Async TTS client — thin wrapper around the text-to-speech service.
 
-Targets whichever engine ``TTS_PROVIDER`` selects (v1=Kokoro at 6005,
-v2=Chatterbox-Turbo at 6015) directly, not the agent's ``/api/tts/speak``
-proxy, to keep the autonomy path free of self-referential HTTP hops. Both
-engines accept the same request shape and emit the same X-Visemes header,
-so the only thing that changes is the base URL.
+Targets the TTS engine (Chatterbox-Turbo at ``config.TTS_BASE_URL``)
+directly, not the agent's ``/api/tts/speak`` proxy, to keep the autonomy
+path free of self-referential HTTP hops.
 """
 from __future__ import annotations
 

@@ -1,34 +1,54 @@
+"""Config for text-to-speech (Chatterbox-Turbo).
+
+Reads from shared_config so .env stays the single source of truth for the
+whole stack. Falls back to env vars / sane defaults in SOLO mode for
+out-of-compose development.
+"""
+import json
 import os
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Directory for generated audio (written then read back into the HTTP response)
-AUDIO_DIR = os.path.join(BASE_DIR, "output")
+# /app/voices is mounted as a volume so the operator can add custom reference
+# clips (including a Selene clone later) without rebuilding the image.
+# /opt/chatterbox-voices is baked in at build time (outside /app so the live
+# source mount at /app doesn't shadow it).
+VOICES_USER_DIR = os.getenv("CHATTERBOX_VOICES_DIR", "/app/voices")
+VOICES_BUNDLED_DIR = os.getenv("CHATTERBOX_VOICES_BUNDLED_DIR", "/opt/chatterbox-voices")
 
 ################ Solo mode (single container outside of docker compose project) #######
 SOLO = False
 
 if SOLO:
-    LANGUAGE = "a"
-    VOICE = "af_heart"
-    MODEL_DEVICE = "cpu"  # To use graphics cards, use something like: "cuda:0"
+    AGENT_NAME = "Selene"
+    MODEL_DEVICE = "cuda:0"
+    VOICE = "Olivia"
+    TTS_PRONUNCIATIONS = {"Selene": "Suh-leen"}
 
 ############################ Do not make changes below this line ######################
 else:
     import shared.configs.shared_config as shared_config
-    LANGUAGE = shared_config.TTS_LANGUAGE if shared_config.TTS_LANGUAGE else "a"
-    VOICE = shared_config.TTS_VOICE if shared_config.TTS_VOICE else "af_heart"
-    MODEL_DEVICE = shared_config.TTS_DEVICE if shared_config.TTS_DEVICE else "cpu"  # eg: "cuda:0"
+    AGENT_NAME = shared_config.AGENT_NAME or "Selene"
+    MODEL_DEVICE = os.getenv("CHATTERBOX_DEVICE", "cuda:0")
+    VOICE = os.getenv("CHATTERBOX_VOICE", "Olivia")
+    # Text-substitution map, applied to the input before synthesis.
+    # Chatterbox has no lexicon-injection hook (resemble-ai/chatterbox#115),
+    # so we work around mispronunciations by rewriting the spelling at the
+    # input level.
+    #
+    # Empty by default — Chatterbox-Turbo's text encoder handles most proper
+    # nouns reasonably without rewriting. Set TTS_PRONUNCIATIONS in .env
+    # only when the model mispronounces a word badly enough to fix.
+    _raw = os.getenv("TTS_PRONUNCIATIONS", "")
+    try:
+        TTS_PRONUNCIATIONS = json.loads(_raw) if _raw else {}
+    except json.JSONDecodeError:
+        TTS_PRONUNCIATIONS = {}
 
-# Word -> inline misaki phoneme override (no surrounding braces — added by the
-# preprocessor). Kokoro 0.9.4's misaki G2P treats {phonemes} segments as raw
-# phonemes instead of running them through grapheme-to-phoneme.
-# Default forces "Selene" to render as 2-syllable "Suh-LEEN" (homophone with
-# "Celine"); misaki otherwise reads it as 3-syllable "Sell-uh-nee".
-if not SOLO:
-    _agent_name = shared_config.AGENT_NAME
-else:
-    _agent_name = "Selene"
+API_HOST = os.getenv("CHATTERBOX_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("CHATTERBOX_PORT", "6005"))
 
-TTS_PRONUNCIATIONS = {
-    _agent_name: os.getenv("TTS_AGENT_NAME_PHONEMES", "səˈlin"),
-}
+# Rhubarb Lip Sync knobs — the post-process that produces the X-Visemes header.
+RHUBARB_BIN = os.getenv("RHUBARB_BIN", "rhubarb")
+RHUBARB_TIMEOUT_SEC = float(os.getenv("RHUBARB_TIMEOUT_SEC", "10"))
+RHUBARB_RECOGNIZER = os.getenv("RHUBARB_RECOGNIZER", "phonetic")

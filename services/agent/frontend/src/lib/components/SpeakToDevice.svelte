@@ -2,13 +2,13 @@
 	import { onMount } from 'svelte';
 	import Card from './Card.svelte';
 
-	let { defaultVoice = 'af_heart' } = $props();
+	let { defaultVoice = 'Olivia' } = $props();
 
 	let text = $state('');
 	let device = $state('');
 	let voice = $state(defaultVoice);
 	let volume = $state(0.5);
-	let voices = $state([{ id: 'af_heart', label: 'af_heart' }]);
+	let voices = $state([{ id: 'Olivia', label: 'Olivia' }]);
 	let players = $state([]);
 	let loading = $state(false);
 	let error = $state('');

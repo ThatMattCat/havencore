@@ -21,7 +21,7 @@
 		{
 			value: 'speak',
 			label: 'speak',
-			desc: 'Same tools as notify, but delivery is TTS (Kokoro) routed to a Music Assistant speaker instead of a push message.',
+			desc: 'Same tools as notify, but delivery is TTS routed to a Music Assistant speaker instead of a push message.',
 		},
 		{
 			value: 'act',
@@ -689,7 +689,7 @@
 							</label>
 							<label class="field">
 								<span>Voice</span>
-								<input class="input" type="text" bind:value={routineDeliverVoice} placeholder="af_heart" />
+								<input class="input" type="text" bind:value={routineDeliverVoice} placeholder="Olivia" />
 							</label>
 							<label class="field">
 								<span>Volume (0–1)</span>
@@ -749,7 +749,7 @@
 							</label>
 							<label class="field">
 								<span>Voice</span>
-								<input class="input" type="text" bind:value={watchLlmNotifyVoice} placeholder="af_heart" />
+								<input class="input" type="text" bind:value={watchLlmNotifyVoice} placeholder="Olivia" />
 							</label>
 							<label class="field">
 								<span>Volume (0–1)</span>

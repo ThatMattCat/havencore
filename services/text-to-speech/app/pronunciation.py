@@ -1,10 +1,10 @@
 """Whole-word text substitution applied to TTS input before synthesis.
 
-Chatterbox has no lexicon-injection hook the way Kokoro/misaki does — see
-resemble-ai/chatterbox#115. The standard workaround is to rewrite the
-input spelling so the model's text encoder sees a pronunciation it'll
-render correctly. Example: "Selene" → "Suh-leen" forces 2-syllable
-/səˈlin/ instead of the 3-syllable reading the model would otherwise pick.
+Chatterbox has no lexicon-injection hook (resemble-ai/chatterbox#115). The
+standard workaround is to rewrite the input spelling so the model's text
+encoder sees a pronunciation it'll render correctly. Example: "Selene" →
+"Suh-leen" forces 2-syllable /səˈlin/ instead of the 3-syllable reading
+the model would otherwise pick.
 
 The substitution is whole-word and case-insensitive on lookup, but
 preserves the original word's capitalization pattern in the replacement

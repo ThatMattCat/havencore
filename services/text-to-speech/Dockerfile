@@ -1,12 +1,14 @@
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
+# Chatterbox-TTS 0.1.7 pins torch==2.6.0; matching the base avoids a
+# torch/torchvision ABI mismatch (which manifests as
+# `RuntimeError: operator torchvision::nms does not exist` during
+# transformers' import chain).
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
 WORKDIR /app
 
-# Rhubarb Lip Sync — viseme timeline generator. Used post-Kokoro to
-# produce the X-Visemes response header consumed by the companion app's
-# Live2D overlay for accurate mouth animation. Not in apt; install from
-# the upstream GitHub release.
+# Rhubarb Lip Sync — viseme timeline generator. Produces the X-Visemes
+# response header the companion app consumes. See app/rhubarb.py.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends wget unzip ca-certificates \
+    && apt-get install -y --no-install-recommends wget unzip ca-certificates curl \
     && wget -q https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-Linux.zip -O /tmp/rhubarb.zip \
     && unzip -q /tmp/rhubarb.zip -d /opt \
     && mv /opt/Rhubarb-Lip-Sync-1.14.0-Linux /opt/rhubarb \
@@ -14,9 +16,27 @@ RUN apt-get update \
     && rm /tmp/rhubarb.zip \
     && rm -rf /var/lib/apt/lists/*
 
+# Bundle reference voice clips from devnen/Chatterbox-TTS-Server (MIT).
+# Chatterbox is zero-shot — to get a stable named "voice" the model needs a
+# short reference clip per generation. We fetch a set at build time so the
+# container has working "preset" voices out of the box. Operators can drop
+# their own .wav files into /app/voices via the compose volume mount to add
+# or override voices (including a custom Selene clone later).
+#
+# Stored under /opt so the /app volume mount (live Python source) doesn't
+# shadow the bundled set.
+RUN mkdir -p /opt/chatterbox-voices \
+    && for name in Abigail Alice Cora Elena Emily Gianna Jade Layla Olivia Taylor Adrian Alexander Austin Henry Ian Michael Miles Ryan Thomas Connor ; do \
+        curl -fsSL -o "/opt/chatterbox-voices/${name}.wav" \
+            "https://raw.githubusercontent.com/devnen/Chatterbox-TTS-Server/main/voices/${name}.wav" \
+        || echo "warn: failed to fetch ${name}.wav" ; \
+    done
+
+COPY NOTICE ./NOTICE
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./
+
 EXPOSE 6005
 ENTRYPOINT ["python3"]
 CMD ["main.py"]

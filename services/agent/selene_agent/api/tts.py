@@ -1,11 +1,10 @@
-"""TTS proxy — exposes the active text-to-speech service to the dashboard.
+"""TTS proxy — exposes the text-to-speech service to the dashboard.
 
-Engine selection follows ``shared_config.TTS_PROVIDER`` (v1=Kokoro,
-v2=Chatterbox-Turbo). Both upstreams expose the same /v1/audio/speech
-surface + X-Visemes header, so this proxy is engine-agnostic.
+The upstream (Chatterbox-Turbo at ``config.TTS_BASE_URL``) exposes an
+OpenAI-compatible /v1/audio/speech surface plus an X-Visemes header.
 
 Also exposes voice-management endpoints (upload / delete / set default)
-that proxy through to the active engine. The runtime-override default
+that proxy through to the TTS engine. The runtime-override default
 voice persists in ``agent_state.tts_default_voice`` and is applied here so
 all callers (dashboard playground, autonomy speak path, companion app)
 share one source of truth without each needing to look it up themselves.
@@ -32,7 +31,7 @@ def _tts_base() -> str:
 
 
 def _engine_label() -> str:
-    return "Chatterbox-Turbo" if config.TTS_PROVIDER == "v2" else "Kokoro"
+    return "Chatterbox-Turbo"
 
 CONTENT_TYPES = {
     "mp3": "audio/mpeg",
@@ -124,26 +123,16 @@ async def speak(payload: SpeakRequest):
 
 @router.post("/tts/speak/stream")
 async def speak_stream(payload: SpeakRequest):
-    """NDJSON-streaming proxy of the v2 TTS engine's per-sentence pipeline.
+    """NDJSON-streaming proxy of the TTS engine's per-sentence pipeline.
 
     Same request schema and voice-resolution rules as ``/tts/speak`` — the
     runtime default override wins unless ``force_voice=true`` (only the
     voice-testing playground sets that). Response is ``application/
-    x-ndjson``: one JSON event per line. See ``services/text-to-speech-v2/
+    x-ndjson``: one JSON event per line. See ``services/text-to-speech/
     app/streaming.py`` for the event schema.
-
-    Only v2 (Chatterbox-Turbo) exposes the streaming endpoint upstream.
-    v1 (Kokoro) returns 404 for the underlying path; we surface a 501 here
-    so callers get an actionable error rather than a confusing upstream
-    pass-through.
     """
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
-    if config.TTS_PROVIDER != "v2":
-        raise HTTPException(
-            status_code=501,
-            detail="Streaming TTS requires TTS_PROVIDER=v2 (Chatterbox-Turbo).",
-        )
 
     body: dict = {
         "input": payload.text,
@@ -210,9 +199,9 @@ async def voices():
     formats = ["mp3", "wav", "opus", "aac", "flac", "pcm"]
     native_ids: list[str] = []
     alias_ids: list[str] = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-    # Engine-appropriate fallback if the upstream is unreachable. Kept in
-    # sync with each service's own DEFAULT_VOICE.
-    fallback_default = "Olivia" if config.TTS_PROVIDER == "v2" else "af_heart"
+    # Fallback if the upstream is unreachable. Kept in sync with the TTS
+    # service's CHATTERBOX_VOICE default.
+    fallback_default = "Olivia"
     default_voice = fallback_default
 
     user_ids: list[str] = []
@@ -374,17 +363,11 @@ async def upload_voice(
     name: str = Form(...),
     file: UploadFile = File(...),
 ):
-    """Forward a multipart upload through to the active TTS engine.
+    """Forward a multipart upload through to the TTS engine.
 
-    Only v2 (Chatterbox-Turbo) supports voice cloning. v1 (Kokoro) has
-    fixed voices baked into the model, so this returns 501 there.
+    Chatterbox-Turbo is zero-shot — an uploaded reference clip becomes a
+    new clonable voice.
     """
-    if config.TTS_PROVIDER != "v2":
-        raise HTTPException(
-            status_code=501,
-            detail="Voice cloning is only supported by TTS v2 (Chatterbox-Turbo). "
-                   "Set TTS_PROVIDER=v2 in .env to enable.",
-        )
     raw = await file.read()
     form = aiohttp.FormData()
     form.add_field("name", name)
@@ -414,9 +397,7 @@ async def upload_voice(
 
 @router.delete("/tts/voices/{name}")
 async def delete_voice(name: str):
-    """Delete an uploaded reference clip on the active TTS engine."""
-    if config.TTS_PROVIDER != "v2":
-        raise HTTPException(status_code=501, detail="Voice management requires TTS v2.")
+    """Delete an uploaded reference clip on the TTS engine."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.delete(

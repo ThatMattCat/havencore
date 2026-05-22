@@ -94,7 +94,7 @@ HAOS_URL="https://homeassistant.local:8123/api"
 HAOS_TOKEN="your_long_lived_token_here"
 
 # GPU configuration (adjust based on your setup)
-TTS_DEVICE="cuda:0"  # GPU for text-to-speech
+CHATTERBOX_GPU="0"   # host GPU index for text-to-speech
 STT_DEVICE="0"       # GPU for speech-to-text
 
 # Optional API keys for enhanced functionality
@@ -111,7 +111,7 @@ WOLFRAM_ALPHA_API_KEY=""   # For computational queries
 | **nginx** | 80 | API Gateway & Load Balancer | 2-5 minutes |
 | **agent** | 6002 | LLM logic, tool calling, SvelteKit dashboard | 10-15 minutes |
 | **speech-to-text** | 6001 | Audio Transcription | 30-45 minutes |
-| **text-to-speech** | 6005 | Audio Generation | 15-25 minutes |
+| **text-to-speech** | 6005 | Audio Generation (Chatterbox-Turbo) | 15-25 minutes |
 | **postgres** | 5432 | Database & Conversation Storage | 2-5 minutes |
 | **vLLM** | 8000 | LLM Inference Backend | Pre-built image |
 | **qdrant** | 6333, 6334 | Vector Database | Pre-built image |
@@ -239,7 +239,7 @@ havencore/
 │   ├── nginx/               # API gateway configuration
 │   ├── agent/               # Main AI agent logic
 │   ├── speech-to-text/      # STT service (Whisper-based)
-│   ├── text-to-speech/      # TTS service (Kokoro TTS)
+│   ├── text-to-speech/      # TTS service (Chatterbox-Turbo)
 │   ├── postgres/            # Database initialization
 │   └── vllm/                # LLM configuration
 ├── shared/                  # Shared configuration and utilities

@@ -1,9 +1,8 @@
 """Rhubarb Lip Sync post-process.
 
-Ported verbatim from services/text-to-speech/app/main.py:151–202 so the
-X-Visemes header the companion app consumes (see havencore-companion-app
-app/src/main/kotlin/.../voice/avatar/VisemeTimeline.kt) stays byte-for-byte
-identical between v1 (Kokoro) and v2 (Chatterbox).
+Produces the base64 viseme JSON carried in the ``X-Visemes`` response
+header the companion app consumes (see havencore-companion-app
+app/src/main/kotlin/.../voice/avatar/VisemeTimeline.kt).
 """
 import json
 import logging
@@ -16,7 +15,7 @@ import soundfile as sf
 
 import config
 
-logger = logging.getLogger("text-to-speech-v2.rhubarb")
+logger = logging.getLogger("text-to-speech.rhubarb")
 
 
 def compute(samples: np.ndarray, sample_rate: int) -> dict | None:

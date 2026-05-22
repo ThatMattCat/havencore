@@ -76,7 +76,7 @@ JSON endpoints consumed by the dashboard frontend. Can also be called directly.
 | `GET` | `/api/metrics/summary?days=7` | Aggregates: turns/day, avg llm/total ms, p95 total ms |
 | `GET` | `/api/metrics/top-tools?days=7&limit=10` | Tool call counts and average latency |
 | `POST` | `/api/tts/speak` | Proxy to text-to-speech. Body: `{"text", "voice?", "format?", "speed?"}`. Streams binary audio back |
-| `GET` | `/api/tts/voices` | Static voice list (OpenAI aliases all mapped to `af_heart`) |
+| `GET` | `/api/tts/voices` | Voice catalog from the TTS engine (bundled + uploaded voices, OpenAI aliases) |
 | `GET` | `/api/tts/health` | TTS service health proxy |
 | `POST` | `/api/stt/transcribe` | Multipart proxy to `/v1/audio/transcriptions`. Fields: `file`, `language?`, `response_format?` |
 | `GET` | `/api/stt/health` | STT service health proxy |
@@ -396,7 +396,7 @@ All configuration is via environment variables (loaded in `selene_agent/utils/co
 | `AUTONOMY_DEFAULT_QUIET_POLICY` | `defer` | Quiet-hours policy: `defer` or `drop` |
 | `AUTONOMY_DEFAULT_EVENT_RATE_LIMIT` | `10/min` | Default per-trigger event-rate limit |
 | `AUTONOMY_SPEAKER_DEFAULT_DEVICE` | — | Default speaker target for autonomy TTS announcements |
-| `AUTONOMY_SPEAKER_DEFAULT_VOICE` | `af_heart` | Default Kokoro voice for autonomy TTS |
+| `AUTONOMY_SPEAKER_DEFAULT_VOICE` | `Olivia` | Default TTS voice for autonomy TTS |
 | `AUTONOMY_SPEAKER_DEFAULT_VOLUME` | `0.5` | Default volume for autonomy announcements |
 | `AUTONOMY_TTS_AUDIO_TTL_SEC` | `600` | TTL for cached autonomy TTS audio blobs |
 | `AUTONOMY_ACT_ENABLED` | `false` | Allow autonomy turns to actuate devices (vs. notify-only) |
@@ -512,7 +512,7 @@ services/agent/
     │   ├── anthropic.py
     │   └── openai.py
     ├── services/             # Shared service clients
-    │   ├── tts_client.py     # Kokoro TTS HTTP client
+    │   ├── tts_client.py     # TTS HTTP client (Chatterbox-Turbo)
     │   └── audio_store.py    # In-memory TTL audio blob store
     ├── utils/
     │   ├── agent_state.py    # Postgres-backed agent_state (provider, phase) read/write

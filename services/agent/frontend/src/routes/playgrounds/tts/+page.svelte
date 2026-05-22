@@ -27,10 +27,8 @@
 
 	// --- Mode: stream (NDJSON, sentence-by-sentence) vs buffered (one blob).
 	// Streaming is the production path; buffered stays for A/B comparison
-	// and as a regression fallback. v1 (Kokoro) only supports buffered, so
-	// we force-disable the toggle there.
+	// and as a regression fallback.
 	let mode = $state('stream');
-	let streamSupported = $state(true);
 	let streamSession = $state(null);  // active per-utterance state
 	let ttfaMs = $state(0);
 	let streamTotalMs = $state(0);
@@ -59,15 +57,6 @@
 			if (!voices.find(v => v.id === voice)) {
 				voice = defaultVoice;
 			}
-			// The agent's /api/tts/voices proxy embeds the active engine name
-			// in each voice's label ("(Chatterbox-Turbo)" vs "(Kokoro)"), so
-			// we can derive streaming support without an extra endpoint. v1
-			// (Kokoro) doesn't have a streaming surface — the upstream
-			// /v1/audio/speech/stream only exists on text-to-speech-v2.
-			streamSupported = res.voices.some(v => v.label?.includes('Chatterbox-Turbo'));
-			if (!streamSupported && mode === 'stream') {
-				mode = 'buffered';
-			}
 		} catch (e) {
 			// keep defaults
 		}
@@ -84,7 +73,7 @@
 			audioUrl = '';
 		}
 		error = '';
-		if (mode === 'stream' && streamSupported) {
+		if (mode === 'stream') {
 			return speakStream();
 		}
 		return speakBuffered();
@@ -344,10 +333,7 @@
 						class="mode-btn"
 						class:active={mode === 'stream'}
 						onclick={() => (mode = 'stream')}
-						disabled={!streamSupported}
-						title={streamSupported
-							? 'Sentence-shaped NDJSON stream (v2). Audio chunks play as they arrive.'
-							: 'Streaming requires TTS_PROVIDER=v2 (Chatterbox-Turbo).'}
+						title="Sentence-shaped NDJSON stream. Audio chunks play as they arrive."
 					>
 						Stream
 					</button>

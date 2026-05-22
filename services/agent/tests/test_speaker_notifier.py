@@ -21,7 +21,7 @@ def _make_notifier(mcp_tool_return=None, synth_return=b"fake-mp3-bytes"):
     notifier = SpeakerNotifier(
         mcp,
         device="Living Room",
-        voice="af_heart",
+        voice="Olivia",
         volume=0.4,
         tts_client=tts,
         audio_store=store,
@@ -68,7 +68,7 @@ async def test_send_tts_failure_does_not_call_ma():
     mcp = MagicMock()
     mcp.execute_tool = AsyncMock()
     tts = MagicMock()
-    tts.synth = AsyncMock(side_effect=RuntimeError("kokoro down"))
+    tts.synth = AsyncMock(side_effect=RuntimeError("tts engine down"))
     notifier = SpeakerNotifier(
         mcp, device="Living Room", tts_client=tts, audio_store=AudioStore()
     )

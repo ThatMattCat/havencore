@@ -249,7 +249,7 @@ export function getTtsHealth(): Promise<{ status: string }> {
 // keyed by `seq`, then `done` (or `error`). Audio chunks are base64-encoded
 // self-contained WAV files; clients decode + enqueue them into a sequential
 // player and align visemes via `offset_ms`. The full event schema lives in
-// `services/text-to-speech-v2/app/streaming.py`.
+// `services/text-to-speech/app/streaming.py`.
 
 export type TtsVisemeCue = { start: number; end: number; value: string };
 

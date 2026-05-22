@@ -82,44 +82,18 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
   text-to-speech:
+    # Chatterbox-Turbo TTS (Resemble AI) — expressive zero-shot voice cloning
+    # with inline paralinguistic tags. Exposes an OpenAI-compatible
+    # /v1/audio/speech surface plus an X-Visemes response header for
+    # client-side avatar lip-sync. Pinned to a single GPU via
+    # CUDA_VISIBLE_DEVICES (same pattern as vllm-vision / face-recognition);
+    # ~1.5-2 GB peak VRAM for single-user inference.
     build:
       context: ./services/text-to-speech
       dockerfile: Dockerfile
     image: text-to-speech:${VERSION:-latest}
     ports:
       - "6005:6005" # OpenAI API-compatible /v1/audio/speech
-    env_file:
-      - .env
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6005/health').status==200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    deploy:
-      resources:
-        reservations: # GPU Device to use is configured in shared_config.py
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    volumes:
-      - ./services/text-to-speech/app/output:/app/output
-      - ./services/text-to-speech/app/config.py:/app/config.py
-      - ./shared:/app/shared:ro
-    restart: unless-stopped
-  text-to-speech-v2:
-    # Chatterbox-Turbo TTS (Resemble AI). Parallel to text-to-speech (Kokoro)
-    # for A/B testing — both expose the same /v1/audio/speech surface and the
-    # same X-Visemes response header so clients can swap by URL. Pinned to
-    # GPU 0 via CUDA_VISIBLE_DEVICES (same pattern as vllm-vision /
-    # face-recognition); ~1.5-2 GB peak VRAM for single-user inference.
-    build:
-      context: ./services/text-to-speech-v2
-      dockerfile: Dockerfile
-    image: text-to-speech-v2:${VERSION:-latest}
-    ports:
-      - "6015:6015" # OpenAI API-compatible /v1/audio/speech
     env_file:
       - .env
     environment:
@@ -129,12 +103,12 @@ services:
       # 3090s — important when sharing a GPU with vLLM/embeddings.
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6015/health').status==200 else 1)"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6005/health').status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      # Chatterbox-Turbo cold-start is slower than Kokoro: model load to GPU
-      # plus first-call CUDA graph compilation can take 30-60s on a 3090.
+      # Chatterbox-Turbo cold-start: model load to GPU plus first-call CUDA
+      # graph compilation can take 30-60s on a 3090.
       start_period: 120s
     deploy:
       resources:
@@ -144,8 +118,8 @@ services:
               count: all
               capabilities: [gpu]
     volumes:
-      - ./services/text-to-speech-v2/app:/app
-      - ./services/text-to-speech-v2/voices:/app/voices
+      - ./services/text-to-speech/app:/app
+      - ./services/text-to-speech/voices:/app/voices
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./shared:/app/shared:ro
     restart: unless-stopped
