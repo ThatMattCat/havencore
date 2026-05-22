@@ -106,7 +106,7 @@ Chatterbox-Turbo natively renders inline non-speech reactions when they appear i
 [laugh] [chuckle] [sigh] [gasp] [groan] [cough] [sniff] [clear throat] [shush]
 ```
 
-The agent's system prompt teaches the LLM to use these sparingly and only in spoken-reply text — but **only when `TTS_PROVIDER=v2`**. Under v1 (Kokoro) the same addendum is omitted because Kokoro would read the brackets aloud. See `selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM` for the exact wording, applied in both `orchestrator.py:initialize` and `session_pool.py:rebuild_system_prompts`.
+The agent's system prompt teaches the LLM to use these sparingly and only in spoken-reply text — but **only when `TTS_PROVIDER=v2`**. Under v1 (Kokoro) the same addendum is omitted because Kokoro would read the brackets aloud. See `selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM` for the exact wording; it is applied by `orchestrator.build_system_prompt()`, the shared assembly used for session creation, cold-resume, and the phase-change refresh.
 
 There is **no** `exaggeration` slider on Turbo — that knob is exclusive to the standard 500M Chatterbox model. Expressiveness comes from where the LLM places tags, not a numeric per-utterance setting.
 

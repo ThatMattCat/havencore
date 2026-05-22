@@ -41,7 +41,7 @@ Response ← JSON ← Agent Logic ← Tool Results ← API Responses
 | `WS /ws/chat` | First frame `{"type":"session","session_id":"...","idle_timeout":N,"device_name":"..."}` (all fields optional; `idle_timeout` and `device_name` may also be sent on later session frames mid-stream) | First frame `{"type":"session","session_id":"..."}` |
 | `POST /v1/chat/completions` | — (ignored; stateless, no device-name attribution) | — |
 
-Missing/unknown `session_id` → the pool mints a new UUID and returns it. Known `session_id` that isn't in memory → the pool cold-resumes from `conversation_db` and rehydrates the orchestrator (calls `prepare()` to prepend the L4 block without clobbering restored messages). `device_name` rides with every flushed history row and is denormalized onto every `turn_metrics` row so the dashboard can render human-readable labels instead of opaque session ids — see [Conversation history → Device attribution](conversation-history.md#device-attribution).
+Missing/unknown `session_id` → the pool mints a new UUID and returns it. Known `session_id` that isn't in memory → the pool cold-resumes from `conversation_db`, restores the conversation body, and rebuilds the system prompt (`messages[0]`) from current config via `build_system_prompt()` so a resumed session never runs on a stale prompt snapshot. `device_name` rides with every flushed history row and is denormalized onto every `turn_metrics` row so the dashboard can render human-readable labels instead of opaque session ids — see [Conversation history → Device attribution](conversation-history.md#device-attribution).
 
 ## API endpoints
 
