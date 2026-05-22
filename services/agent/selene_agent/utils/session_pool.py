@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from openai import AsyncOpenAI
 
-from selene_agent.orchestrator import AgentOrchestrator
+from selene_agent.orchestrator import AgentOrchestrator, build_system_prompt
 from selene_agent.providers import LLMProvider
 from selene_agent.utils import config
 from selene_agent.utils import logger as custom_logger
@@ -91,8 +91,9 @@ class SessionOrchestratorPool:
     async def _hydrate_from_db(self, session_id: str) -> Optional[AgentOrchestrator]:
         """Cold-resume: load most recent stored history for this session_id.
 
-        Uses `prepare()` (not `initialize()`) so the L4 block prepends without
-        clobbering the restored messages.
+        Restores the conversation body verbatim but rebuilds messages[0] from
+        current config via `build_system_prompt()` — the persisted system
+        prompt is a stale snapshot (see the rebuild block below).
         """
         try:
             histories = await conversation_db.get_conversation_history(session_id, limit=1)
@@ -130,13 +131,26 @@ class SessionOrchestratorPool:
             cleaned = raw_name.strip()
             if cleaned:
                 orch.device_name = cleaned[:64]
-        # prepare() will prepend the L4 block to the existing system message
-        # (or be a no-op if the first message isn't system).
+        # Rebuild messages[0] from current config. The persisted system
+        # prompt is a snapshot from when the session was last stored and can
+        # lag behind prompt changes — a new addendum, a phase shift, a
+        # refreshed L4 block. Restoring it verbatim would, for example, leave
+        # a session created before the <<EXPRESSION>> feature unable to drive
+        # the avatar (the model is never told to emit the sentinel). The
+        # conversation body (messages[1:]) is the real history, kept as-is.
+        # build_system_prompt() already prepends the L4 block, so mark L4
+        # resolved — prepare() (also called at run() start) stays a no-op.
         try:
-            await orch.prepare()
+            fresh_prompt = await build_system_prompt()
+            if orch.messages and orch.messages[0].get("role") == "system":
+                orch.messages[0] = {"role": "system", "content": fresh_prompt}
+            else:
+                orch.messages.insert(0, {"role": "system", "content": fresh_prompt})
         except Exception as e:
-            logger.warning(f"prepare() failed during cold-resume for {session_id}: {e}")
-            orch._l4_pending = False
+            logger.warning(
+                f"system-prompt rebuild failed during cold-resume for {session_id}: {e}"
+            )
+        orch._l4_pending = False
         orch.last_query_time = time.time()
         logger.info(f"Cold-resumed session {session_id} with {len(messages)} messages")
         return orch
@@ -374,25 +388,14 @@ class SessionOrchestratorPool:
             try:
                 if not orch.messages or orch.messages[0].get("role") != "system":
                     continue
-                # Rebuild a fresh system prompt inline. Reuse the same logic
-                # as initialize() without nuking the rest of the message list.
-                from selene_agent.utils.agent_state import get_agent_phase
-                from selene_agent.utils.l4_context import build_l4_block
+                # Rebuild messages[0] from current config without nuking the
+                # rest of the message list. build_system_prompt() is the same
+                # source of truth initialize() and cold-resume use.
                 try:
-                    system_prompt = config.SYSTEM_PROMPT
-                    phase = await get_agent_phase()
-                    if phase == "learning":
-                        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_LEARNING_ADDENDUM
-                    else:
-                        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
-                    if config.TTS_PROVIDER == "v2":
-                        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
-                    # Engine-agnostic — appended unconditionally (see initialize()).
-                    system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_EXPRESSION_ADDENDUM
-                    block = await build_l4_block()
-                    if block:
-                        system_prompt = block + "\n\n" + system_prompt
-                    orch.messages[0] = {"role": "system", "content": system_prompt}
+                    orch.messages[0] = {
+                        "role": "system",
+                        "content": await build_system_prompt(),
+                    }
                     refreshed += 1
                 except Exception as e:
                     logger.warning(f"rebuild_system_prompts failed for {sid}: {e}")

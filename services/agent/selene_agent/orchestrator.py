@@ -243,6 +243,55 @@ def extract_expression(text: str) -> tuple[str, Optional[str]]:
     return cleaned, expression
 
 
+async def build_system_prompt() -> str:
+    """Assemble the agent's system prompt from current config and state.
+
+    Base ``SYSTEM_PROMPT`` + the phase-specific addendum + (the paralinguistic
+    addendum only when the v2 TTS engine is active) + the engine-agnostic
+    expression-cue addendum, with the L4 persistent-memory block prepended
+    when present.
+
+    The result is fully config/state-derived — nothing session-specific lives
+    in messages[0] — so it is safe to (re)build for a fresh session, a phase
+    change, or a cold-resumed session whose persisted snapshot predates a
+    prompt change. Single source of truth for ``initialize()``, the pool's
+    ``rebuild_system_prompts()``, and cold-resume.
+    """
+    system_prompt = config.SYSTEM_PROMPT
+
+    # Phase-specific guidance so memory behavior shifts with the operational
+    # phase (learning encourages aggressive memory creation).
+    try:
+        from selene_agent.utils.agent_state import get_agent_phase
+        phase = await get_agent_phase()
+        if phase == "learning":
+            system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_LEARNING_ADDENDUM
+        else:
+            system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
+    except Exception as e:
+        logger.warning(f"phase addendum lookup failed: {e}")
+
+    # Only teach the LLM about paralinguistic tags when the active TTS
+    # engine actually renders them. Kokoro would speak the brackets.
+    if config.TTS_PROVIDER == "v2":
+        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
+
+    # Expression-cue guidance is engine-agnostic — the Live2D avatar
+    # consumes it whichever TTS engine is active — so unlike the
+    # paralinguistic block it is appended unconditionally.
+    system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_EXPRESSION_ADDENDUM
+
+    try:
+        from selene_agent.utils.l4_context import build_l4_block
+        block = await build_l4_block()
+        if block:
+            system_prompt = block + "\n\n" + system_prompt
+    except Exception as e:
+        logger.warning(f"L4 block build failed during system prompt build: {e}")
+
+    return system_prompt
+
+
 class AgentOrchestrator:
     """
     Orchestrates the agent query loop, yielding events for each step.
@@ -319,38 +368,7 @@ class AgentOrchestrator:
     async def initialize(self):
         """Initialize with system prompt (prepends L4 persistent-memory block
         when present; appends phase-specific addendum)."""
-        system_prompt = config.SYSTEM_PROMPT
-
-        # Append phase-specific guidance so memory behavior shifts with the
-        # operational phase (learning encourages aggressive memory creation).
-        try:
-            from selene_agent.utils.agent_state import get_agent_phase
-            phase = await get_agent_phase()
-            if phase == "learning":
-                system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_LEARNING_ADDENDUM
-            else:
-                system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
-        except Exception as e:
-            logger.warning(f"phase addendum lookup failed: {e}")
-
-        # Only teach the LLM about paralinguistic tags when the active TTS
-        # engine actually renders them. Kokoro would speak the brackets.
-        if config.TTS_PROVIDER == "v2":
-            system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
-
-        # Expression-cue guidance is engine-agnostic — the Live2D avatar
-        # consumes it whichever TTS engine is active — so unlike the
-        # paralinguistic block it is appended unconditionally.
-        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_EXPRESSION_ADDENDUM
-
-        try:
-            from selene_agent.utils.l4_context import build_l4_block
-            block = await build_l4_block()
-            if block:
-                system_prompt = block + "\n\n" + system_prompt
-        except Exception as e:
-            logger.warning(f"L4 block build failed during initialize: {e}")
-        self.messages = [{"role": "system", "content": system_prompt}]
+        self.messages = [{"role": "system", "content": await build_system_prompt()}]
         self._l4_pending = False
         if not getattr(self, "_session_id_pinned", False):
             self.session_id = str(uuid.uuid4())
@@ -744,17 +762,22 @@ class AgentOrchestrator:
                         },
                     )
 
-                # Expression cue: pull the <<EXPRESSION:...>> sentinel out of
-                # the content before it can reach TTS or be stored. Run every
-                # iteration so an intermediate tool-call message is cleaned
-                # too; the most recent value drives the AVATAR_STATE event
-                # emitted just before DONE.
+                # Expression cue: detect the <<EXPRESSION:...>> sentinel. It
+                # is deliberately *kept* in assistant_message.content — and so
+                # in self.messages — so that on the next turn the model sees
+                # its own prior cue and keeps emitting one. Stripping it from
+                # history made the model drift silent after the first turn of
+                # a conversation: it pattern-matches its own sentinel-free
+                # replies over the system-prompt instruction. The sentinel is
+                # stripped only at the one place it would do harm — the DONE
+                # event content that feeds TTS (see the final-response block).
+                # Run every iteration so the most recent value wins when a
+                # turn spans multiple tool-calling iterations.
                 if assistant_message.content:
-                    clean_content, parsed_expression = extract_expression(
+                    _, parsed_expression = extract_expression(
                         assistant_message.content
                     )
                     if parsed_expression is not None:
-                        assistant_message.content = clean_content
                         turn_expression = parsed_expression
 
                 # Handle models that embed tool calls in content tags
@@ -886,9 +909,14 @@ class AgentOrchestrator:
                         "cache_creation_tokens": cache_create_total,
                     }
                     yield AgentEvent(type=EventType.METRIC, data=metric_payload)
-                    # Pose the avatar before audio starts — fire the cue
-                    # just before DONE so a client can switch expression
-                    # while it kicks off TTS on the (already cleaned) text.
+                    # Strip the <<EXPRESSION:...>> sentinel from the answer
+                    # that reaches the client and TTS. It is kept verbatim in
+                    # self.messages (see the detect block above) so the model
+                    # stays primed turn over turn, but must never be spoken.
+                    final_content, _ = extract_expression(assistant_message.content)
+                    # Pose the avatar before audio starts — fire the cue just
+                    # before DONE so a client can switch expression while it
+                    # kicks off TTS on the cleaned text.
                     if turn_expression is not None:
                         yield AgentEvent(
                             type=EventType.AVATAR_STATE,
@@ -896,7 +924,7 @@ class AgentOrchestrator:
                         )
                     yield AgentEvent(
                         type=EventType.DONE,
-                        data={"content": assistant_message.content},
+                        data={"content": final_content},
                     )
                     return
 

@@ -151,10 +151,10 @@ async def test_hydrate_from_db_restores_override(monkeypatch):
         "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
         fake_get,
     )
-    # Short-circuit prepare() so we don't need L4 infra.
+    # Short-circuit the system-prompt rebuild so we don't need phase/L4 infra.
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
@@ -179,8 +179,8 @@ async def test_hydrate_clamps_out_of_range_override(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
@@ -206,8 +206,8 @@ async def test_hydrate_preserves_never_sentinel(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
@@ -232,13 +232,51 @@ async def test_hydrate_ignores_garbage_override(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
     assert orch is not None
     assert orch.idle_timeout_override is None
+
+
+async def test_hydrate_rebuilds_stale_system_prompt(monkeypatch):
+    """Cold-resume must rebuild messages[0] from current config. A session
+    persisted before a prompt change carries a stale system prompt; restoring
+    it verbatim would, e.g., leave a pre-<<EXPRESSION>>-feature session unable
+    to drive the avatar. The conversation body must be kept as-is.
+    """
+    pool = _build_pool()
+
+    async def fake_get(session_id, limit=1):
+        return [{
+            "messages": [
+                {"role": "system", "content": "STALE pre-feature system prompt"},
+                {"role": "user", "content": "prior question"},
+                {"role": "assistant", "content": "prior reply"},
+            ],
+            "metadata": {},
+        }]
+
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.conversation_db.get_conversation_history",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT current system prompt"),
+    )
+
+    orch = await pool._hydrate_from_db("s1")
+    assert orch is not None
+    # messages[0] swapped for the freshly built prompt — the stale one is gone.
+    assert orch.messages[0] == {"role": "system", "content": "REBUILT current system prompt"}
+    # Conversation body preserved verbatim.
+    assert orch.messages[1] == {"role": "user", "content": "prior question"}
+    assert orch.messages[2] == {"role": "assistant", "content": "prior reply"}
+    # L4 is already folded into the rebuilt prompt — prepare() must be a no-op.
+    assert orch._l4_pending is False
 
 
 async def test_flush_one_stores_device_name_in_metadata(monkeypatch):
@@ -300,8 +338,8 @@ async def test_hydrate_from_db_restores_device_name(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
@@ -326,8 +364,8 @@ async def test_hydrate_truncates_oversized_device_name(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
@@ -352,8 +390,8 @@ async def test_hydrate_ignores_non_string_device_name(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
@@ -378,8 +416,8 @@ async def test_hydrate_ignores_whitespace_only_device_name(monkeypatch):
         fake_get,
     )
     monkeypatch.setattr(
-        "selene_agent.orchestrator.AgentOrchestrator.prepare",
-        AsyncMock(),
+        "selene_agent.utils.session_pool.build_system_prompt",
+        AsyncMock(return_value="REBUILT-SYS"),
     )
 
     orch = await pool._hydrate_from_db("s1")
