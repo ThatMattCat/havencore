@@ -179,7 +179,8 @@ so every aux service shares with it. (`vllm-vision` is on the dedicated
 #    - embeddings:    compose.yaml `CUDA_VISIBLE_DEVICES=2`
 #    - face-rec:      compose.yaml `CUDA_VISIBLE_DEVICES=3`
 #    - vllm-vision:   compose.yaml `CUDA_VISIBLE_DEVICES=4` (dedicated 5th card)
-#    - TTS/STT:       .env `TTS_DEVICE` / `STT_DEVICE`
+#    - TTS:           .env `CHATTERBOX_GPU`
+#    - STT:           .env `STT_DEVICE`
 #    STT/TTS run sequentially with the LLM turn, so co-pinning is OK.
 
 # 4. Swap to a smaller non-MoE model that fits on fewer GPUs, e.g.
@@ -250,7 +251,7 @@ models.
 
 ```bash
 # Pin specific GPUs in .env so services don't compete
-TTS_DEVICE="cuda:1"   # second card
+CHATTERBOX_GPU="1"    # host GPU index for the TTS model
 STT_DEVICE="1"        # Whisper uses raw index, not cuda: prefix
 
 # Then restart just the affected services

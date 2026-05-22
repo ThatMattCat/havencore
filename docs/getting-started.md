@@ -67,7 +67,7 @@ HOST_IP_ADDRESS="192.168.1.100"
 LLM_API_KEY="your_secret_key_here"
 
 # GPU configuration
-TTS_DEVICE="cuda:0"  # GPU for text-to-speech
+CHATTERBOX_GPU="0"   # host GPU index for text-to-speech
 STT_DEVICE="0"       # GPU for speech-to-text
 ```
 

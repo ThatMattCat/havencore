@@ -50,16 +50,12 @@ ANTHROPIC_MODEL="claude-opus-4-7"  # default Anthropic model
 
 #### GPU Settings
 ```bash
-# Text-to-Speech GPU allocation
-TTS_DEVICE="cuda:0"  # GPU index for TTS model
-
-# Speech-to-Text GPU allocation  
+# Speech-to-Text GPU allocation
 STT_DEVICE="0"       # GPU index for STT model
-
-# TTS Voice Settings
-TTS_LANGUAGE="a"     # Kokoro TTS language option
-TTS_VOICE="af_heart" # Voice model selection
 ```
+
+The text-to-speech GPU is set via `CHATTERBOX_GPU` — see
+[Chatterbox-Turbo tunables](#chatterbox-turbo-tunables) below.
 
 #### Pronunciation Tuning
 
@@ -82,13 +78,11 @@ STT_HOTWORDS="Selene"
 # correct spelling for via prompt biasing alone. JSON object, word-boundary,
 # case-preserving regex sub. Default fixes the Selene/Celine homophone.
 STT_TRANSCRIPT_SUBSTITUTIONS='{"Celine":"Selene"}'
-
-# TTS — misaki phonemes Kokoro uses for AGENT_NAME. Default forces the
-# 2-syllable pronunciation "Suh-LEEN" instead of misaki's default
-# 3-syllable "Sell-uh-nee". Misaki accepts characters from its
-# American-English IPA-like inventory.
-TTS_AGENT_NAME_PHONEMES="səˈlin"
 ```
+
+The TTS side has its own optional override — `TTS_PRONUNCIATIONS`, a
+whole-word text-substitution map applied before synthesis — covered under
+[Chatterbox-Turbo tunables](#chatterbox-turbo-tunables) below.
 
 See `docs/services/speech-to-text/README.md` and
 `docs/services/text-to-speech/README.md` for the rationale behind each layer
@@ -96,45 +90,27 @@ and how to extend them to other names.
 
 #### Lip-sync (Rhubarb)
 
-Both TTS engines shell out to [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync)
-after synthesis, attach the resulting viseme timeline as an `X-Visemes`
+The TTS service shells out to [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync)
+after synthesis, attaches the resulting viseme timeline as an `X-Visemes`
 response header (base64-encoded JSON), and the agent's `/api/tts/speak`
 proxy forwards it unchanged. The companion app's Live2D avatar overlay
 drives mouth shapes against this timeline. Soft dependency — if `rhubarb`
 is unavailable or errors, the header is omitted and the audio body is
-unchanged. v1 and v2 emit byte-identical header format, so the companion
-app's decoder needs no changes when switching engines.
+unchanged.
 
-#### TTS provider selection (v1 ↔ v2)
+#### Chatterbox-Turbo tunables
 
-Two TTS engines run in parallel and expose the same `/v1/audio/speech`
-surface. The agent picks one via `TTS_PROVIDER`:
-
-- `v1` → [text-to-speech](services/text-to-speech/README.md) (Kokoro, port 6005) — small, fast, fixed voices
-- `v2` → [text-to-speech-v2](services/text-to-speech-v2/README.md) (Chatterbox-Turbo, port 6015) — expressive, voice cloning, inline paralinguistic tags
-
-Switching providers is a one-line `.env` change and `docker compose up -d
-agent`. Both services keep running so rollback in either direction is
-instant. Companion app, satellites, and dashboard playground all follow
-the active provider automatically because they reach TTS through the
-agent.
-
-```bash
-# Which TTS engine the agent's client + /api/tts/* proxy use.
-TTS_PROVIDER="v2"
-
-# Engine base URLs (defaults work for the in-compose hostnames).
-TTS_V1_BASE_URL="http://text-to-speech:6005"
-TTS_V2_BASE_URL="http://text-to-speech-v2:6015"
-```
-
-#### Chatterbox-Turbo (v2) tunables
+The TTS service is [text-to-speech](services/text-to-speech/README.md)
+(Chatterbox-Turbo, port 6005) — an expressive zero-shot engine with voice
+cloning and inline paralinguistic tags. The agent reaches it via
+`TTS_BASE_URL` (default `http://text-to-speech:6005`, only set for a
+non-standard layout).
 
 ```bash
 # GPU pinning. Chatterbox has no tensor-parallel support — runs on a
 # single GPU. CHATTERBOX_GPU sets CUDA_VISIBLE_DEVICES on the container;
 # inside the container the model always sees the chosen card as cuda:0.
-CHATTERBOX_GPU="2"
+CHATTERBOX_GPU="0"
 CHATTERBOX_DEVICE="cuda:0"
 
 # Default voice. Must match a clip name in /app/voices/ (uploads) or
@@ -145,13 +121,12 @@ CHATTERBOX_VOICE="Olivia"
 
 # Optional text substitutions applied before synthesis. Chatterbox has no
 # lexicon-injection hook upstream, so the workaround is to rewrite the
-# input spelling. Distinct from v1's TTS_AGENT_NAME_PHONEMES which uses
-# IPA — v2 expects plain pseudo-phonetic English. Empty by default;
+# input spelling (plain pseudo-phonetic English). Empty by default;
 # Chatterbox handles most proper nouns reasonably without help.
-#TTS_V2_PRONUNCIATIONS='{"Selene":"Suh-leen"}'
+#TTS_PRONUNCIATIONS='{"Selene":"Suh-leen"}'
 ```
 
-#### Paralinguistic tags (v2 only)
+#### Paralinguistic tags
 
 Chatterbox-Turbo natively renders these inline reaction tags when they
 appear in the input text:
@@ -162,10 +137,8 @@ appear in the input text:
 
 The agent's system prompt is automatically extended with guidance teaching
 the LLM to use these sparingly (see
-`selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM`) —
-but **only when `TTS_PROVIDER=v2`**. Under v1 the addendum is omitted
-because Kokoro would speak the brackets aloud. No env var to toggle this;
-it follows `TTS_PROVIDER` automatically.
+`selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM`). No
+env var toggles this; the addendum is appended to every system prompt.
 
 ```bash
 # Binary location (path or PATH-resolvable name).
@@ -498,7 +471,7 @@ AUTONOMY_DEFAULT_EVENT_RATE_LIMIT=10/min
 
 # Speaker-channel notifier defaults (HA media_player target + voice).
 AUTONOMY_SPEAKER_DEFAULT_DEVICE=""
-AUTONOMY_SPEAKER_DEFAULT_VOICE=af_heart
+AUTONOMY_SPEAKER_DEFAULT_VOICE=Olivia
 AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5
 AUTONOMY_TTS_AUDIO_TTL_SEC=600
 
@@ -773,8 +746,11 @@ The Whisper model is pinned in `services/speech-to-text/app/config.py`
 via `STT_DEVICE` and the source language via `SRC_LAN` above.
 
 #### Text-to-Speech
-Kokoro voice and language come from `TTS_VOICE` / `TTS_LANGUAGE` above.
-The model files are baked into the image. GPU is selected by `TTS_DEVICE`.
+The engine is Chatterbox-Turbo. Default voice comes from `CHATTERBOX_VOICE`
+and the GPU from `CHATTERBOX_GPU` (see [Chatterbox-Turbo tunables](#chatterbox-turbo-tunables)
+above). Voices are reference WAV clips — bundled in the image and
+uploadable at runtime; the model itself is pulled from Hugging Face on
+first start.
 
 ## Advanced Configuration
 

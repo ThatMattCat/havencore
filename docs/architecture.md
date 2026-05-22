@@ -74,13 +74,12 @@ Audio Input → Preprocessing → Whisper Model → Text Output
   Format Detection  Normalization  GPU Inference  Post-processing
 ```
 
-### 4. Text-to-Speech Service (Ports 6005, 6015)
+### 4. Text-to-Speech Service (Port 6005)
 **Purpose**: Audio Generation and Voice Synthesis
-- Two engines run in parallel and expose the same OpenAI-compatible `/v1/audio/speech` surface plus the same `X-Visemes` Rhubarb header:
-  - `text-to-speech` (port 6005) — Kokoro TTS, the v1 fallback engine
-  - `text-to-speech-v2` (port 6015) — Chatterbox-Turbo, the v2 expressive engine with voice cloning and inline paralinguistic tags
-- The agent's TTS client + `/api/tts/*` proxy route to whichever engine is active based on `TTS_PROVIDER` in `.env` (default `v2`). Both services keep running, so switching providers and `docker compose up -d agent` is the rollback path in either direction.
-- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service) — same page works for either engine, plus voice cloning + runtime-default voice management when v2 is active.
+- `text-to-speech` — Chatterbox-Turbo (Resemble AI), an expressive zero-shot engine with voice cloning and inline paralinguistic tags.
+- Exposes an OpenAI-compatible `/v1/audio/speech` surface, an NDJSON per-sentence `/v1/audio/speech/stream` endpoint, and an `X-Visemes` Rhubarb header for avatar lip-sync.
+- The agent's TTS client + `/api/tts/*` proxy reach it at `text-to-speech:6005`.
+- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service) — text-to-speech, voice cloning, and runtime-default voice management.
 
 ### 5. PostgreSQL Database (Port 5432)
 **Purpose**: Persistent Data Storage
@@ -293,7 +292,7 @@ services:
 - **Chat LLM**: vLLM serving `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
 - **Vision LLM**: vLLM serving `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
 - **Speech-to-Text**: Faster-Whisper
-- **Text-to-Speech**: Kokoro TTS
+- **Text-to-Speech**: Chatterbox-Turbo (Resemble AI)
 - **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`
 - **Face detect+embed**: InsightFace `buffalo_l` (RetinaFace + ArcFace R100)
 - **Image generation**: ComfyUI

@@ -62,7 +62,7 @@ delete the row after the first successful fire.
 |---------|-----------|-------------|
 | `signal` *(default)* | `SignalNotifier` → `send_signal_message` MCP tool | Cross-location reach. Reliable when the user is away from home. |
 | `ha_push` | `HAPushNotifier` → `ha_send_notification` MCP tool | Phone/mobile push via Home Assistant's notify service. |
-| `speaker` | `SpeakerNotifier` → Kokoro TTS + `mass_play_announcement` | Voice announcement on a Music Assistant target. Use for in-home reminders. |
+| `speaker` | `SpeakerNotifier` → TTS render + `mass_play_announcement` | Voice announcement on a Music Assistant target. Use for in-home reminders. |
 
 The `to` argument overrides the per-channel recipient (Signal phone
 number, HA `notify.<service>` target, or Music Assistant device name).

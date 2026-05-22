@@ -57,7 +57,7 @@ Camera/sensor events plug into the same surface via a generic `haven/<domain>/<k
 │                └─ Notifier (protocol)                            │
 │                     ├─ SignalNotifier      → send_signal_message │
 │                     ├─ HAPushNotifier      → ha_send_notification│
-│                     ├─ SpeakerNotifier     → Kokoro TTS + MA     │
+│                     ├─ SpeakerNotifier     → Chatterbox + MA     │
 │                     ├─ NtfyFanoutNotifier  → companion-app push  │
 │                     └─ NullNotifier                              │
 │                                                                  │
@@ -179,9 +179,9 @@ AUTONOMY_DEFAULT_QUIET_END=""            # "07:00"
 AUTONOMY_DEFAULT_QUIET_POLICY="defer"    # "defer" | "drop"
 AUTONOMY_DEFAULT_EVENT_RATE_LIMIT="10/min"
 
-# Speaker channel (Kokoro TTS → Music Assistant)
+# Speaker channel (Chatterbox-Turbo TTS → Music Assistant)
 AUTONOMY_SPEAKER_DEFAULT_DEVICE=""       # MA player name
-AUTONOMY_SPEAKER_DEFAULT_VOICE="af_heart"
+AUTONOMY_SPEAKER_DEFAULT_VOICE="Olivia"
 AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5      # 0.0-1.0 (normalized to 0-100)
 AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore entry TTL
 
@@ -252,7 +252,7 @@ Handlers select where a run delivers via the `_notify_channel` field on their re
 |---|---|---|---|
 | `signal` (alias `email`) | `SignalNotifier` | `send_signal_message` MCP tool → `signal-api` container | briefing handler |
 | `ha_push` | `HAPushNotifier` | `ha_send_notification` MCP tool → HA mobile-app integration | anomaly / watch (default) |
-| `speaker` | `SpeakerNotifier` | Kokoro TTS render → `mass_play_announcement` (Music Assistant `Players.play_announcement`) | speak-tier items |
+| `speaker` | `SpeakerNotifier` | TTS render → `mass_play_announcement` (Music Assistant `Players.play_announcement`) | speak-tier items |
 | `ntfy` | `NtfyFanoutNotifier` | direct HTTPS POST to every endpoint registered via `/api/push/register` | (opt-in via handler config) |
 | _other / unset_ | `NullNotifier` | no-op (logged) | observe-tier and tests |
 
@@ -262,7 +262,7 @@ Optional `cfg` keys for the `ntfy` branch:
 - `ntfy_session_id` — populates the wire envelope's `session_id` so a tap on the resulting Android notification deep-links to that chat session in the companion app.
 - `ntfy_type` — one of `autonomy_brief` / `anomaly` / `reminder` / `act_confirm` / `ad_hoc` (default). Reserved for future per-type notification-channel splitting on the phone.
 
-The speaker channel parks Kokoro TTS audio in an in-process `AudioStore` (random `secrets.token_urlsafe(16)` token, TTL default 10 min via `AUTONOMY_TTS_AUDIO_TTL_SEC`) and hands MA a URL of the form `{AGENT_BASE_URL}/api/tts/audio/{token}.mp3`. The dashboard's "Speak to device" card on `/playgrounds/tts` and `/autonomy` uses the same pipeline through `POST /api/tts/announce`. Entries are *not* evicted on first read — Music Assistant (and downstream Chromecast / Google Home players) typically fetch each announcement URL more than once (probe for codec/duration, then stream), so the store serves every request until the TTL passes.
+The speaker channel parks TTS audio in an in-process `AudioStore` (random `secrets.token_urlsafe(16)` token, TTL default 10 min via `AUTONOMY_TTS_AUDIO_TTL_SEC`) and hands MA a URL of the form `{AGENT_BASE_URL}/api/tts/audio/{token}.mp3`. The dashboard's "Speak to device" card on `/playgrounds/tts` and `/autonomy` uses the same pipeline through `POST /api/tts/announce`. Entries are *not* evicted on first read — Music Assistant (and downstream Chromecast / Google Home players) typically fetch each announcement URL more than once (probe for codec/duration, then stream), so the store serves every request until the TTL passes.
 
 ## Reactive trigger matching
 

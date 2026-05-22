@@ -74,7 +74,7 @@ Three sub-problems: hardware, rendering, pushing frames. The last one is mostly 
 
 ## 3. Streaming TTS + Barge-in (HIGH leverage)
 
-**Effort: M.** Current TTS is whole-utterance; Kokoro internally yields chunks but concatenates before responding (`services/text-to-speech/app/main.py`). Refactor to stream chunks over `/ws/chat`, let satellite play as they arrive, wire a "user started talking" signal that cancels in-flight LLM + TTS. Dramatically improves conversational feel and is a prerequisite for the avatar feeling alive during speech.
+**Effort: M.** Per-sentence streaming TTS already exists — the `text-to-speech` service exposes `/v1/audio/speech/stream` (NDJSON), and the dashboard chat + companion app consume it so partial audio reaches clients as it's synthesized. What's left is **barge-in**: extend it to the satellites and wire a "user started talking" signal over `/ws/chat` that cancels the in-flight LLM + TTS. Dramatically improves conversational feel and is a prerequisite for the avatar feeling alive during speech.
 
 ## 4. Presence Awareness ("who's home, which room")
 

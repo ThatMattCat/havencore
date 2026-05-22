@@ -172,25 +172,19 @@ curl -X POST http://localhost/v1/chat/completions \
 
 #### POST /v1/audio/speech
 
-Convert text to spoken audio. Two engines are available and the request
-schema is identical across both — callers don't need to know which is
-active:
+Convert text to spoken audio. The engine is
+[Chatterbox-Turbo](services/text-to-speech/README.md) (port 6005) —
+expressive, zero-shot voice cloning, inline paralinguistic tags. The
+agent's `/api/tts/speak` proxy and the external nginx-fronted
+`/v1/audio/speech` endpoint both reach it.
 
-- **v1** ([Kokoro](services/text-to-speech/README.md), port 6005) — fast, fixed voices
-- **v2** ([Chatterbox-Turbo](services/text-to-speech-v2/README.md), port 6015) — expressive, voice cloning, paralinguistic tags
-
-The agent's `/api/tts/speak` proxy routes to whichever is selected via
-`TTS_PROVIDER` in `.env`. The external nginx-fronted `/v1/audio/speech`
-endpoint stays pinned to v1 (Kokoro on port 6005) for backward
-compatibility with external OpenAI-SDK clients.
-
-**Streaming alternative (v2 only)**: `POST /api/tts/speak/stream` returns
-an NDJSON stream of per-sentence `audio` + `visemes` events instead of a
-single audio blob. First audio reaches the client in ~1 s (vs ~5 s on the
+**Streaming alternative**: `POST /api/tts/speak/stream` returns an NDJSON
+stream of per-sentence `audio` + `visemes` events instead of a single
+audio blob. First audio reaches the client in ~1 s (vs ~5 s on the
 buffered path for a 3-sentence reply), and the viseme timeline rides the
 response body so there's no header-size ceiling. See the entry in the
 [dashboard REST table](#rest-api) and
-[Text-to-Speech v2 → Streaming](services/text-to-speech-v2/README.md#streaming-post-v1audiospeechstream)
+[Text-to-Speech → Streaming](services/text-to-speech/README.md#streaming-post-v1audiospeechstream)
 for the event schema.
 
 **Endpoint**: `POST http://localhost/v1/audio/speech`
@@ -212,11 +206,11 @@ for the event schema.
 |-----------|------|----------|---------|-------------|
 | `input` | string | Yes | - | Text to convert to speech |
 | `model` | string | No | "tts-1" | TTS model (any value accepted) |
-| `voice` | string | No | engine default | Engine-native voice id, or an OpenAI alias (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`). v1 native: `af_heart`, `af_bella`, `am_michael`, … (filtered by `TTS_LANGUAGE`). v2 native: any clip name in the voice registry — `Olivia`, `Cora`, `Adrian`, …, plus any uploaded clone. |
+| `voice` | string | No | engine default | A voice-registry clip name — `Olivia`, `Cora`, `Adrian`, … (any bundled clip or uploaded clone) — or an OpenAI alias (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`). |
 | `response_format` | string | No | "mp3" | Audio format (mp3, wav, opus, aac, flac, pcm) |
-| `speed` | number | No | 1.0 | Playback speed (0.25-4.0). Honored by v1; v2 ignores it (Chatterbox-Turbo has no speed knob) and logs the request. |
+| `speed` | number | No | 1.0 | Accepted for OpenAI compatibility but ignored — Chatterbox-Turbo has no speed knob. The service logs the request when `speed != 1.0`. |
 
-**Voice resolution**: Native ids pass through. OpenAI aliases resolve to the engine's configured default. Unknown names fall back to the default with a warning log. v2 additionally honors a runtime-override default voice persisted in `agent_state.tts_default_voice` (set via `POST /api/tts/voices/default`) which takes precedence over `CHATTERBOX_VOICE`. `GET /v1/voices` returns the accepted catalog.
+**Voice resolution**: Registry clip names pass through. OpenAI aliases resolve to the configured default. Unknown names fall back to the default with a warning log. A runtime-override default voice persisted in `agent_state.tts_default_voice` (set via `POST /api/tts/voices/default`) takes precedence over `CHATTERBOX_VOICE`. `GET /v1/voices` returns the accepted catalog.
 
 **Output format**: `wav`, `flac`, `ogg`, `opus`, `pcm` encode directly. `mp3` and `aac` fall back to WAV in both engines (libsndfile can't encode them without extra codec libs). Content-Type reflects the actual bytes.
 
@@ -415,11 +409,11 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. Rows also carry `cache_read_tokens` and `cache_creation_tokens` (Anthropic prompt-cache counters summed across the turn's LLM calls; `0` for vLLM turns and legacy rows). |
 | `GET`  | `/api/metrics/summary` | Daily aggregates, p95. Also exposes `cache_read_total` / `cache_create_total` (sums of the per-turn cache counters over the window) and a derived `cache_hit_rate = read / (read + create)`, guarded against zero. |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
-| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary). Routes to v1 (Kokoro) or v2 (Chatterbox-Turbo) based on `TTS_PROVIDER`. When `voice` is omitted in the body the agent applies the runtime-override default (see `POST /api/tts/voices/default`) before forwarding upstream. Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. The agent's aiohttp client to the upstream uses `max_field_size=65536` (vs the 8190-byte default) so the `X-Visemes` header doesn't overflow on long utterances. |
-| `POST` | `/api/tts/speak/stream` | **v2 only** — NDJSON streaming synthesis. Same request body as `/api/tts/speak` (`text`, `voice`, `format`, `speed`, `force_voice`), with the same runtime-override voice resolution. Response is `application/x-ndjson`: one JSON event per line, ending with `done` (or `error`). Audio chunks are base64-encoded self-contained WAV files keyed by `seq` and `offset_ms`; visemes ship inline as JSON cue arrays instead of an HTTP header. Returns 501 when `TTS_PROVIDER=v1`. See [Text-to-Speech v2 → Streaming](services/text-to-speech-v2/README.md#streaming-post-v1audiospeechstream) for the full event schema and rationale. |
-| `GET`  | `/api/tts/voices` | Voice catalog + dashboard metadata. Returns `{voices, formats, default, default_override, user_voices, bundled_voices}`. Each entry in `voices` carries `{id, label, kind: "user"\|"bundled", deletable}`. `default_override` is the persisted runtime default (or `null`). Labels reflect the active engine (`(Kokoro)` vs `(Chatterbox-Turbo)`). |
-| `POST` | `/api/tts/voices/upload` | **v2 only** — multipart upload of a reference clip to clone. Form fields: `name` (1-40 chars, `[A-Za-z0-9_-]`) and `file` (WAV/FLAC/OGG, 3-120 s, 10-30 s recommended). Saved under the v2 service's `/app/voices/` (volume-mounted, persisted). Returns `{name, path, duration_sec, original_sample_rate, stored_sample_rate}`. Returns 501 when `TTS_PROVIDER=v1` (Kokoro can't clone). |
-| `DELETE` | `/api/tts/voices/{name}` | **v2 only** — delete an uploaded clone. Bundled voices 403. If the deleted voice was the runtime-override default, the override is cleared automatically. |
+| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) via the Chatterbox-Turbo TTS service. When `voice` is omitted in the body the agent applies the runtime-override default (see `POST /api/tts/voices/default`) before forwarding upstream. Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. The agent's aiohttp client to the upstream uses `max_field_size=65536` (vs the 8190-byte default) so the `X-Visemes` header doesn't overflow on long utterances. |
+| `POST` | `/api/tts/speak/stream` | NDJSON streaming synthesis. Same request body as `/api/tts/speak` (`text`, `voice`, `format`, `speed`, `force_voice`), with the same runtime-override voice resolution. Response is `application/x-ndjson`: one JSON event per line, ending with `done` (or `error`). Audio chunks are base64-encoded self-contained WAV files keyed by `seq` and `offset_ms`; visemes ship inline as JSON cue arrays instead of an HTTP header. See [Text-to-Speech → Streaming](services/text-to-speech/README.md#streaming-post-v1audiospeechstream) for the full event schema and rationale. |
+| `GET`  | `/api/tts/voices` | Voice catalog + dashboard metadata. Returns `{voices, formats, default, default_override, user_voices, bundled_voices}`. Each entry in `voices` carries `{id, label, kind: "user"\|"bundled", deletable}`. `default_override` is the persisted runtime default (or `null`). |
+| `POST` | `/api/tts/voices/upload` | Multipart upload of a reference clip to clone. Form fields: `name` (1-40 chars, `[A-Za-z0-9_-]`) and `file` (WAV/FLAC/OGG, 3-120 s, 10-30 s recommended). Saved under the TTS service's `/app/voices/` (volume-mounted, persisted). Returns `{name, path, duration_sec, original_sample_rate, stored_sample_rate}`. |
+| `DELETE` | `/api/tts/voices/{name}` | Delete an uploaded clone. Bundled voices 403. If the deleted voice was the runtime-override default, the override is cleared automatically. |
 | `POST` | `/api/tts/voices/default` | Set or clear the runtime-override default voice. Body `{"voice": "<name>"}` to set, `{"voice": null}` to clear. Override is persisted in `agent_state.tts_default_voice` and applied by both `/api/tts/speak` and the autonomy speaker channel. Single source of truth for the assistant's voice across chat, autonomy announcements, companion app, and satellites. |
 | `POST` | `/api/stt/transcribe` | Multipart transcription proxy |
 | `POST` | `/api/vision/ask` | Multipart `file` (image OR short video) + `prompt` to the vision LLM (`vllm-vision`). MIME branches the upload to an `image_url` vs `video_url` chat-completion content part; unknown MIME → 415. The legacy `image` field name is still accepted. Returns `{response, latency_ms, usage, model, media_type}`. Used by the dashboard playground. nginx cap on `/api/` is 100 MB. |

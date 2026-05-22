@@ -24,8 +24,7 @@ Each service has its own folder under [`services/`](services/README.md):
 - [vLLM](services/vllm/README.md) — primary LLM backend
 - [LlamaCPP](services/llamacpp/README.md) — alternative LLM backend
 - [Speech-to-Text](services/speech-to-text/README.md) — Faster Whisper STT
-- [Text-to-Speech (v1)](services/text-to-speech/README.md) — Kokoro TTS (fallback engine)
-- [Text-to-Speech v2](services/text-to-speech-v2/README.md) — Chatterbox-Turbo (expressive, voice cloning)
+- [Text-to-Speech](services/text-to-speech/README.md) — Chatterbox-Turbo (expressive, voice cloning, streaming)
 - [vLLM Vision](services/vllm-vision/README.md) — Qwen3-VL image-understanding backend on a dedicated GPU
 - [Text-to-Image](services/text-to-image/README.md) — ComfyUI image generation
 - [Face Recognition](services/face-recognition/README.md) — InsightFace identity for HA cameras
@@ -57,7 +56,7 @@ HavenCore is a fully containerized, self-hosted AI assistant system:
 - Voice activation with wake-word detection
 - Natural-language conversation backed by a local LLM
 - Home Assistant integration for smart-home control
-- Expressive text-to-speech (Chatterbox-Turbo, with Kokoro as fallback) and speech-to-text (Whisper)
+- Expressive text-to-speech (Chatterbox-Turbo) and speech-to-text (Whisper)
 - OpenAI-compatible APIs for external integrations
 - Web search, computation, and image generation tools
 - Docker Compose deployment with GPU support

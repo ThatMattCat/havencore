@@ -52,7 +52,7 @@ havencore/
 │   ├── nginx/               # API gateway
 │   ├── postgres/            # Database initialization
 │   ├── speech-to-text/      # STT service (Faster-Whisper)
-│   ├── text-to-speech/      # TTS service (Kokoro)
+│   ├── text-to-speech/      # TTS service (Chatterbox-Turbo)
 │   ├── text-to-image/       # ComfyUI
 │   ├── vllm/                # Chat LLM backend
 │   ├── vllm-vision/         # Vision LLM backend
