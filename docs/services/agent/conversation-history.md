@@ -114,7 +114,7 @@ The dashboard tab is itself a client and self-identifies the same way. The user 
 
 ### Cold resume
 
-A stored `session_id` can be reloaded into the live pool via `POST /api/conversations/{session_id}/resume`. The pool rehydrates the orchestrator from the latest stored row, re-prepends the L4 memory block via `prepare()` (not `initialize()`, which would clobber the restored messages), and the next turn continues the conversation.
+A stored `session_id` can be reloaded into the live pool via `POST /api/conversations/{session_id}/resume`. The pool rehydrates the orchestrator from the latest stored row, then rebuilds the system prompt (`messages[0]`) from current config via `build_system_prompt()` — the stored system prompt is a snapshot that can lag behind prompt changes (new addenda, an operational-phase shift, a refreshed L4 block). The conversation body (`messages[1:]`) is restored verbatim, and the next turn continues the conversation.
 
 The endpoint returns the post-hydrate orchestrator messages alongside the session id:
 
