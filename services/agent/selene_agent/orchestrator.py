@@ -61,6 +61,13 @@ class EventType(str, Enum):
     # platform intent (e.g. AlarmClock.ACTION_SET_ALARM); older app builds
     # without device_action support drop the event silently.
     DEVICE_ACTION = "device_action"
+    # Live2D facial-expression cue. Emitted once per turn, right before
+    # DONE, when the final assistant message carried an <<EXPRESSION:...>>
+    # sentinel. The /ws/chat consumer forwards it verbatim as
+    # {"type":"avatar_state","expression":"..."}. Like DEVICE_ACTION this
+    # is a companion-app side-channel — clients without avatar support see
+    # an unknown frame and drop it.
+    AVATAR_STATE = "avatar_state"
 
 
 # Tools whose execution should fan out a DEVICE_ACTION event to the device
@@ -196,6 +203,46 @@ def strip_think_blocks(text: str) -> tuple[str, Optional[str]]:
     return cleaned, reasoning
 
 
+# Fixed Live2D expression enum taught to the model in
+# SYSTEM_PROMPT_EXPRESSION_ADDENDUM. Anything outside this set — or a
+# missing sentinel — resolves to "neutral" so a forgetful or inventive
+# model can never drive the avatar into an undefined pose.
+AVATAR_EXPRESSIONS = frozenset({
+    "neutral", "happy", "sad", "surprised", "thinking", "concerned", "playful",
+})
+DEFAULT_AVATAR_EXPRESSION = "neutral"
+
+# Inline expression sentinel: <<EXPRESSION:value>>. Accepted anywhere in
+# the reply, not just trailing — GLM-4.5-Air does not reliably place it.
+# Case-insensitive on the keyword and the value; surrounding whitespace is
+# consumed so stripping a mid-sentence sentinel doesn't leave a gap behind.
+_EXPRESSION_RE = re.compile(
+    r"\s*<<\s*EXPRESSION\s*:\s*([A-Za-z]+)\s*>>\s*", re.IGNORECASE
+)
+
+
+def extract_expression(text: str) -> tuple[str, Optional[str]]:
+    """Pull the ``<<EXPRESSION:value>>`` sentinel out of model content.
+
+    Returns ``(clean_text, expression)``. ``expression`` is ``None`` when
+    no sentinel was present, otherwise a value from ``AVATAR_EXPRESSIONS``
+    (an unrecognized value still strips, but maps to ``"neutral"``). When
+    the model emits more than one sentinel the last one wins. Every
+    sentinel is removed from ``clean_text`` so it can never reach TTS or
+    be persisted in conversation history.
+    """
+    if not text or "<<" not in text:
+        return text, None
+    matches = _EXPRESSION_RE.findall(text)
+    if not matches:
+        return text, None
+    raw = matches[-1].strip().lower()
+    expression = raw if raw in AVATAR_EXPRESSIONS else DEFAULT_AVATAR_EXPRESSION
+    cleaned = _EXPRESSION_RE.sub(" ", text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned, expression
+
+
 class AgentOrchestrator:
     """
     Orchestrates the agent query loop, yielding events for each step.
@@ -290,6 +337,11 @@ class AgentOrchestrator:
         # engine actually renders them. Kokoro would speak the brackets.
         if config.TTS_PROVIDER == "v2":
             system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
+
+        # Expression-cue guidance is engine-agnostic — the Live2D avatar
+        # consumes it whichever TTS engine is active — so unlike the
+        # paralinguistic block it is appended unconditionally.
+        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_EXPRESSION_ADDENDUM
 
         try:
             from selene_agent.utils.l4_context import build_l4_block
@@ -585,6 +637,7 @@ class AgentOrchestrator:
         - TOOL_CALL: Agent is calling a tool
         - TOOL_RESULT: Tool returned a result
         - RESPONSE_CHUNK: Part of the final response (for streaming)
+        - AVATAR_STATE: Facial-expression cue, fired just before DONE
         - DONE: Final response complete
         - ERROR: An error occurred
         """
@@ -618,6 +671,9 @@ class AgentOrchestrator:
         tool_calls_timing: List[Dict[str, Any]] = []
         cache_read_total = 0
         cache_create_total = 0
+        # Latest expression cue parsed off an assistant message this turn.
+        # Drives the AVATAR_STATE event emitted just before DONE.
+        turn_expression: Optional[str] = None
 
         # Per-turn ephemeral retrieval block. Built once at turn start from the
         # raw user message; passed to the LLM on every iteration; never stored
@@ -687,6 +743,19 @@ class AgentOrchestrator:
                             "iteration": iteration,
                         },
                     )
+
+                # Expression cue: pull the <<EXPRESSION:...>> sentinel out of
+                # the content before it can reach TTS or be stored. Run every
+                # iteration so an intermediate tool-call message is cleaned
+                # too; the most recent value drives the AVATAR_STATE event
+                # emitted just before DONE.
+                if assistant_message.content:
+                    clean_content, parsed_expression = extract_expression(
+                        assistant_message.content
+                    )
+                    if parsed_expression is not None:
+                        assistant_message.content = clean_content
+                        turn_expression = parsed_expression
 
                 # Handle models that embed tool calls in content tags
                 if assistant_message.content and not assistant_message.tool_calls:
@@ -817,6 +886,14 @@ class AgentOrchestrator:
                         "cache_creation_tokens": cache_create_total,
                     }
                     yield AgentEvent(type=EventType.METRIC, data=metric_payload)
+                    # Pose the avatar before audio starts — fire the cue
+                    # just before DONE so a client can switch expression
+                    # while it kicks off TTS on the (already cleaned) text.
+                    if turn_expression is not None:
+                        yield AgentEvent(
+                            type=EventType.AVATAR_STATE,
+                            data={"expression": turn_expression},
+                        )
                     yield AgentEvent(
                         type=EventType.DONE,
                         data={"content": assistant_message.content},

@@ -174,6 +174,15 @@ export function connect() {
 			return;
 		}
 
+		// Live2D facial-expression cue (Phase C). The dashboard has no avatar
+		// rig yet, so this frame is logged and dropped — the companion app's
+		// Live2D overlay is the real consumer. Logged rather than silently
+		// swallowed so the channel is visible when debugging the WS stream.
+		if (data.type === 'avatar_state') {
+			console.debug('[chat] avatar_state', data.expression);
+			return;
+		}
+
 		currentEvents.push(data);
 
 		if (data.type === 'metric') {

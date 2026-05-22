@@ -387,6 +387,8 @@ class SessionOrchestratorPool:
                         system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_OPERATING_ADDENDUM
                     if config.TTS_PROVIDER == "v2":
                         system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
+                    # Engine-agnostic — appended unconditionally (see initialize()).
+                    system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_EXPRESSION_ADDENDUM
                     block = await build_l4_block()
                     if block:
                         system_prompt = block + "\n\n" + system_prompt

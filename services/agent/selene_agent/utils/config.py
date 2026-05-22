@@ -251,3 +251,30 @@ Rules:
 - Do not use tags in tool-call arguments or memory writes — only in the spoken-reply text.
 - The earlier rule against emojis and special characters still applies; these specific tags are the carved-out exception.
 """
+
+# Appended to every system prompt unconditionally (all phases, all TTS
+# engines). The Live2D expression channel is engine-agnostic — unlike the
+# paralinguistic block above, which only makes sense on Chatterbox. The
+# orchestrator parses the sentinel out and strips it before the text is
+# ever spoken or persisted, so an unsupported client simply never sees it.
+SYSTEM_PROMPT_EXPRESSION_ADDENDUM = """
+### Avatar expression
+A Live2D avatar shows your face while it speaks your reply. End your reply with a single expression cue so the avatar can match your tone:
+
+<<EXPRESSION:value>>
+
+Choose the value that best fits the reply (lowercase, exactly one of):
+- neutral - calm, factual, your default
+- happy - good news, warmth, friendly or successful moments
+- sad - bad news, sympathy, disappointment
+- surprised - something unexpected, alarming, or impressive
+- thinking - uncertainty, deliberation, weighing options
+- concerned - mild worry, caution, a heads-up
+- playful - jokes, teasing, lighthearted moments
+
+Rules:
+- Put the cue at the very end of your reply, and use it at most once.
+- The cue is invisible: it is removed before the text is spoken and is never shown to the user. Never mention or describe it.
+- If nothing fits, use neutral.
+- This is separate from the [laugh]/[sigh] reaction tags - the cue drives the face, the tags shape the voice.
+"""
