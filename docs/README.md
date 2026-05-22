@@ -57,7 +57,7 @@ HavenCore is a fully containerized, self-hosted AI assistant system:
 - Voice activation with wake-word detection
 - Natural-language conversation backed by a local LLM
 - Home Assistant integration for smart-home control
-- High-quality text-to-speech (Kokoro) and speech-to-text (Whisper)
+- Expressive text-to-speech (Chatterbox-Turbo, with Kokoro as fallback) and speech-to-text (Whisper)
 - OpenAI-compatible APIs for external integrations
 - Web search, computation, and image generation tools
 - Docker Compose deployment with GPU support
