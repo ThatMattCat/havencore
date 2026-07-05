@@ -829,7 +829,45 @@ class AgentOrchestrator:
 
                     for tool_call in assistant_message.tool_calls:
                         function_name = tool_call.function.name
-                        function_args = json.loads(tool_call.function.arguments)
+                        try:
+                            function_args = json.loads(tool_call.function.arguments)
+                        except (json.JSONDecodeError, TypeError) as parse_err:
+                            # Malformed/truncated arguments (e.g. the response was
+                            # cut off at max_tokens mid-tool-call). Do NOT let this
+                            # crash the turn: the assistant message with its
+                            # tool_calls is already in self.messages, so we must
+                            # append a matching tool response for every tool_call
+                            # or the next turn on this session sends an invalid
+                            # message sequence (assistant tool_calls not followed
+                            # by tool results) that the provider rejects.
+                            logger.warning(
+                                "Malformed tool-call arguments for "
+                                f"{function_name} (id={tool_call.id}): {parse_err}. "
+                                f"Raw={tool_call.function.arguments!r}"
+                            )
+                            err_result = json.dumps({
+                                "error": "invalid_tool_arguments",
+                                "detail": (
+                                    "Arguments were not valid JSON "
+                                    f"({parse_err}); the call was skipped. "
+                                    "Retry with well-formed arguments."
+                                ),
+                            })
+                            yield AgentEvent(
+                                type=EventType.TOOL_RESULT,
+                                data={
+                                    "tool": function_name,
+                                    "result": err_result,
+                                    "id": tool_call.id,
+                                    "ms": 0,
+                                },
+                            )
+                            self.messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": err_result,
+                            })
+                            continue
 
                         yield AgentEvent(
                             type=EventType.TOOL_CALL,

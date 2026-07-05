@@ -450,6 +450,11 @@ class AutonomyEngine:
                     await autonomy_db.finalize_run(
                         run_id, {"notified_via": notified_via}
                     )
+                # Advance the schedule like every other terminal branch — a
+                # cron item parked awaiting confirmation must not keep re-firing
+                # (re-planning + re-notifying) on every dispatch tick while the
+                # user has yet to respond.
+                await self._advance(item, triggered_at)
                 return {
                     "status": "awaiting_confirmation",
                     "run_id": run_id,

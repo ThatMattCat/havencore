@@ -162,7 +162,7 @@ api/companion.py
 orchestrator (await returns)
   • take_photo: returns {status: "captured", image_url, ...} to LLM
   • identify_object_in_photo / read_text_from_image:
-      calls api/vision._call_vision(image_url, prompt) directly in-process
+      calls orchestrator._ask_vision(image_url, prompt) → api/vision._call_vision(messages, ...) in-process
       returns {status: "captured_and_analyzed", image_url, identification|text}
   • who_is_in_view:
       reads bytes from BlobStore (in-process, no self-HTTP)
@@ -180,10 +180,10 @@ short-circuits MCP for tools in `COMPANION_UPLOAD_TOOLS`: it routes
 them through `_handle_companion_camera()`, which keeps the future
 registry and blob store in the agent process where the upload
 endpoint lives. The MCP `take_photo` / `identify_object_in_photo` /
-`read_text_from_image` declarations still exist so the LLM
-discovers the tools via the normal MCP `tools/list` handshake; their
-handlers are benign-error fallbacks in case anything ever invokes
-the MCP path directly.
+`read_text_from_image` / `who_is_in_view` declarations still exist so
+the LLM discovers the tools via the normal MCP `tools/list`
+handshake; their handlers are benign-error fallbacks in case anything
+ever invokes the MCP path directly.
 
 ### Vision chaining
 
@@ -334,8 +334,9 @@ for the full reference):
   back. The actual side-effect is the device firing the intent on
   receipt of the `device_action` frame.
 - **Camera-tool MCP handlers are benign-error fallbacks.** The
-  orchestrator routes `take_photo`, `identify_object_in_photo`, and
-  `read_text_from_image` around MCP entirely (see [Camera tools →
+  orchestrator routes all four camera tools — `take_photo`,
+  `identify_object_in_photo`, `read_text_from_image`, and
+  `who_is_in_view` — around MCP entirely (see [Camera tools →
   Why the upload future lives in the agent process](#why-the-upload-future-lives-in-the-agent-process-not-this-mcp-module)).
   The MCP handlers exist so the tool declarations surface to the LLM
   via the normal MCP `tools/list` discovery path; they return a

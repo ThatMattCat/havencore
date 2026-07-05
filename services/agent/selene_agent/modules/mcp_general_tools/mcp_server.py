@@ -374,8 +374,10 @@ class GeneralToolsServer:
                     if not filename or filename == '/':
                         filename = 'attachment'
                 
-                # Read content with size limit (e.g., 50MB)
-                max_size = 50 * 1024 * 1024  # 50MB
+                # Read content with size limit — align with the Signal cap so a
+                # URL attachment isn't rejected for a size a local-path file of
+                # the same bytes would pass (this helper only feeds Signal sends).
+                max_size = SIGNAL_MAX_ATTACHMENT_BYTES
                 content = b''
                 bytes_read = 0
                 

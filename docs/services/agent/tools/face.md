@@ -24,7 +24,7 @@ to guess the exact entity_id.
 
 | Tool | Purpose |
 |------|---------|
-| `face_who_is_at(camera)` | Most recent detection on `camera` in the last 60 s. Returns `{name, confidence, captured_at}` (`name="unknown"` if a face was seen but didn't match). |
+| `face_who_is_at(camera)` | Most recent detection on `camera` in the last 60 s. On a hit returns `{camera, found: true, name, person_id, confidence, captured_at}` (`name="unknown"` if a face was seen but didn't match); when there's no detection in the window it returns `{camera, found: false, message}`. |
 | `face_recent_visitors(hours=24, camera=None)` | List of detections newest-first; up to 50 entries. Optional camera filter. |
 | `face_list_known_people()` | Every enrolled person with `image_count` + `access_level`. Use before enrolling to avoid duplicates. |
 | `face_enroll_person(name, source)` | Add a face image to the gallery. `source` is either `"camera:<entity_id>"` (live snapshot) or an `http(s)://` URL. New people are created on the fly when `name` doesn't fuzzy-match an existing one. |
@@ -52,13 +52,16 @@ ambiguity now surfaces explicitly.)
 The substring + `get_close_matches` cutoff is intentionally generous:
 empirically every natural-language LLM query (`"front door"`,
 `"frontdoor"`, `"front_door"`, `"front"`) needed cutoff ≤ 0.3 to resolve
-against entity_ids like `camera.front_duo_3_clear`.
+against entity_ids like `camera.front_duo_3_fluent`.
 
 ## Configuration
 
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `FACE_REC_API_BASE` | `http://face-recognition:6006` | Base URL the MCP shim hits. The default works for the standard compose layout. |
+| `FACE_REC_HTTP_TIMEOUT_SEC` | `20` | Timeout (seconds) for HTTP calls to the face-recognition service. |
+| `FACE_REC_URL_DOWNLOAD_TIMEOUT_SEC` | `15` | Timeout (seconds) for downloading an enrollment image from an `http(s)://` URL. |
+| `FACE_REC_URL_DOWNLOAD_MAX_BYTES` | `10485760` | Max bytes for a URL enrollment download (10 MB) — the source of the 10 MB cap noted below. |
 
 The agent spawns the server via `MCP_SERVERS` in `.env`:
 
@@ -98,7 +101,7 @@ The system prompt encourages composing these tools naturally:
 - **"Who's been around today?"** → `face_recent_visitors(hours=24)`
 - **"Add this person — they're called Sam"** → check
   `face_list_known_people()`, then `face_enroll_person("Sam",
-  "camera:camera.front_duo_3_clear")`
+  "camera:camera.front_duo_3_fluent")`
 - **"Mark Sam as a resident"** → `face_set_access_level("Sam", "resident")`
 
 ## Troubleshooting

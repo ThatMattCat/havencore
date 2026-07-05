@@ -32,14 +32,20 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
     try:
-        return json.loads(text.strip())
+        obj = json.loads(text.strip())
+        if isinstance(obj, dict):
+            return obj
+        # Valid JSON but not an object (e.g. the model wrapped it in a
+        # top-level array) — fall through to the regex, and never return a
+        # non-dict that would AttributeError on the caller's .get().
     except Exception:
         pass
     m = _JSON_RE.search(text)
     if not m:
         return None
     try:
-        return json.loads(m.group(0))
+        obj = json.loads(m.group(0))
+        return obj if isinstance(obj, dict) else None
     except Exception:
         return None
 

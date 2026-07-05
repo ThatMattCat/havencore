@@ -62,14 +62,22 @@ class MassAgent:
     async def connect(self) -> None:
         if self._client is not None:
             return
-        self._session = aiohttp.ClientSession()
-        self._client = MusicAssistantClient(self._url, self._session, token=self._token)
-        await self._client.connect()
-        self._init_ready = asyncio.Event()
-        self._listen_task = asyncio.create_task(
-            self._client.start_listening(self._init_ready)
-        )
-        await self._init_ready.wait()
+        session = aiohttp.ClientSession()
+        try:
+            self._session = session
+            self._client = MusicAssistantClient(self._url, session, token=self._token)
+            await self._client.connect()
+            self._init_ready = asyncio.Event()
+            self._listen_task = asyncio.create_task(
+                self._client.start_listening(self._init_ready)
+            )
+            await self._init_ready.wait()
+        except Exception:
+            # Don't leak the just-opened ClientSession if MA is unreachable.
+            self._client = None
+            self._session = None
+            await session.close()
+            raise
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -169,12 +177,18 @@ class MassAgent:
         if queue is None:
             return {"player": player.name, "state": "idle", "current": None, "upcoming": []}
 
-        items = await client.player_queues.get_queue_items(
-            player.player_id, limit=max(item_limit + 1, 1),
-        )
         current_idx = queue.current_index if queue.current_index is not None else 0
-        current = items[current_idx] if 0 <= current_idx < len(items) else None
-        upcoming = items[current_idx + 1 : current_idx + 1 + item_limit] if current else items[:item_limit]
+        current_idx = max(current_idx, 0)
+        # Fetch from the current index using the ACTIVE queue's id. For a
+        # synced/grouped player the active queue belongs to the group leader, so
+        # queue.queue_id != player.player_id; and current_index is an ABSOLUTE
+        # index into the full queue, so we must offset the fetch by it rather
+        # than slice an offset-0 window.
+        items = await client.player_queues.get_queue_items(
+            queue.queue_id, limit=max(item_limit + 1, 1), offset=current_idx,
+        )
+        current = items[0] if items else None
+        upcoming = items[1 : 1 + item_limit]
 
         return {
             "player": player.name,

@@ -27,7 +27,7 @@ as the vector.
 | Tool | Purpose |
 |------|---------|
 | `create_memory(text, importance?, tags?, expires_in_days?)` | Embed `text` and upsert a new point into the collection. `importance` is `1..5` (default `3`). `tags` is a list of strings. `expires_in_days` adds a future `expires` timestamp used by the search-time filter. Returns the generated UUID. |
-| `search_memories(query, limit?, days_back?)` | Semantic search for the most similar memories. `limit` is `1..20` (default `5`). `days_back` restricts to entries created within the last N days. Expired entries (where `expires` has passed) are always excluded. Returns `id`, `text`, `timestamp`, `importance`, `tags`, and `relevance_score`. |
+| `search_memories(query, limit?, days_back?)` | Semantic search for the most similar memories. `limit` is `1..20` (default `5`). `days_back` restricts to entries created within the last N days. Expired entries (where `expires` has passed) and `L4`-tier points (already injected into every system prompt) are always excluded. Each hit returns `id`, `text`, `timestamp`, `importance`, `tags`, `tier`, `source_ids`, `access_count`, `last_accessed_at`, `importance_effective`, `relevance_score`, `adjusted_score`, and `expires` (when the point has one); the top-level response is `{success, query, count, results}`. |
 | `delete_memory(memory_id)` | Hard-delete a stored point by UUID. The expected flow is `search_memories` → read the `id` of the matching hit → `delete_memory(id)`. If the deleted point's tier was `L4`, the server also invalidates the L4 block cache so the next prompt rebuild drops it. Returns `{success, memory_id, tier_deleted}`. |
 
 ## Point payload schema
@@ -38,11 +38,23 @@ as the vector.
   "timestamp": "2026-04-12T12:34:56+00:00",
   "importance": 3,
   "tags": ["user", "preference"],
-  "tier": "L2",
   "source": "mcp_server",
+  "tier": "L2",
+  "source_ids": [],
+  "access_count": 0,
+  "last_accessed_at": null,
+  "importance_effective": 3,
+  "pending_l4_approval": false,
+  "proposed_at": null,
+  "proposal_rationale": null,
   "expires": "2026-07-12T12:34:56+00:00"
 }
 ```
+
+`source_ids`, `access_count`, `last_accessed_at`, `importance_effective`,
+`pending_l4_approval`, `proposed_at`, and `proposal_rationale` are the v2
+access-tracking / L4-proposal fields — `create_memory` writes all of them
+on every MCP create.
 
 `expires` is only written when `expires_in_days` is passed. The search
 filter uses `must_not` on `expires.lte=<now>` to exclude past entries —
@@ -103,6 +115,10 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 - **Expired points are filtered at search time, not deleted.** The server
   never prunes expired points on its own. If the collection grows big
   enough to matter, schedule a Qdrant-side cleanup externally.
+- **`L4`-tier points are excluded from `search_memories`.** A `must_not`
+  on `tier == "L4"` drops them from semantic retrieval; they are surfaced
+  via system-prompt injection instead, so returning them here would only
+  waste token budget.
 - **`days_back` filters on `timestamp`, not relevance.** Combined with the
   expiry filter this gives you "recent non-expired memories". Both
   filters compose via Qdrant's `must` / `must_not`.
@@ -129,10 +145,15 @@ Typical flows:
    because models otherwise tend to "remember" the delete request
    instead of acting on it.
 
-Keep this in mind when tuning prompts or debugging retrieval: hits come
-back in `relevance_score` order and low scores are often still returned.
-The agent is expected to judge relevance itself rather than trusting the
-top-k blindly.
+Keep this in mind when tuning prompts or debugging retrieval: the server
+over-fetches 2x (`limit * 2`) candidates, multiplies each raw
+`relevance_score` by a per-tier weight (L2 and L4 = 1.0, L3 boosted by
+`MEMORY_L3_RANK_BOOST`, default 1.2), then sorts by the resulting
+`adjusted_score` descending and truncates to `limit`. So hits come back
+in `adjusted_score` order — not raw `relevance_score` order whenever L3
+rows are in the candidate set — though the raw `relevance_score` is still
+included on each hit. Low scores are often still returned; the agent is
+expected to judge relevance itself rather than trusting the top-k blindly.
 
 ## Troubleshooting
 

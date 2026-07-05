@@ -2,6 +2,9 @@
 Status API router — system health, MCP status, tool listing.
 """
 
+import asyncio
+import functools
+
 import requests as http_requests
 from fastapi import APIRouter, Request
 
@@ -35,11 +38,18 @@ async def get_system_status(req: Request):
         },
     }
 
-    # Proxy vLLM model info
-    try:
+    # Proxy vLLM model info — the sync request runs in a thread so a slow/
+    # unreachable vLLM can't block the event loop (and every concurrent turn).
+    def _probe_llm():
         resp = http_requests.get(f"{config.LLM_API_BASE.rstrip('/')}/models", timeout=3)
         resp.raise_for_status()
-        status["llm"] = {"healthy": True, "models": resp.json()}
+        return resp.json()
+
+    try:
+        models = await asyncio.get_running_loop().run_in_executor(
+            None, functools.partial(_probe_llm)
+        )
+        status["llm"] = {"healthy": True, "models": models}
     except Exception as e:
         status["llm"] = {"healthy": False, "error": str(e)}
 

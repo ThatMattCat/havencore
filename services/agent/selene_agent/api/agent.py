@@ -99,20 +99,23 @@ async def set_llm_provider(body: LLMProviderPayload):
             f"(expected {list(agent_state.VALID_LLM_PROVIDERS)})",
         )
 
-    updated_at = await agent_state.set_llm_provider_name(body.provider)
-
+    # Build the provider BEFORE persisting so a misconfigured provider (e.g.
+    # anthropic with no API key) fails cleanly without leaving the DB pointing
+    # at a provider that won't build on the next restart / GET.
     model: Optional[str] = None
     try:
         from selene_agent.selene_agent import app
         from selene_agent.providers import build_provider
         vllm_model = getattr(app.state, "model_name", None) or "gpt-3.5-turbo"
         provider = build_provider(body.provider, vllm_model=vllm_model)
-        app.state.provider = provider
-        model = getattr(provider, "model", None)
-        logger.info(f"LLM provider swapped to {provider.name} ({model})")
     except Exception as e:
-        logger.error(f"failed to swap provider to {body.provider!r}: {e}")
+        logger.error(f"failed to build provider {body.provider!r}: {e}")
         raise HTTPException(500, f"failed to swap provider: {e}")
+
+    updated_at = await agent_state.set_llm_provider_name(body.provider)
+    app.state.provider = provider
+    model = getattr(provider, "model", None)
+    logger.info(f"LLM provider swapped to {provider.name} ({model})")
 
     return {
         "provider": body.provider,

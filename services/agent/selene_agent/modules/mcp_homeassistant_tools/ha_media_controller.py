@@ -49,6 +49,43 @@ def _normalize_volume(value: Any) -> float:
     return v / 100.0 if v > 1.0 else v
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce the tool's number|string|boolean `value` into a real bool so
+    'off'/0/'false' actually disable a toggle (the tool description advertises
+    boolean-or-string values, so 'turn off shuffle' must not enable it)."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    s = str(value).strip().lower()
+    if s in ("true", "on", "1", "yes", "enable", "enabled", "shuffle"):
+        return True
+    if s in ("false", "off", "0", "no", "disable", "disabled", "none"):
+        return False
+    return default
+
+
+def _coerce_repeat(value: Any) -> str:
+    """Map the tool's boolean/string `value` onto HA's off|all|one. A boolean
+    True means repeat-all, False means off (so 'stop repeating' disables it)."""
+    if isinstance(value, bool):
+        return "all" if value else "off"
+    if value is None:
+        return "all"
+    s = str(value).strip().lower()
+    if s in ("off", "all", "one"):
+        return s
+    if s in ("none", "false", "0", "no", "disable", "disabled"):
+        return "off"
+    if s in ("on", "true", "1", "yes", "enable", "enabled"):
+        return "all"
+    if s in ("single", "track", "one_track"):
+        return "one"
+    return "all"
+
+
 # action -> (HA media_player service name, payload builder from the caller-supplied `value`)
 _SERVICE_MAP = {
     ActionType.PLAY: ("media_play", lambda v: {}),
@@ -58,8 +95,8 @@ _SERVICE_MAP = {
     ActionType.NEXT: ("media_next_track", lambda v: {}),
     ActionType.PREVIOUS: ("media_previous_track", lambda v: {}),
     ActionType.SEEK: ("media_seek", lambda v: {"seek_position": int(v) if v is not None else 0}),
-    ActionType.SHUFFLE: ("shuffle_set", lambda v: {"shuffle": bool(v) if isinstance(v, bool) else True}),
-    ActionType.REPEAT: ("repeat_set", lambda v: {"repeat": v if v in ("off", "all", "one") else "all"}),
+    ActionType.SHUFFLE: ("shuffle_set", lambda v: {"shuffle": _coerce_bool(v, default=True)}),
+    ActionType.REPEAT: ("repeat_set", lambda v: {"repeat": _coerce_repeat(v)}),
     ActionType.VOLUME_SET: ("volume_set", lambda v: {"volume_level": _normalize_volume(v)}),
     ActionType.VOLUME_UP: ("volume_up", lambda v: {}),
     ActionType.VOLUME_DOWN: ("volume_down", lambda v: {}),
@@ -138,6 +175,12 @@ class MediaController:
 
     async def _resolve_device(self, device: Optional[str]) -> Optional[str]:
         if not device:
+            # Auto-detect (as the tool schema promises): if exactly one
+            # media_player exists, target it; otherwise the caller must name one.
+            status = await self.get_media_player_statuses()
+            players = status.get("players", []) if status.get("success") else []
+            if len(players) == 1:
+                return players[0]["entity_id"]
             return None
         if device.startswith("media_player."):
             return device

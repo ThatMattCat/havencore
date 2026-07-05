@@ -77,10 +77,11 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 ## Internals worth knowing
 
 - **MQTT connection is eager.** `HACamSnapper.__init__` calls
-  `mqtt_client.connect(...)` synchronously on module import. If the
-  broker isn't up yet, the constructor fails and the server won't start
-  cleanly. Compose dependencies are the mitigation — the
-  `mosquitto` service should start before the agent.
+  `mqtt_client.connect(...)` synchronously when `MQTTServer` is
+  constructed at server startup (in `main()`). If the broker isn't up
+  yet, the constructor fails and the server won't start cleanly. Compose
+  dependencies are the mitigation — the `mosquitto` service should start
+  before the agent.
 - **`loop_start()` runs in a worker thread.** The paho client uses its
   own thread for MQTT I/O; the MCP server uses asyncio for tool dispatch.
   Cross-thread signaling happens via an `asyncio.Future`

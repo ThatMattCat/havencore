@@ -2,13 +2,13 @@
 
 ## Overview
 
-HavenCore stores conversation histories to PostgreSQL whenever a pooled session's messages would otherwise be lost — on idle timeout (summarize-and-continue), LRU eviction, or agent shutdown. Rows are keyed by `session_id`, so a single external session can produce multiple stored rows over its lifetime (one per reset).
+HavenCore stores conversation histories to PostgreSQL whenever a pooled session's messages would otherwise be lost — on idle timeout (summarize-and-continue), context-size overflow (summarize-and-continue), LRU eviction, or agent shutdown. Rows are keyed by `session_id`, so a single external session can produce multiple stored rows over its lifetime (one per reset).
 
 ## Features
 
 - **Automatic Storage**: The agent flushes conversations to PostgreSQL before they are dropped or reset. The `metadata.reset_reason` field records which trigger fired.
 - **Rich Metadata**: Each stored conversation includes metadata such as:
-  - Reset reason — one of `idle_timeout_summarize` (idle sweep; see below), `context_size_summarize` (size sweep; see below), `lru_eviction` (pool at capacity), `lru_eviction_size` (oversized eviction routed through summarize-and-reset), or `shutdown_flush` (agent stopping)
+  - Reset reason — one of `idle_timeout_summarize` (idle sweep; see below), `context_size_summarize` (size sweep; see below), `lru_eviction` (pool at capacity), `lru_eviction_size` (oversized eviction routed through summarize-and-reset), `shutdown_flush` (agent stopping), or `shutdown_flush_size` (oversized session summarized at shutdown)
   - Message count
   - Last query timestamp
   - Agent name
@@ -16,7 +16,7 @@ HavenCore stores conversation histories to PostgreSQL whenever a pooled session'
   - `device_name` — human-readable label of the satellite/client driving the session (e.g. `"Kitchen Speaker"`); `null` if the client never sent one
   - `rolling_summary` — compact recap written by any summarize-and-reset path (idle sweep, size sweep, or oversized-eviction bypass; `null` on plain LRU/shutdown flushes or when the summary LLM call fails)
   - `tail_exchanges_kept` — how many user/assistant pairs were carried forward
-  - Trace ID for debugging
+  - `idle_seconds` / `timeout_seconds` — added by the summarize-and-reset paths only
   - Storage timestamp
 
 ## Session identity
@@ -80,7 +80,7 @@ A session is flushed to PostgreSQL whenever its messages would be lost. Four tri
    When a sweep-driven compaction fires, the pool publishes a `{"type":"summary_reset","reason":"idle_timeout_summarize","summary":...}` frame over its per-session pub/sub queue, which any connected `/ws/chat` client drains alongside its normal receive loop. Compactions detected at turn start (via `_check_session_timeout`) are surfaced the same way, emitted inline as a `SUMMARY_RESET` event at the top of `run()`. Both paths carry identical shape; the Chat UI renders an expandable "Conversation summarized" marker so the user sees when (and what) context was compressed instead of a silent history rewrite.
 
    A session is only eligible for summarize-reset once per user-active period: the sweep gates on whether a user turn has happened since the last reset. Without that gate, the post-reset `last_query_time` would still appear expired on the very next sweep tick and the session would be re-summarized every interval forever.
-2. **Context-size sweep (summarize-and-continue)** — the same sweep + per-turn check that handles idle also gates on token budget. The threshold is computed per-orchestrator from the active provider's `max_model_len` (vLLM reports it via `/v1/models`; Anthropic uses a static prefix-keyed map; see [`configuration.md`](../../configuration.md#agent-runtime-tuning) for the env vars). When a session's serialized message bytes exceed `CONVERSATION_CONTEXT_LIMIT_FRACTION × max_model_len` — or the absolute `CONVERSATION_CONTEXT_LIMIT_TOKENS` override when that is > 0 — `_summarize_and_reset(reason="context_size_summarize")` runs the same persist-and-reinitialize path as the idle trigger. The corresponding `summary_reset` frame carries `reason: "context_size_summarize"`.
+2. **Context-size sweep (summarize-and-continue)** — the same sweep + per-turn check that handles idle also gates on token budget. The threshold is computed per-orchestrator from the active provider's `max_model_len` (vLLM reports it via `/v1/models`; Anthropic uses a static prefix-keyed map; see [`configuration.md`](../../configuration.md#agent-runtime-tuning) for the env vars). When a session's estimated token count (chars/4 over the JSON-serialized messages) exceeds `CONVERSATION_CONTEXT_LIMIT_FRACTION × max_model_len` — or the absolute `CONVERSATION_CONTEXT_LIMIT_TOKENS` override when that is > 0 — `_summarize_and_reset(reason="context_size_summarize")` runs the same persist-and-reinitialize path as the idle trigger. The corresponding `summary_reset` frame carries `reason: "context_size_summarize"`.
 
    Size and idle are independent axes. A dashboard session running with `idle_timeout=-1` ("never auto-summarize") will never qualify on idle but **will** size-summarize once it crosses the budget — unbounded message growth would otherwise blow the context window regardless of the idle policy. The size check is skipped on autonomy turns (single-shot orchestrators flip `context_size_check_enabled = False`) and silently no-ops when the active provider can't report a `max_model_len` and no absolute override is set.
 3. **LRU eviction** — when the pool hits `max_size` (default 64) and a new session is admitted, the least-recently-used entry is flushed and removed from memory. Its `session_id` persists in the DB and can be cold-resumed later. If the evicted session is over the size budget at flush time, `_flush_one` routes it through `_summarize_and_reset(reason="lru_eviction_size")` instead of writing the raw bloated buffer — otherwise cold-resume would just replay the bloat on the next visit.
@@ -171,7 +171,8 @@ FROM conversation_histories
 WHERE metadata->>'reset_reason' IN (
         'idle_timeout_summarize',
         'context_size_summarize',
-        'lru_eviction_size'
+        'lru_eviction_size',
+        'shutdown_flush_size'
       )
 ORDER BY created_at DESC
 LIMIT 20;

@@ -14,7 +14,7 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 ┌─────────────────┴───────────────┴─────────────┴─────────────────┐
 │                      Nginx Gateway (80)                        │
 ├─────────────────────────────────────────────────────────────────┤
-│                    Load Balancer & Router                      │
+│                    Reverse Proxy & Router                      │
 └─────┬─────────┬─────────────┬─────────────┬───────────────────┘
       │         │             │             │
 ┌─────▼─────┐ ┌─▼───────┐ ┌───▼─────┐ ┌─────▼─────┐
@@ -25,16 +25,16 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 ┌─────▼─────────────────────────────────────▼─────┐
 │              Backend Services                   │
 ├─────────────────────────────────────────────────┤
-│ vLLM/LlamaCPP (8000) │ PostgreSQL │ Qdrant     │
+│ vLLM (8000) │ PostgreSQL │ Qdrant              │
 └─────────────────────────────────────────────────┘
 ```
 
 ## Core Services
 
 ### 1. Nginx Gateway (Port 80)
-**Purpose**: API Gateway and Load Balancer
+**Purpose**: API Gateway and Reverse Proxy
 - Routes external requests to appropriate services
-- Provides SSL termination and rate limiting
+- Reverse-proxies to backend services (SSL termination and rate limiting are not configured by default)
 - Handles CORS and request preprocessing
 - Serves as single entry point for all client interactions
 
@@ -96,20 +96,20 @@ conversation_histories (
 )
 ```
 
-### 6. LLM Backend Services (Port 8000)
+### 6. LLM Backend Services (Ports 8000, 8001)
 **Purpose**: Large Language Model Inference
 
-#### vLLM Backend (Default)
+#### vLLM Chat Backend (Port 8000)
 - High-performance inference server
 - Optimized for throughput and latency
 - Supports AWQ quantized models
-- GPU memory optimization
+- Serves `GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
 
-#### LlamaCPP Backend (Alternative)
-- CPU-focused inference option
-- Lower memory requirements
-- GGUF model format support
-- Suitable for resource-constrained environments
+#### vLLM Vision Backend (Port 8001)
+- Serves `Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
+- Pinned to a dedicated GPU via `CUDA_VISIBLE_DEVICES`
+- Backs the vision MCP tools (describe / OCR / identify / compare images)
+- All tunables exposed via `VISION_*` env vars
 
 ### 7. Vector Database (Qdrant - Port 6333)
 **Purpose**: Embeddings and Semantic Search
@@ -234,10 +234,10 @@ services:
 ## Scalability Considerations
 
 ### Horizontal Scaling
-- **Load Balancing**: Nginx distributes requests across service instances
+*Potential scaling directions, not the default single-instance deployment — none of the following are configured out of the box.*
+- **Load Balancing**: Nginx could distribute requests across replicated service instances (single-target reverse proxy today)
 - **Service Replication**: Multiple instances of compute-heavy services
 - **Database Clustering**: PostgreSQL read replicas for scaling reads
-- **Cache Layers**: Redis for session and response caching
 
 ### Vertical Scaling
 - **GPU Optimization**: Efficient GPU memory utilization

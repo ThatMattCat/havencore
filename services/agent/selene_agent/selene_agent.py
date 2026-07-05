@@ -514,21 +514,35 @@ async def health_check():
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
         from selene_agent.api.memory import _qdrant_client, _collection
-        qc = _qdrant_client()
-        def _c(flt):
-            return qc.count(collection_name=_collection(), count_filter=flt, exact=True).count
-        payload["memory_stats"] = {
-            "l2": _c(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))])),
-            "l3": _c(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])),
-            "l4": _c(Filter(must=[
-                FieldCondition(key="tier", match=MatchValue(value="L4")),
-                FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
-            ])),
-            "pending": _c(Filter(must=[
-                FieldCondition(key="tier", match=MatchValue(value="L3")),
-                FieldCondition(key="pending_l4_approval", match=MatchValue(value=True)),
-            ])),
-        }
+
+        def _memory_stats():
+            # Blocking Qdrant I/O — run off the event loop and always close the
+            # client so /health polling neither stalls the loop nor leaks pools.
+            qc = _qdrant_client()
+            try:
+                def _c(flt):
+                    return qc.count(collection_name=_collection(), count_filter=flt, exact=True).count
+                return {
+                    "l2": _c(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))])),
+                    "l3": _c(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])),
+                    "l4": _c(Filter(must=[
+                        FieldCondition(key="tier", match=MatchValue(value="L4")),
+                        FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
+                    ])),
+                    "pending": _c(Filter(must=[
+                        FieldCondition(key="tier", match=MatchValue(value="L3")),
+                        FieldCondition(key="pending_l4_approval", match=MatchValue(value=True)),
+                    ])),
+                }
+            finally:
+                try:
+                    qc.close()
+                except Exception:
+                    pass
+
+        payload["memory_stats"] = await asyncio.get_running_loop().run_in_executor(
+            None, _memory_stats
+        )
     except Exception:
         payload["memory_stats"] = {"error": "unavailable"}
     return payload
@@ -555,14 +569,22 @@ if os.path.isdir(_static_dir):
     # Serve static assets (JS, CSS, etc.) under /_app/
     app.mount("/_app", StaticFiles(directory=os.path.join(_static_dir, "_app")), name="frontend_assets")
 
+    _static_root = os.path.realpath(_static_dir)
+
     # SPA catch-all: any non-API route serves index.html for client-side routing
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        # Serve actual files if they exist (e.g. favicon.ico)
-        file_path = os.path.join(_static_dir, full_path)
-        if full_path and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(_static_dir, "index.html"))
+        # Serve actual files if they exist (e.g. favicon.ico), but only when
+        # the resolved path stays inside the static root — otherwise a crafted
+        # ../-laden path would let the catch-all read arbitrary files.
+        if full_path:
+            candidate = os.path.realpath(os.path.join(_static_root, full_path))
+            if (
+                candidate == _static_root
+                or candidate.startswith(_static_root + os.sep)
+            ) and os.path.isfile(candidate):
+                return FileResponse(candidate)
+        return FileResponse(os.path.join(_static_root, "index.html"))
 
     logger.info(f"Mounted SvelteKit frontend from {_static_dir}")
 

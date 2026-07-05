@@ -404,9 +404,15 @@ async def handle(
     }
 
     last_fired = item.get("last_fired_at")
-    since = last_fired if isinstance(last_fired, datetime) else _now().replace(
-        year=_now().year - 1
-    )
+    if isinstance(last_fired, datetime):
+        since = last_fired
+    else:
+        now = _now()
+        try:
+            since = now.replace(year=now.year - 1)
+        except ValueError:
+            # Feb 29 -> the prior (non-leap) year has no Feb 29; use Feb 28.
+            since = now.replace(year=now.year - 1, day=28)
 
     try:
         await _scan_and_decay(qc, stats)
