@@ -271,9 +271,12 @@ async def build_system_prompt() -> str:
     except Exception as e:
         logger.warning(f"phase addendum lookup failed: {e}")
 
-    # Chatterbox-Turbo renders the inline paralinguistic reaction tags as
-    # spoken reactions, so the addendum teaching them is always appended.
-    system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
+    # Only teach the LLM about the inline paralinguistic tags when the active
+    # TTS engine actually renders them. Chatterbox-Turbo speaks [laugh]/[sigh]
+    # as reactions; Kokoro (the default) would read the brackets aloud, so the
+    # addendum is gated on the engine supporting it.
+    if config.TTS_PROVIDER == "chatterbox":
+        system_prompt = system_prompt + "\n" + config.SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM
 
     # Expression-cue guidance is engine-agnostic — the Live2D avatar
     # consumes it whichever TTS engine is active — so unlike the

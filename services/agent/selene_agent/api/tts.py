@@ -1,7 +1,10 @@
 """TTS proxy — exposes the text-to-speech service to the dashboard.
 
-The upstream (Chatterbox-Turbo at ``config.TTS_BASE_URL``) exposes an
-OpenAI-compatible /v1/audio/speech surface plus an X-Visemes header.
+The active upstream engine (Kokoro or Chatterbox-Turbo, selected by
+``config.TTS_PROVIDER`` and reached at ``config.TTS_BASE_URL``) exposes an
+OpenAI-compatible /v1/audio/speech surface plus an X-Visemes header. Kokoro
+omits the streaming and voice-cloning endpoints, which this proxy gates to
+Chatterbox with a 501.
 
 Also exposes voice-management endpoints (upload / delete / set default)
 that proxy through to the TTS engine. The runtime-override default
@@ -9,7 +12,10 @@ voice persists in ``agent_state.tts_default_voice`` and is applied here so
 all callers (dashboard playground, autonomy speak path, companion app)
 share one source of truth without each needing to look it up themselves.
 """
+import base64
+import io
 import json
+import wave
 from typing import Optional
 
 import aiohttp
@@ -31,7 +37,7 @@ def _tts_base() -> str:
 
 
 def _engine_label() -> str:
-    return "Chatterbox-Turbo"
+    return "Chatterbox-Turbo" if config.TTS_PROVIDER == "chatterbox" else "Kokoro"
 
 CONTENT_TYPES = {
     "mp3": "audio/mpeg",
@@ -121,6 +127,94 @@ async def speak(payload: SpeakRequest):
         raise HTTPException(status_code=502, detail=f"TTS service unreachable: {e}")
 
 
+def _wav_duration_ms(wav_bytes: bytes) -> int:
+    """Best-effort duration of a WAV blob in ms; 0 if it can't be parsed."""
+    try:
+        with wave.open(io.BytesIO(wav_bytes)) as w:
+            rate = w.getframerate() or 24000
+            return int(round(w.getnframes() / rate * 1000))
+    except Exception:
+        return 0
+
+
+async def _kokoro_stream_fallback(
+    payload: SpeakRequest, voice: Optional[str]
+) -> StreamingResponse:
+    """Emit the buffered synth as a single-shot NDJSON stream.
+
+    Kokoro has no upstream streaming endpoint, but the companion app's voice
+    flow and the dashboard both consume ``/tts/speak/stream``. Rather than
+    501 them (which would leave the phone silent), we call the buffered
+    ``/v1/audio/speech`` once and wrap the result in the same event schema
+    ``streaming.py`` uses: ``start`` -> ``audio`` -> ``visemes`` -> ``done``,
+    as a single sentence. Kokoro is fast enough that the whole reply returns
+    quickly, so losing per-sentence incremental streaming is acceptable.
+    """
+    body: dict = {
+        "input": payload.text,
+        "model": payload.model or "tts-1",
+        "response_format": "wav",  # splittable; matches the stream contract
+        "speed": payload.speed or 1.0,
+    }
+    if voice:
+        body["voice"] = voice
+
+    async def _gen():
+        try:
+            # max_field_size bumped for the base64 X-Visemes header (see /speak).
+            async with aiohttp.ClientSession(max_field_size=65536) as session:
+                async with session.post(
+                    f"{_tts_base()}/v1/audio/speech",
+                    json=body,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    data = await resp.read()
+                    if resp.status >= 400:
+                        detail = data.decode(errors="replace")[:300]
+                        yield json.dumps({"type": "error", "seq": 0, "detail": detail}) + "\n"
+                        return
+                    visemes_hdr = resp.headers.get("X-Visemes")
+        except aiohttp.ClientError as e:
+            logger.error(f"TTS buffered-fallback error: {e}")
+            yield json.dumps(
+                {"type": "error", "seq": 0, "detail": f"TTS service unreachable: {e}"}
+            ) + "\n"
+            return
+
+        cues: list = []
+        duration_ms = _wav_duration_ms(data)
+        if visemes_hdr:
+            try:
+                vjson = json.loads(base64.b64decode(visemes_hdr))
+                cues = vjson.get("mouthCues") or []
+                meta_dur = (vjson.get("metadata") or {}).get("duration")
+                if isinstance(meta_dur, (int, float)) and meta_dur > 0:
+                    duration_ms = int(round(meta_dur * 1000))
+            except Exception as e:
+                logger.warning(f"kokoro stream fallback: bad X-Visemes header: {e}")
+
+        yield json.dumps({
+            "type": "start", "stream_id": "kokoro-buffered", "sample_rate": 24000,
+            "audio_format": "wav", "audio_mime": "audio/wav",
+            "total_sentences": 1, "voice": voice,
+        }) + "\n"
+        yield json.dumps({
+            "type": "audio", "seq": 0, "offset_ms": 0, "duration_ms": duration_ms,
+            "data": base64.b64encode(data).decode("ascii"),
+        }) + "\n"
+        yield json.dumps({
+            "type": "visemes", "seq": 0, "offset_ms": 0,
+            "duration_ms": duration_ms, "cues": cues,
+        }) + "\n"
+        yield json.dumps({"type": "done", "total_ms": duration_ms, "sentences": 1}) + "\n"
+
+    return StreamingResponse(
+        _gen(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
+    )
+
+
 @router.post("/tts/speak/stream")
 async def speak_stream(payload: SpeakRequest):
     """NDJSON-streaming proxy of the TTS engine's per-sentence pipeline.
@@ -130,9 +224,26 @@ async def speak_stream(payload: SpeakRequest):
     voice-testing playground sets that). Response is ``application/
     x-ndjson``: one JSON event per line. See ``services/text-to-speech/
     app/streaming.py`` for the event schema.
+
+    Only Chatterbox-Turbo exposes a per-sentence streaming endpoint upstream.
+    Kokoro has no ``/v1/audio/speech/stream``, so under TTS_PROVIDER=kokoro we
+    transparently degrade to a single-shot NDJSON stream built from the
+    buffered synth (see ``_kokoro_stream_fallback``) — streaming clients (the
+    companion app's voice flow, the dashboard) keep working with no change.
     """
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
+
+    # Voice resolution is identical for both engines: runtime override wins
+    # unless force_voice is set (voice-testing playground only).
+    override = await agent_state.get_default_voice()
+    if payload.force_voice and payload.voice:
+        voice = payload.voice
+    else:
+        voice = override or payload.voice
+
+    if config.TTS_PROVIDER != "chatterbox":
+        return await _kokoro_stream_fallback(payload, voice)
 
     body: dict = {
         "input": payload.text,
@@ -141,11 +252,6 @@ async def speak_stream(payload: SpeakRequest):
         "response_format": payload.format or "wav",
         "speed": payload.speed or 1.0,
     }
-    override = await agent_state.get_default_voice()
-    if payload.force_voice and payload.voice:
-        voice = payload.voice
-    else:
-        voice = override or payload.voice
     if voice:
         body["voice"] = voice
 
@@ -199,9 +305,9 @@ async def voices():
     formats = ["mp3", "wav", "opus", "aac", "flac", "pcm"]
     native_ids: list[str] = []
     alias_ids: list[str] = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-    # Fallback if the upstream is unreachable. Kept in sync with the TTS
-    # service's CHATTERBOX_VOICE default.
-    fallback_default = "Olivia"
+    # Fallback if the upstream is unreachable. Match the active engine's own
+    # default voice: Kokoro -> af_heart, Chatterbox -> Olivia (CHATTERBOX_VOICE).
+    fallback_default = "Olivia" if config.TTS_PROVIDER == "chatterbox" else "af_heart"
     default_voice = fallback_default
 
     user_ids: list[str] = []
@@ -365,9 +471,16 @@ async def upload_voice(
 ):
     """Forward a multipart upload through to the TTS engine.
 
-    Chatterbox-Turbo is zero-shot — an uploaded reference clip becomes a
-    new clonable voice.
+    Only Chatterbox-Turbo supports voice cloning (zero-shot — an uploaded
+    reference clip becomes a new clonable voice). Kokoro has fixed model
+    voices, so this returns 501 when TTS_PROVIDER != chatterbox.
     """
+    if config.TTS_PROVIDER != "chatterbox":
+        raise HTTPException(
+            status_code=501,
+            detail="Voice cloning is only supported by Chatterbox-Turbo. Set "
+                   "TTS_PROVIDER=chatterbox (and COMPOSE_PROFILES=chatterbox) to enable.",
+        )
     raw = await file.read()
     form = aiohttp.FormData()
     form.add_field("name", name)
@@ -398,6 +511,11 @@ async def upload_voice(
 @router.delete("/tts/voices/{name}")
 async def delete_voice(name: str):
     """Delete an uploaded reference clip on the TTS engine."""
+    if config.TTS_PROVIDER != "chatterbox":
+        raise HTTPException(
+            status_code=501,
+            detail="Voice management requires TTS_PROVIDER=chatterbox (Chatterbox-Turbo).",
+        )
     try:
         async with aiohttp.ClientSession() as session:
             async with session.delete(

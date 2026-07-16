@@ -57,6 +57,13 @@ WEATHER_API_KEY = os.getenv('WEATHER_API_KEY', "NO_WEATHER_TOKEN_CONFIGURED")
 SRC_LAN = os.getenv('SRC_LAN', "en")
 SOURCE_IP = os.getenv('SOURCE_IP', "10.0.0.100") # edge device IP address, TODO: remove this and ensure IP passed by edge devices
 
+# TTS engine tunables. Read by the Kokoro TTS service (text-to-speech-kokoro)
+# when TTS_PROVIDER=kokoro. The Chatterbox service ignores these (it has its
+# own CHATTERBOX_* vars), so they are harmless when the active engine is v2.
+TTS_LANGUAGE = os.getenv('TTS_LANGUAGE', "a") # Kokoro TTS AI Model language option
+TTS_VOICE = os.getenv('TTS_VOICE', "af_heart")
+TTS_DEVICE = os.getenv('TTS_DEVICE', "cuda:0") # GPU index to use for text-to-speech model
+
 STT_DEVICE = os.getenv('STT_DEVICE', "0") # GPU index to use for speech-to-text model
 
 LLM_API_KEY = os.getenv('LLM_API_KEY', "1234")
