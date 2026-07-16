@@ -54,8 +54,9 @@ ANTHROPIC_MODEL="claude-opus-4-7"  # default Anthropic model
 STT_DEVICE="0"       # GPU index for STT model
 ```
 
-The text-to-speech GPU is set via `CHATTERBOX_GPU` — see
-[Chatterbox-Turbo tunables](#chatterbox-turbo-tunables) below.
+The text-to-speech GPU depends on the active engine — `TTS_KOKORO_GPU`
+(default) or `CHATTERBOX_GPU` — see [TTS engine selection](#tts-engine-selection)
+below.
 
 #### Pronunciation Tuning
 
@@ -80,9 +81,9 @@ STT_HOTWORDS="Selene"
 STT_TRANSCRIPT_SUBSTITUTIONS='{"Celine":"Selene"}'
 ```
 
-The TTS side has its own optional override — `TTS_PRONUNCIATIONS`, a
-whole-word text-substitution map applied before synthesis — covered under
-[Chatterbox-Turbo tunables](#chatterbox-turbo-tunables) below.
+The TTS side has its own optional overrides — `TTS_PRONUNCIATIONS` (Chatterbox,
+whole-word text substitution) or `TTS_AGENT_NAME_PHONEMES` (Kokoro, misaki IPA)
+— covered under [TTS engine selection](#tts-engine-selection) below.
 
 See `docs/services/speech-to-text/README.md` and
 `docs/services/text-to-speech/README.md` for the rationale behind each layer
@@ -98,13 +99,43 @@ drives mouth shapes against this timeline. Soft dependency — if `rhubarb`
 is unavailable or errors, the header is omitted and the audio body is
 unchanged.
 
-#### Chatterbox-Turbo tunables
+#### TTS engine selection
 
-The TTS service is [text-to-speech](services/text-to-speech/README.md)
-(Chatterbox-Turbo, port 6005) — an expressive zero-shot engine with voice
-cloning and inline paralinguistic tags. The agent reaches it via
-`TTS_BASE_URL` (default `http://text-to-speech:6005`, only set for a
-non-standard layout).
+The TTS service ([text-to-speech](services/text-to-speech/README.md)) ships two
+**mutually-exclusive** engines. Exactly one runs at a time, selected by two vars
+that must agree:
+
+```bash
+# REQUIRED: which TTS container docker compose starts. Both engines are
+# profile-gated, so if this is unset NO TTS container starts at all.
+COMPOSE_PROFILES="kokoro"          # kokoro | chatterbox
+
+# Which engine the agent assumes is live. Gates streaming, voice cloning, and
+# the [laugh]/[sigh] paralinguistic prompt tags. Keep in sync with the profile.
+TTS_PROVIDER="kokoro"
+
+# Where the agent reaches TTS. Both engines answer at the `text-to-speech`
+# alias, so this default works for either — only set for a non-standard layout.
+#TTS_BASE_URL="http://text-to-speech:6005"
+```
+
+To switch engines, set **both** vars to the same value and rebuild:
+`docker compose down && docker compose up -d --build`.
+
+**Kokoro (default)** — hexgrad/Kokoro-82M. Small, fast, fixed model voices; no
+streaming or cloning (the agent transparently degrades streaming to buffered).
+
+```bash
+TTS_KOKORO_GPU="0"      # host GPU index for the Kokoro container
+TTS_DEVICE="cuda:0"     # in-container device Kokoro loads on ("cpu" also works)
+TTS_LANGUAGE="a"        # Kokoro language code (a=American English, b=British, ...)
+TTS_VOICE="af_heart"    # default Kokoro voice, matched to TTS_LANGUAGE
+#TTS_AGENT_NAME_PHONEMES="səˈlin"   # IPA override for the agent name (misaki G2P)
+```
+
+**Chatterbox-Turbo (opt-in)** — expressive zero-shot cloning + per-sentence
+streaming + inline paralinguistic tags. Only used when the profile/provider is
+`chatterbox`.
 
 ```bash
 # GPU pinning. Chatterbox has no tensor-parallel support — runs on a
@@ -135,10 +166,11 @@ appear in the input text:
 [laugh] [chuckle] [sigh] [gasp] [groan] [cough] [sniff] [clear throat] [shush]
 ```
 
-The agent's system prompt is automatically extended with guidance teaching
-the LLM to use these sparingly (see
-`selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM`). No
-env var toggles this; the addendum is appended to every system prompt.
+The agent's system prompt is extended with guidance teaching the LLM to use
+these sparingly (see
+`selene_agent/utils/config.py:SYSTEM_PROMPT_PARALINGUISTIC_ADDENDUM`) — but
+**only when `TTS_PROVIDER=chatterbox`**. Under Kokoro the addendum is skipped,
+since Kokoro would speak the brackets aloud instead of rendering them.
 
 ```bash
 # Binary location (path or PATH-resolvable name).
@@ -746,11 +778,12 @@ The Whisper model is pinned in `services/speech-to-text/app/config.py`
 via `STT_DEVICE` and the source language via `SRC_LAN` above.
 
 #### Text-to-Speech
-The engine is Chatterbox-Turbo. Default voice comes from `CHATTERBOX_VOICE`
-and the GPU from `CHATTERBOX_GPU` (see [Chatterbox-Turbo tunables](#chatterbox-turbo-tunables)
-above). Voices are reference WAV clips — bundled in the image and
-uploadable at runtime; the model itself is pulled from Hugging Face on
-first start.
+The engine is selectable — Kokoro (default) or Chatterbox-Turbo — via
+`COMPOSE_PROFILES` + `TTS_PROVIDER` (see [TTS engine selection](#tts-engine-selection)
+above). Kokoro uses fixed model voices (`TTS_VOICE`, default `af_heart`) on
+`TTS_KOKORO_GPU`; Chatterbox uses reference-WAV clips (`CHATTERBOX_VOICE`,
+bundled + uploadable) on `CHATTERBOX_GPU`. Either model is pulled from Hugging
+Face on first start.
 
 ## Advanced Configuration
 

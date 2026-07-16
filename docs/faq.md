@@ -121,7 +121,7 @@ LLM_API_KEY="your_api_key"    # Any value for API access
 
 **Audio Models**:
 - OpenAI Whisper variants for speech-to-text
-- Chatterbox-Turbo for text-to-speech
+- Kokoro (default) or Chatterbox-Turbo for text-to-speech (selectable)
 - Custom trained audio models
 
 **Model Configuration Examples**:

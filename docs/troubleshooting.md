@@ -394,6 +394,27 @@ curl -X POST http://localhost/v1/audio/transcriptions \
   -F "model=whisper-1"
 ```
 
+#### Symptom: No text-to-speech container is running (TTS requests 502)
+
+After `docker compose up -d`, `docker compose ps` shows neither
+`text-to-speech` nor `text-to-speech-kokoro`.
+
+**Cause**: Both TTS engines are profile-gated, so `COMPOSE_PROFILES` must be set
+or neither starts. `TTS_PROVIDER` (which engine the agent talks to) must match.
+
+**Solution**:
+```bash
+# .env must set the profile AND the matching provider (kokoro is the default):
+#   COMPOSE_PROFILES="kokoro"     # or "chatterbox"
+#   TTS_PROVIDER="kokoro"         # keep in sync with the profile
+grep -E '^(COMPOSE_PROFILES|TTS_PROVIDER)=' .env
+docker compose up -d
+docker compose ps | grep text-to-speech
+```
+
+If the two disagree, the container that starts and the engine the agent talks
+to differ, and the agent 502s against a missing alias — set both the same.
+
 #### Symptom: Text-to-speech produces no audio or garbled output
 ```
 Response: binary data but no sound
@@ -401,8 +422,9 @@ Response: binary data but no sound
 
 **Solution**:
 ```bash
-# Check TTS service logs
-docker compose logs text-to-speech
+# Check TTS service logs (the active engine: text-to-speech-kokoro by default,
+# or text-to-speech when COMPOSE_PROFILES=chatterbox)
+docker compose logs text-to-speech-kokoro    # or: docker compose logs text-to-speech
 
 # Test with simple input
 curl -X POST http://localhost/v1/audio/speech \

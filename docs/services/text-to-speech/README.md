@@ -1,8 +1,87 @@
-# Text-to-Speech Service (Chatterbox-Turbo)
+# Text-to-Speech Service
 
-Expressive, zero-shot speech synthesis using [Chatterbox-Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo) from Resemble AI (MIT), exposed as an OpenAI-compatible endpoint.
+Speech synthesis exposed as an OpenAI-compatible `/v1/audio/speech` endpoint,
+plus an `X-Visemes` header for avatar lip-sync. **Two engines are available and
+mutually exclusive** — exactly one runs at a time, chosen by config:
 
-## Purpose
+| Engine | Default | Strengths | Limits |
+|--------|:------:|-----------|--------|
+| **Kokoro** (`text-to-speech-kokoro`) | ✓ | Small (82M), fast, low latency; fixed model voices | No streaming or voice cloning; does not render `[laugh]`/`[sigh]` tags |
+| **Chatterbox-Turbo** (`text-to-speech`) | | Expressive, zero-shot voice cloning, per-sentence streaming, inline paralinguistic tags | Higher latency (~350M model) |
+
+Both emit 24 kHz mono audio and the same `X-Visemes` Rhubarb timeline
+(provider-independent), so avatar lip-sync works identically on either.
+
+## Engine selection
+
+Two vars must agree — one selects the container, one tells the agent which
+engine is live:
+
+```bash
+COMPOSE_PROFILES="kokoro"   # which container docker compose starts. REQUIRED —
+                            # both engines are profile-gated; unset => no TTS starts.
+TTS_PROVIDER="kokoro"       # which engine the agent assumes. Gates streaming,
+                            # voice cloning, and the [laugh]/[sigh] prompt tags.
+```
+
+To switch to Chatterbox, set **both** to `chatterbox` and rebuild:
+`docker compose down && docker compose up -d --build`.
+
+Both services answer at the same `text-to-speech` network alias (Kokoro via an
+explicit compose alias), so the agent (`TTS_BASE_URL`, default
+`http://text-to-speech:6005`) and the nginx `/v1/audio/speech` upstream reach
+whichever engine is active with no per-engine config. nginx resolves the alias
+lazily per-request so it survives the active engine restarting.
+
+### Behavior differences the agent handles
+
+- **Streaming** (`/v1/audio/speech/stream`) is a Chatterbox-only upstream.
+  Under Kokoro the agent's `/api/tts/speak/stream` proxy transparently degrades
+  to a **single-shot** NDJSON stream built from the buffered synth (same
+  `start`/`audio`/`visemes`/`done` schema, one "sentence"), so streaming
+  clients — the companion app's voice flow, the dashboard — keep working
+  unchanged.
+- **Voice cloning** (`/v1/voices/upload`, `DELETE /v1/voices/{name}`) is
+  Chatterbox-only. Under Kokoro the agent proxy returns **501** (Kokoro has
+  fixed model voices).
+- **Paralinguistic tags** (`[laugh]`, `[sigh]`, ...): the agent appends the
+  teaching addendum to the system prompt only under Chatterbox; Kokoro would
+  speak the brackets aloud. The `<<EXPRESSION>>` avatar cue is engine-agnostic
+  and always taught.
+
+## Kokoro (default engine)
+
+[Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) is an 82M-parameter model
+(Apache-2.0). Runs as `text-to-speech-kokoro` on port 6005 (host-mapped to
+6015), downloading its weights into `~/.cache/huggingface` at first start. It
+uses **fixed model voices** rather than cloning — a "voice" is a preset name
+like `af_heart` (default), not a reference clip.
+
+```
+Text Input → (misaki G2P + pronunciation override) → Kokoro → WAV samples
+                                                                  ↓
+                                                          Rhubarb Lip Sync
+                                                                  ↓
+                                                         X-Visemes header
+```
+
+- Voices are language-scoped: `GET /v1/voices` returns only voices whose prefix
+  matches `TTS_LANGUAGE` (`a` = American English → `af_*`/`am_*`, `b` = British,
+  etc.). Unknown or OpenAI-alias voices fall back to `TTS_VOICE` (default
+  `af_heart`) with a warning.
+- Endpoints: `POST /v1/audio/speech` (buffered), `GET /v1/voices`, `GET /health`.
+  There is **no** streaming, upload, or delete endpoint (see the agent-handled
+  behavior differences above).
+- Pronunciation of the agent name is forced via a misaki phoneme override
+  (`TTS_AGENT_NAME_PHONEMES`, IPA — default `səˈlin`).
+- Config vars: `TTS_KOKORO_GPU` (host GPU), `TTS_DEVICE` (in-container device,
+  `cuda:0` or `cpu`), `TTS_LANGUAGE`, `TTS_VOICE`, `TTS_AGENT_NAME_PHONEMES`.
+
+---
+
+## Chatterbox-Turbo (opt-in engine)
+
+Expressive, zero-shot speech synthesis using [Chatterbox-Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo) from Resemble AI (MIT). The sections below detail this engine; enable it with `COMPOSE_PROFILES=chatterbox` + `TTS_PROVIDER=chatterbox`.
 
 - Higher emotional range via native paralinguistic tags (`[laugh]`, `[sigh]`, `[chuckle]`, etc.)
 - Zero-shot voice cloning from a short reference clip (no fine-tuning, no per-voice training)
@@ -276,10 +355,23 @@ framing.
 ## Configuration
 
 ```bash
-# Where the agent reaches the TTS service. The default matches the compose
-# service name + port, so this only needs setting for a non-standard layout.
+# --- Engine selection (see "Engine selection" above) ---
+COMPOSE_PROFILES="kokoro"      # REQUIRED: which TTS container starts (kokoro|chatterbox)
+TTS_PROVIDER="kokoro"          # which engine the agent assumes; keep in sync with the profile
+
+# Where the agent reaches the TTS service. Both engines share the
+# `text-to-speech` alias, so this default works for either — only set it for a
+# non-standard layout.
 #TTS_BASE_URL="http://text-to-speech:6005"
 
+# --- Kokoro (default engine) ---
+TTS_KOKORO_GPU="0"             # host GPU index for the Kokoro container
+TTS_DEVICE="cuda:0"            # in-container device Kokoro loads on ("cpu" also works)
+TTS_LANGUAGE="a"               # Kokoro language code (a=American English, b=British, ...)
+TTS_VOICE="af_heart"           # default Kokoro voice, matched to TTS_LANGUAGE
+#TTS_AGENT_NAME_PHONEMES="səˈlin"   # IPA override for the agent name (misaki G2P)
+
+# --- Chatterbox-Turbo (opt-in engine) ---
 # GPU pinning. Chatterbox has no tensor-parallel support — it runs on a
 # single GPU. CHATTERBOX_GPU sets CUDA_VISIBLE_DEVICES on the container
 # (same pattern as vllm-vision/face-recognition); inside the container the

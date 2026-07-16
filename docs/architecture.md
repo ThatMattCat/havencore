@@ -76,10 +76,10 @@ Audio Input → Preprocessing → Whisper Model → Text Output
 
 ### 4. Text-to-Speech Service (Port 6005)
 **Purpose**: Audio Generation and Voice Synthesis
-- `text-to-speech` — Chatterbox-Turbo (Resemble AI), an expressive zero-shot engine with voice cloning and inline paralinguistic tags.
-- Exposes an OpenAI-compatible `/v1/audio/speech` surface, an NDJSON per-sentence `/v1/audio/speech/stream` endpoint, and an `X-Visemes` Rhubarb header for avatar lip-sync.
-- The agent's TTS client + `/api/tts/*` proxy reach it at `text-to-speech:6005`.
-- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service) — text-to-speech, voice cloning, and runtime-default voice management.
+- Two mutually-exclusive engines, selected by `COMPOSE_PROFILES` + `TTS_PROVIDER`: **Kokoro** (`text-to-speech-kokoro`, default — small/fast, fixed voices) and **Chatterbox-Turbo** (`text-to-speech`, opt-in — expressive zero-shot cloning, streaming, paralinguistic tags).
+- Both expose an OpenAI-compatible `/v1/audio/speech` surface and an `X-Visemes` Rhubarb header for avatar lip-sync. The NDJSON per-sentence `/v1/audio/speech/stream` endpoint is Chatterbox-only; under Kokoro the agent degrades streaming to a single-shot buffered stream.
+- Both answer at the `text-to-speech` network alias, so the agent's TTS client + `/api/tts/*` proxy and nginx reach whichever engine is active at `text-to-speech:6005`.
+- For an interactive UI, use the agent dashboard's TTS playground at `/playgrounds/tts` (proxies through the agent service) — synthesis, voice cloning (Chatterbox), and runtime-default voice management.
 
 ### 5. PostgreSQL Database (Port 5432)
 **Purpose**: Persistent Data Storage
@@ -292,7 +292,7 @@ services:
 - **Chat LLM**: vLLM serving `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
 - **Vision LLM**: vLLM serving `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
 - **Speech-to-Text**: Faster-Whisper
-- **Text-to-Speech**: Chatterbox-Turbo (Resemble AI)
+- **Text-to-Speech**: Kokoro (default) or Chatterbox-Turbo (Resemble AI) — selectable
 - **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`
 - **Face detect+embed**: InsightFace `buffalo_l` (RetinaFace + ArcFace R100)
 - **Image generation**: ComfyUI

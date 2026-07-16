@@ -57,7 +57,7 @@ Camera/sensor events plug into the same surface via a generic `haven/<domain>/<k
 │                └─ Notifier (protocol)                            │
 │                     ├─ SignalNotifier      → send_signal_message │
 │                     ├─ HAPushNotifier      → ha_send_notification│
-│                     ├─ SpeakerNotifier     → Chatterbox + MA     │
+│                     ├─ SpeakerNotifier     → active TTS + MA     │
 │                     ├─ NtfyFanoutNotifier  → companion-app push  │
 │                     └─ NullNotifier                              │
 │                                                                  │
@@ -180,9 +180,10 @@ AUTONOMY_DEFAULT_QUIET_END=""            # "07:00"
 AUTONOMY_DEFAULT_QUIET_POLICY="defer"    # "defer" | "drop"
 AUTONOMY_DEFAULT_EVENT_RATE_LIMIT="10/min"
 
-# Speaker channel (Chatterbox-Turbo TTS → Music Assistant)
+# Speaker channel (active TTS engine → Music Assistant)
 AUTONOMY_SPEAKER_DEFAULT_DEVICE=""       # MA player name
-AUTONOMY_SPEAKER_DEFAULT_VOICE="Olivia"
+# Leave unset to follow the active engine (af_heart on Kokoro, Olivia on Chatterbox)
+#AUTONOMY_SPEAKER_DEFAULT_VOICE="af_heart"
 AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5      # 0.0-1.0 (normalized to 0-100)
 AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore entry TTL
 
