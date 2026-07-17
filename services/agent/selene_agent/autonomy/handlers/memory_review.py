@@ -14,6 +14,7 @@ provided async OpenAI client.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
@@ -90,7 +91,8 @@ async def _scan_and_decay(client, stats: Dict[str, Any]) -> None:
     from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
 
     flt = Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))])
-    points = _scroll_all(
+    points = await asyncio.to_thread(
+        _scroll_all,
         client,
         flt=flt,
         collection=COLLECTION_NAME,
@@ -119,7 +121,8 @@ async def _scan_and_decay(client, stats: Dict[str, Any]) -> None:
     for ie, ids in groups.items():
         if not ids:
             continue
-        client.set_payload(
+        await asyncio.to_thread(
+            client.set_payload,
             collection_name=COLLECTION_NAME,
             payload={"importance_effective": ie},
             points=ids,
@@ -146,7 +149,8 @@ async def _cluster_to_l3(
         FieldCondition(key="tier", match=MatchValue(value="L2")),
         FieldCondition(key="timestamp", range=DatetimeRange(gte=since.isoformat())),
     ])
-    points = _scroll_all(
+    points = await asyncio.to_thread(
+        _scroll_all,
         client, flt=flt, collection=COLLECTION_NAME,
         cap=config.AUTONOMY_MEMORY_MAX_SCAN, with_vectors=True,
     )
@@ -155,7 +159,8 @@ async def _cluster_to_l3(
         return
 
     vectors = np.array([p.vector for p in points], dtype=float)
-    labels = memory_clustering.cluster_vectors(
+    labels = await asyncio.to_thread(
+        memory_clustering.cluster_vectors,
         vectors,
         min_cluster_size=config.MEMORY_HDBSCAN_MIN_CLUSTER_SIZE,
         min_samples=config.MEMORY_HDBSCAN_MIN_SAMPLES,
@@ -188,7 +193,7 @@ async def _cluster_to_l3(
             continue
 
         try:
-            embedding = _embed(summary_obj["summary"])
+            embedding = await asyncio.to_thread(_embed, summary_obj["summary"])
         except Exception as e:
             logger.warning(f"[memory_review] embedding failed: {e}; skipping cluster")
             continue
@@ -210,7 +215,8 @@ async def _cluster_to_l3(
         ]
 
         new_id = str(uuid.uuid4())
-        client.upsert(
+        await asyncio.to_thread(
+            client.upsert,
             collection_name=COLLECTION_NAME,
             points=[PointStruct(
                 id=new_id,
@@ -239,7 +245,8 @@ async def _cluster_to_l3(
         # Verify the L3 landed, then absorb by deleting the source L2s. If the
         # verify fails, leave L2s in place so the next consolidation run can retry.
         try:
-            check = client.retrieve(
+            check = await asyncio.to_thread(
+                client.retrieve,
                 collection_name=COLLECTION_NAME,
                 ids=[new_id],
                 with_payload=False,
@@ -247,7 +254,8 @@ async def _cluster_to_l3(
             )
             if check:
                 from qdrant_client.models import PointIdsList
-                client.delete(
+                await asyncio.to_thread(
+                    client.delete,
                     collection_name=COLLECTION_NAME,
                     points_selector=PointIdsList(points=[str(m.id) for m in members]),
                 )
@@ -287,7 +295,8 @@ async def _propose_l4(
             ),
         ]
     )
-    candidates = _scroll_all(
+    candidates = await asyncio.to_thread(
+        _scroll_all,
         client, flt=flt, collection=COLLECTION_NAME, cap=500,
     )
     now = _now()
@@ -329,7 +338,8 @@ async def _propose_l4(
         except Exception as e:
             logger.warning(f"[memory_review] rationale LLM failed: {e}")
 
-        client.set_payload(
+        await asyncio.to_thread(
+            client.set_payload,
             collection_name=COLLECTION_NAME,
             payload={
                 "pending_l4_approval": True,
@@ -364,7 +374,8 @@ async def _prune_l2(client, stats: Dict[str, Any]) -> None:
             ),
         ]
     )
-    candidates = _scroll_all(
+    candidates = await asyncio.to_thread(
+        _scroll_all,
         client, flt=cand_flt, collection=COLLECTION_NAME, cap=5000,
     )
     now = _now()
@@ -378,7 +389,8 @@ async def _prune_l2(client, stats: Dict[str, Any]) -> None:
         to_delete.append(str(p.id))
 
     if to_delete:
-        client.delete(
+        await asyncio.to_thread(
+            client.delete,
             collection_name=COLLECTION_NAME,
             points_selector=PointIdsList(points=to_delete),
         )
@@ -415,27 +427,37 @@ async def handle(
             since = now.replace(year=now.year - 1, day=28)
 
     try:
-        await _scan_and_decay(qc, stats)
-    except Exception as e:
-        logger.error(f"[memory_review] step 1/2 failed: {e}")
+        try:
+            await _scan_and_decay(qc, stats)
+        except Exception as e:
+            logger.error(f"[memory_review] step 1/2 failed: {e}")
 
-    try:
-        await _cluster_to_l3(
-            qc, stats,
-            since=since, llm_client=client, model_name=model_name,
-        )
-    except Exception as e:
-        logger.error(f"[memory_review] step 3 failed: {e}")
+        try:
+            await _cluster_to_l3(
+                qc, stats,
+                since=since, llm_client=client, model_name=model_name,
+            )
+        except Exception as e:
+            logger.error(f"[memory_review] step 3 failed: {e}")
 
-    try:
-        await _propose_l4(qc, stats, llm_client=client, model_name=model_name)
-    except Exception as e:
-        logger.error(f"[memory_review] step 4 failed: {e}")
+        try:
+            await _propose_l4(qc, stats, llm_client=client, model_name=model_name)
+        except Exception as e:
+            logger.error(f"[memory_review] step 4 failed: {e}")
 
-    try:
-        await _prune_l2(qc, stats)
-    except Exception as e:
-        logger.error(f"[memory_review] step 5 failed: {e}")
+        try:
+            await _prune_l2(qc, stats)
+        except Exception as e:
+            logger.error(f"[memory_review] step 5 failed: {e}")
+    finally:
+        # QdrantClient holds a connection pool; close it so each nightly run
+        # doesn't leak one. Guarded: a stubbed client in tests may lack close().
+        close = getattr(qc, "close", None)
+        if callable(close):
+            try:
+                await asyncio.to_thread(close)
+            except Exception as e:
+                logger.debug(f"[memory_review] qdrant client close failed: {e}")
 
     total_ms = int((time.perf_counter() - start) * 1000)
     summary = (
