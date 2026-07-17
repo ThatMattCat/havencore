@@ -10,6 +10,7 @@ without requiring the LLM to call ``search_memories`` itself.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import List, Optional
 
@@ -43,6 +44,30 @@ def get_retrieval_k(phase: str) -> int:
     return int(getattr(config, "MEMORY_RETRIEVAL_TOPK_OPERATING", 3))
 
 
+def _retrieve_points(query: str, k: int):
+    """Blocking: embed the query, then pull the top-K L2/L3 points from Qdrant.
+
+    Both the embeddings HTTP call and the QdrantClient query are synchronous, so
+    this runs in a worker thread (via ``asyncio.to_thread`` in
+    ``build_retrieval_block``) to keep the agent's event loop free.
+    """
+    from qdrant_client.models import Filter, FieldCondition, MatchAny
+    from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
+
+    vec = _embed(query)
+    flt = Filter(must=[
+        FieldCondition(key="tier", match=MatchAny(any=["L2", "L3"])),
+    ])
+    client = _qdrant_client()
+    return client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=vec,
+        query_filter=flt,
+        limit=k,
+        with_payload=True,
+    ).points
+
+
 async def build_retrieval_block(
     user_message: str,
     phase: str = "operating",
@@ -50,9 +75,9 @@ async def build_retrieval_block(
     """Return a ``<retrieved_memories>`` block for the given user message, or
     ``None`` if retrieval is disabled, empty, or all below the min-score floor.
 
-    Synchronous Qdrant + embeddings calls inside an async function — same
-    pattern used by ``l4_context._render`` and ``memory_review``. Fire-and-
-    forget; failures are logged and return None so the turn continues.
+    The embeddings HTTP call and the Qdrant query are synchronous, so they run
+    in a worker thread (``asyncio.to_thread``) to avoid blocking the agent's
+    event loop. Failures are logged and return None so the turn continues.
     """
     if not getattr(config, "MEMORY_RETRIEVAL_ENABLED", True):
         return None
@@ -68,21 +93,7 @@ async def build_retrieval_block(
     min_score = float(getattr(config, "MEMORY_RETRIEVAL_MIN_SCORE", 0.3))
 
     try:
-        from qdrant_client.models import Filter, FieldCondition, MatchAny
-        from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import COLLECTION_NAME
-
-        vec = _embed(query)
-        flt = Filter(must=[
-            FieldCondition(key="tier", match=MatchAny(any=["L2", "L3"])),
-        ])
-        client = _qdrant_client()
-        results = client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=vec,
-            query_filter=flt,
-            limit=k,
-            with_payload=True,
-        ).points
+        results = await asyncio.to_thread(_retrieve_points, query, k)
     except Exception as e:
         logger.warning(f"retrieval build failed (continuing without): {e}")
         return None

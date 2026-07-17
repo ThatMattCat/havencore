@@ -88,16 +88,27 @@ class QdrantMCPServer:
                 # Qdrant returns an error on re-create; log and continue.
                 logger.debug(f"Payload index {field_name}: {e}")
 
-    def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding vector from the embeddings service"""
-        try:
+    async def _get_embedding(self, text: str) -> List[float]:
+        """Get embedding vector from the embeddings service.
+
+        Offloaded to a worker thread with a bounded (connect, read) timeout: a
+        wedged TEI (socket accepts but never answers) previously blocked this
+        module's event loop forever, so every later create/search memory call
+        also hung until the container restarted. The timeout fails fast and the
+        thread offload keeps the loop responsive during a slow embed.
+        """
+        def _post() -> List[float]:
             response = requests.post(
                 f"{self.embeddings_url}/embed",
-                json={"inputs": text}
+                json={"inputs": text},
+                timeout=(5, 30),
             )
             response.raise_for_status()
             # TEI returns nested list for batch processing
             return response.json()[0]
+
+        try:
+            return await asyncio.to_thread(_post)
         except Exception as e:
             logger.error(f"Failed to get embedding: {e}")
             raise
@@ -255,7 +266,7 @@ class QdrantMCPServer:
             expires_in_days = args.get("expires_in_days")
             
             # Get embedding
-            embedding = self._get_embedding(text)
+            embedding = await self._get_embedding(text)
             logger.debug(f"Generated embedding of length {len(embedding)}")
             
             memory_id = str(uuid.uuid4())
@@ -319,7 +330,7 @@ class QdrantMCPServer:
             days_back = args.get("days_back")
             
             # Get query embedding
-            query_embedding = self._get_embedding(query)
+            query_embedding = await self._get_embedding(query)
             
             # Build filters
             must_conditions = []
