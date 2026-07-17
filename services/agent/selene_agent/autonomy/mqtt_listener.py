@@ -46,6 +46,10 @@ class MqttListener:
         self._subscriptions: Set[str] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._backoff = 1.0
+        # Detached per-item trigger tasks. Held so the event loop keeps a strong
+        # reference (asyncio only weakly references tasks) and so stop() can
+        # cancel any still in flight.
+        self._inflight: Set[asyncio.Task] = set()
 
     # --- lifecycle ----------------------------------------------------
 
@@ -82,6 +86,9 @@ class MqttListener:
         for task in (self._consumer_task, self._refresher_task, self._reconnect_task):
             if task:
                 task.cancel()
+        for task in list(self._inflight):
+            task.cancel()
+        self._inflight.clear()
         self._consumer_task = None
         self._refresher_task = None
         self._reconnect_task = None
@@ -192,10 +199,33 @@ class MqttListener:
                 continue
             if not match(spec, event):
                 continue
-            try:
-                await self.engine.trigger_event(item["id"], source="mqtt", event=event)
-            except Exception as e:
-                logger.error(f"[mqtt] trigger_event failed for {item['id']}: {e}")
+            # Fire as a detached, tracked task so the consumer keeps draining the
+            # queue instead of blocking on the whole watch_llm gather + LLM turn
+            # (60s+). Latency-sensitive events (e.g. front-door face triage) must
+            # not sit behind a slow unrelated turn. Backpressure is the engine's
+            # job: trigger_event skips an item already in _running_items and
+            # enforces the per-item event rate limit, so a burst for one item is
+            # dropped rather than serialized. Mirrors the cron dispatch path,
+            # which already uses create_task for this reason.
+            task = asyncio.create_task(
+                self._fire_matched(item["id"], event),
+                name=f"autonomy-mqtt-fire-{item['id']}",
+            )
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
+
+    async def _fire_matched(self, item_id: str, event: Dict[str, Any]) -> None:
+        """Run one matched item's trigger to completion as a detached task.
+
+        Exceptions are logged here so they don't vanish into an un-awaited task
+        (asyncio would otherwise only surface them at GC as
+        'Task exception was never retrieved'). CancelledError is BaseException,
+        not Exception, so a stop()-driven cancel propagates cleanly.
+        """
+        try:
+            await self.engine.trigger_event(item_id, source="mqtt", event=event)
+        except Exception as e:
+            logger.error(f"[mqtt] trigger_event failed for {item_id}: {e}")
 
     async def _refresh_loop(self) -> None:
         """Diff-subscribe/unsubscribe when the engine's refresh event fires."""
