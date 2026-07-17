@@ -32,6 +32,25 @@ def _configure_asr(asr: FasterWhisperASR) -> FasterWhisperASR:
     return asr
 
 
+def _canonical_lang(language: Optional[str]) -> Optional[str]:
+    """Canonical cache key for a requested transcription language.
+
+    Mirrors ASRBase's own mapping so equivalent requests share one loaded
+    model: a blank/None request falls back to the configured SRC_LAN, and
+    "auto" means language auto-detection (ASRBase stores that as
+    original_language=None). Every other value keys on the language string.
+
+    Case/whitespace are normalized ("EN" -> "en") so casing variants reuse one
+    model instead of loading a redundant copy — faster-whisper's language codes
+    and names are lowercase, so an un-normalized "EN" would also fail at
+    transcribe time.
+    """
+    lang = (language or "").strip().lower() or shared_config.SRC_LAN.strip().lower()
+    if lang == "auto":
+        return None
+    return lang
+
+
 _substitution_pattern = None
 
 
@@ -72,26 +91,54 @@ def _apply_substitutions(text: str) -> str:
 class WhisperTranscriber:
     @with_trace
     def __init__(self):
+        # One warmed FasterWhisperASR per canonical language, built once and
+        # reused across requests. Constructing a FasterWhisperASR loads a full
+        # ~1.5 GB WhisperModel onto the pinned GPU (seconds of blocking work),
+        # so building one per request would stall the event loop and stack
+        # duplicate model copies on the GPU (CUDA OOM under concurrency). The
+        # default SRC_LAN instance is warmed here and serves the normal path;
+        # rare non-default languages get their own cached instance on first use.
+        self._asr_by_lang = {}
+        self._asr_build_lock = asyncio.Lock()
+
         self.asr = _configure_asr(
             FasterWhisperASR(shared_config.SRC_LAN, config.WHISPER_MODEL)
         )
         self.asr.transcribe(config.WARMUP_FILE, init_prompt=config.STT_INITIAL_PROMPT)
+        self._asr_by_lang[_canonical_lang(None)] = self.asr
+
+    async def _get_asr(self, language: Optional[str]) -> FasterWhisperASR:
+        """Return a shared, warmed ASR for `language`, building it once on miss.
+
+        Cache hits (the SRC_LAN default path) never touch the lock; only the
+        first request for a new language pays the build cost, and the lock
+        keeps two concurrent first-requests from loading the same model twice.
+        The blocking model build is offloaded so the event loop stays free.
+        """
+        key = _canonical_lang(language)
+        asr = self._asr_by_lang.get(key)
+        if asr is not None:
+            return asr
+        async with self._asr_build_lock:
+            asr = self._asr_by_lang.get(key)
+            if asr is None:
+                lan = key if key is not None else "auto"
+                asr = await asyncio.to_thread(
+                    lambda: _configure_asr(FasterWhisperASR(lan, config.WHISPER_MODEL))
+                )
+                self._asr_by_lang[key] = asr
+            return asr
 
     @with_trace
     async def transcribe_file(self, audio_file_path: str, language: Optional[str] = None) -> str:
-        """Transcribe an audio file using FasterWhisper."""
+        """Transcribe an audio file using a shared, warmed FasterWhisper model."""
         trace_id = get_trace_id()
-        file_asr = _configure_asr(
-            FasterWhisperASR(
-                language or shared_config.SRC_LAN,
-                config.WHISPER_MODEL,
-            )
-        )
+        asr = await self._get_asr(language)
 
         logger.info(f"Transcribing file: {audio_file_path}", extra={'trace_id': trace_id})
 
         segments = await asyncio.to_thread(
-            file_asr.transcribe,
+            asr.transcribe,
             audio_file_path,
             init_prompt=config.STT_INITIAL_PROMPT,
         )
