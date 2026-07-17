@@ -19,21 +19,37 @@ directly.
 
 On startup the server bootstraps the clone. If `$GITHUB_CLONE_PATH/.git`
 is absent it runs `git clone --depth 50 <repo> <path>`. On subsequent
-boots it rewrites the `origin` URL (so a rotated PAT takes effect),
-runs `git fetch --prune origin`, then `git reset --hard
+boots it runs `git fetch --prune origin`, then `git reset --hard
 origin/<default_branch>` — the clone is treated as a read cache, not
 a working tree, and any local drift is discarded.
 
-The authenticated remote URL (`https://x-access-token:<TOKEN>@...`) is
-never logged.
+## Credential handling
+
+`origin`'s URL is always credential-free (`https://github.com/<repo>.git`).
+`GITHUB_TOKEN` is supplied to network operations through a `git -c
+credential.helper` that reads it from the process environment at call time, so
+it never lands in `.git/config`, in `FETCH_HEAD`, or in any process's argv. Git
+stderr is passed through a redactor before it reaches a log line or the model,
+because git echoes the remote URL — credentials included — in transport errors.
+
+This matters because these tools are LLM-reachable and the LLM reads issue text
+authored by anyone on the internet. A prompt injection that talks the agent into
+reading a file must not be able to reach a secret. So `.git/` is rejected at any
+depth by the path resolver behind `github_read_file` / `github_list_dir`, and
+pinned shut with a trailing `-g '!.git/**'` in `github_search_code`.
+
+Builds before this change embedded the token in `origin`'s URL, leaving it in
+plaintext at `.git/config` — which `github_read_file` would happily serve.
+Bootstrap now detects such a clone and rewrites the remote, but remediation is
+not retroactive: **rotate any token that was used by an affected build.**
 
 ## Tool inventory
 
 | Tool | Purpose |
 |------|---------|
-| `github_search_code(query, glob?, max_results?)` | Ripgrep regex search across the local clone. Returns `file:line:text` match lines with 1 line of context, clone-root-relative paths. `glob` maps to `rg -g` (e.g. `*.py`, `**/*.ts`). `max_results` caps match lines (default 50, max 200). |
-| `github_read_file(path, start_line?, end_line?)` | Read a file from the clone, optionally sliced to a line range. Path is resolved against `GITHUB_CLONE_PATH`; any traversal outside the root returns an error. Output is prefixed with line numbers. |
-| `github_list_dir(path?)` | List entries in a directory. Empty/omitted `path` means repo root. `.git/` is filtered out. |
+| `github_search_code(query, glob?, max_results?)` | Ripgrep regex search across the local clone. Returns `file:line:text` match lines with 1 line of context, clone-root-relative paths. `glob` maps to `rg -g` (e.g. `*.py`, `**/*.ts`). `max_results` caps match lines (default 50, max 200). `.git/` is excluded regardless of `glob`. |
+| `github_read_file(path, start_line?, end_line?)` | Read a file from the clone, optionally sliced to a line range. Path is resolved against `GITHUB_CLONE_PATH`; traversal outside the root, or any path inside `.git/`, returns an error. Output is prefixed with line numbers. |
+| `github_list_dir(path?)` | List entries in a directory. Empty/omitted `path` means repo root. `.git/` is rejected as a target and filtered from listings. |
 | `github_pull_latest()` | Fetch + hard-reset the clone to `origin/<default_branch>`. Returns the new short SHA and latest commit subject. Use when the model needs to be sure it's looking at post-commit state. |
 | `github_list_issues(state?, labels?, limit?)` | List issues on the configured repo. `state` is `open` / `closed` / `all` (default `open`). `labels` is a comma-separated filter. `limit` is 1–100 (default 20). PRs returned by the same GitHub endpoint are filtered out. Body preview (first 500 chars) is wrapped in `<UNTRUSTED_USER_TEXT>` blocks. |
 | `github_get_issue(number)` | Fetch one issue plus its comments. Body and every comment are wrapped in `<UNTRUSTED_USER_TEXT author="...">` blocks so the LLM treats them as data, not instructions. |

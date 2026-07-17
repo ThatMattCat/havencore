@@ -38,13 +38,53 @@ GITHUB_MAX_ISSUES_PER_HOUR = int(os.getenv("GITHUB_MAX_ISSUES_PER_HOUR", "5"))
 GITHUB_API = "https://api.github.com"
 
 
-def _authed_remote_url(repo: str, token: str) -> str:
-    """Build HTTPS remote URL with token embedded. Must never be logged."""
-    return f"https://x-access-token:{token}@github.com/{repo}.git"
+def _redact(text: str) -> str:
+    """Strip the token from anything headed for a log line or the model.
+    git echoes the remote URL in transport errors, credentials included."""
+    if not text:
+        return ""
+    if GITHUB_TOKEN:
+        text = text.replace(GITHUB_TOKEN, "***")
+    return text
+
+
+def _remote_url(repo: str) -> str:
+    """Credential-free remote URL. This is the only URL that may be persisted
+    to .git/config or FETCH_HEAD — see _credential_args for how auth is
+    supplied instead."""
+    return f"https://github.com/{repo}.git"
+
+
+def _credential_args() -> List[str]:
+    """Per-invocation `git -c` args that feed the token to git over stdout from
+    a helper that reads it out of the process environment.
+
+    The token must never land in .git/config (readable by github_read_file),
+    in argv (readable via /proc), or in FETCH_HEAD. Only the *name* of the env
+    var appears here; git expands it inside its own shell.
+    """
+    if not GITHUB_TOKEN:
+        return []
+    helper = '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+    return ["-c", f"credential.helper={helper}"]
 
 
 def _run_git(args: List[str], cwd: Optional[str] = None, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
+def _run_git_authed(args: List[str], cwd: Optional[str] = None, timeout: int = 120) -> subprocess.CompletedProcess:
+    """git, with credentials supplied out-of-band for network operations."""
+    return _run_git(_credential_args() + args, cwd=cwd, timeout=timeout)
+
+
+def _scrub_persisted_credentials(clone_path: Path) -> None:
+    """Older builds embedded the token directly in origin's URL, so existing
+    clones on disk still carry it in .git/config. Rewrite to the clean URL."""
+    current = _run_git(["remote", "get-url", "origin"], cwd=str(clone_path))
+    if current.returncode == 0 and "@github.com" in current.stdout:
+        logger.warning("origin URL carried an embedded credential — rewriting to a clean URL")
+    _run_git(["remote", "set-url", "origin", _remote_url(GITHUB_REPO)], cwd=str(clone_path))
 
 
 def _bootstrap_clone() -> None:
@@ -58,21 +98,21 @@ def _bootstrap_clone() -> None:
     if not (clone_path / ".git").exists():
         clone_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"Cloning {GITHUB_REPO} into {clone_path}")
-        url = _authed_remote_url(GITHUB_REPO, GITHUB_TOKEN or "")
-        res = _run_git(["clone", "--depth", "50", url, str(clone_path)], timeout=300)
+        res = _run_git_authed(
+            ["clone", "--depth", "50", _remote_url(GITHUB_REPO), str(clone_path)], timeout=300
+        )
         if res.returncode != 0:
-            logger.error(f"git clone failed (rc={res.returncode}): {res.stderr[:500]}")
+            logger.error(f"git clone failed (rc={res.returncode}): {_redact(res.stderr)[:500]}")
             return
         sha = _run_git(["rev-parse", "--short", "HEAD"], cwd=str(clone_path)).stdout.strip()
         logger.info(f"Clone ready at {clone_path} @ {sha}")
         return
 
-    url = _authed_remote_url(GITHUB_REPO, GITHUB_TOKEN or "")
-    _run_git(["remote", "set-url", "origin", url], cwd=str(clone_path))
+    _scrub_persisted_credentials(clone_path)
 
-    fetch = _run_git(["fetch", "--prune", "origin"], cwd=str(clone_path), timeout=180)
+    fetch = _run_git_authed(["fetch", "--prune", "origin"], cwd=str(clone_path), timeout=180)
     if fetch.returncode != 0:
-        logger.warning(f"git fetch failed (rc={fetch.returncode}): {fetch.stderr[:300]}")
+        logger.warning(f"git fetch failed (rc={fetch.returncode}): {_redact(fetch.stderr)[:300]}")
         return
 
     head = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=str(clone_path))
@@ -80,7 +120,7 @@ def _bootstrap_clone() -> None:
 
     reset = _run_git(["reset", "--hard", f"origin/{default_branch}"], cwd=str(clone_path))
     if reset.returncode != 0:
-        logger.warning(f"git reset failed: {reset.stderr[:300]}")
+        logger.warning(f"git reset failed: {_redact(reset.stderr)[:300]}")
         return
 
     sha = _run_git(["rev-parse", "--short", "HEAD"], cwd=str(clone_path)).stdout.strip()
@@ -88,16 +128,23 @@ def _bootstrap_clone() -> None:
 
 
 def _safe_resolve(user_path: str) -> Optional[Path]:
-    """Resolve user_path relative to clone root, rejecting traversal.
-    Returns None if the resolved path escapes the clone root."""
+    """Resolve user_path relative to clone root. Returns None if the resolved
+    path escapes the clone root, or touches .git at any depth.
+
+    The .git rule is a security control, not tidiness: these tools are reachable
+    by the LLM, and the LLM reads issue text written by anyone on the internet.
+    .git holds credentials (config, FETCH_HEAD) and is never source anyone needs.
+    """
     root = Path(GITHUB_CLONE_PATH).resolve()
     try:
         candidate = (root / (user_path or "")).resolve()
     except Exception:
         return None
     try:
-        candidate.relative_to(root)
+        rel = candidate.relative_to(root)
     except ValueError:
+        return None
+    if any(part == ".git" for part in rel.parts):
         return None
     return candidate
 
@@ -259,6 +306,10 @@ class GitHubMCPServer:
         cmd = ["rg", "-n", "--color=never", "--max-count", "5", "-C", "1"]
         if glob:
             cmd += ["-g", glob]
+        # Last glob wins in ripgrep, so this pins .git shut regardless of what the
+        # caller passed. rg's defaults already skip it; don't leave the credential
+        # store behind a default that a future flag could relax.
+        cmd += ["-g", "!.git/**"]
         cmd += ["--", query, GITHUB_CLONE_PATH]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -266,7 +317,7 @@ class GitHubMCPServer:
             return {"error": "search timed out"}
         # rg exit codes: 0 = matches, 1 = no matches, 2 = error.
         if proc.returncode not in (0, 1):
-            return {"error": f"ripgrep failed: {proc.stderr[:400]}"}
+            return {"error": f"ripgrep failed: {_redact(proc.stderr)[:400]}"}
         root_prefix = str(Path(GITHUB_CLONE_PATH).resolve()) + "/"
         match_count = 0
         kept: List[str] = []
@@ -291,7 +342,7 @@ class GitHubMCPServer:
         end = args.get("end_line")
         resolved = _safe_resolve(path)
         if resolved is None:
-            return {"error": f"path outside repo root: {path}"}
+            return {"error": f"path is not readable (outside repo root, or inside .git): {path}"}
         if not resolved.exists():
             return {"error": f"no such path: {path}"}
         if not resolved.is_file():
@@ -314,7 +365,7 @@ class GitHubMCPServer:
         path = args.get("path", "") or ""
         resolved = _safe_resolve(path)
         if resolved is None:
-            return {"error": f"path outside repo root: {path}"}
+            return {"error": f"path is not readable (outside repo root, or inside .git): {path}"}
         if not resolved.exists():
             return {"error": f"no such path: {path}"}
         if not resolved.is_dir():
@@ -330,14 +381,14 @@ class GitHubMCPServer:
         clone_path = Path(GITHUB_CLONE_PATH)
         if not (clone_path / ".git").exists():
             return {"error": "local clone missing; restart the agent container to re-clone"}
-        fetch = _run_git(["fetch", "--prune", "origin"], cwd=str(clone_path), timeout=120)
+        fetch = _run_git_authed(["fetch", "--prune", "origin"], cwd=str(clone_path), timeout=120)
         if fetch.returncode != 0:
-            return {"error": f"fetch failed: {fetch.stderr[:300]}"}
+            return {"error": f"fetch failed: {_redact(fetch.stderr)[:300]}"}
         head = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=str(clone_path))
         default_branch = head.stdout.strip().split("/")[-1] if head.returncode == 0 else "main"
         reset = _run_git(["reset", "--hard", f"origin/{default_branch}"], cwd=str(clone_path))
         if reset.returncode != 0:
-            return {"error": f"reset failed: {reset.stderr[:300]}"}
+            return {"error": f"reset failed: {_redact(reset.stderr)[:300]}"}
         sha = _run_git(["rev-parse", "--short", "HEAD"], cwd=str(clone_path)).stdout.strip()
         subject = _run_git(["log", "-1", "--pretty=%s"], cwd=str(clone_path)).stdout.strip()
         return {"branch": default_branch, "sha": sha, "latest_commit": subject}
