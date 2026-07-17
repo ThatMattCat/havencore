@@ -684,6 +684,11 @@ class HomeAssistantMCPServer:
                                 "type": "string",
                                 "description": "Entity ID to fetch history for"
                             },
+                            "entity_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional list of entity IDs (alternative to entity_id); returns a per-entity map"
+                            },
                             "hours": {
                                 "type": "integer",
                                 "minimum": 1,
@@ -692,22 +697,23 @@ class HomeAssistantMCPServer:
                                 "description": "Look-back window in hours (default 24, max 168 = 1 week)"
                             }
                         },
-                        "required": ["entity_id"]
+                        "required": []
                     }
                 ),
                 Tool(
                     name="ha_get_calendar_events",
                     description=(
-                        "Get upcoming events from a Home Assistant calendar entity over the next "
-                        "N days. Discover calendar entities via ha_list_entities with "
-                        "domain='calendar'."
+                        "Get upcoming events over the next N days. Pass a specific "
+                        "calendar_entity, or omit it to aggregate events across ALL "
+                        "calendars. Discover calendar entities via ha_list_entities "
+                        "with domain='calendar'."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "calendar_entity": {
                                 "type": "string",
-                                "description": "Calendar entity ID (e.g. 'calendar.family')"
+                                "description": "Calendar entity ID (e.g. 'calendar.family'). Omit to query all calendars."
                             },
                             "days": {
                                 "type": "integer",
@@ -717,7 +723,7 @@ class HomeAssistantMCPServer:
                                 "description": "Look-ahead window in days (default 7, max 31)"
                             }
                         },
-                        "required": ["calendar_entity"]
+                        "required": []
                     }
                 ),
                 Tool(
@@ -950,17 +956,11 @@ class HomeAssistantMCPServer:
                     return [types.TextContent(type="text", text=result)]
 
                 elif name == "ha_get_entity_history":
-                    result = await self._get_entity_history(
-                        arguments.get("entity_id"),
-                        arguments.get("hours", 24),
-                    )
+                    result = await self._get_entity_history_multi(arguments)
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
                 elif name == "ha_get_calendar_events":
-                    result = await self._get_calendar_events(
-                        arguments.get("calendar_entity"),
-                        arguments.get("days", 7),
-                    )
+                    result = await self._get_calendar_events_multi(arguments)
                     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
                 elif name == "ha_create_calendar_event":
@@ -1607,6 +1607,72 @@ class HomeAssistantMCPServer:
             "days": days,
             "events": events,
         }
+
+    async def _get_entity_history_multi(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Tolerant front-end for ha_get_entity_history. Accepts a single
+        `entity_id` or a list `entity_ids`, and a look-back window as either
+        `hours` or an ISO `start_time`. Autonomy gathers (and the LLM) can pass
+        any of these without hitting an 'entity_id is required' error."""
+        hours = args.get("hours")
+        if hours is None and args.get("start_time"):
+            try:
+                st = str(args["start_time"]).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(st)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                delta = datetime.now(timezone.utc) - dt
+                hours = max(1, int(delta.total_seconds() // 3600) + 1)
+            except Exception:
+                hours = 24
+        if hours is None:
+            hours = 24
+
+        ids = args.get("entity_ids")
+        if ids is None:
+            single = args.get("entity_id")
+            ids = [single] if single else []
+        elif isinstance(ids, str):
+            ids = [ids]
+        ids = [i for i in ids if i]
+        if not ids:
+            return {"error": "entity_id (or entity_ids) is required"}
+        if len(ids) == 1:
+            return await self._get_entity_history(ids[0], hours)
+        entities: Dict[str, Any] = {}
+        for eid in ids[:20]:
+            entities[eid] = await self._get_entity_history(eid, hours)
+        return {"hours": hours, "entities": entities}
+
+    async def _get_calendar_events_multi(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Tolerant front-end for ha_get_calendar_events. Accepts `days` or
+        `days_ahead`; a single `calendar_entity`, a `calendar_entities` list, or
+        neither (in which case every calendar entity is discovered and events
+        are aggregated across them)."""
+        days = args.get("days", args.get("days_ahead", 7))
+        entity = args.get("calendar_entity")
+        entities = args.get("calendar_entities")
+        if entity:
+            cal_ids = [entity]
+        elif entities:
+            cal_ids = [c for c in entities if c]
+        else:
+            try:
+                cals = await self.ha_client._get("/api/calendars")
+            except Exception as e:
+                return {"error": f"could not list calendars: {e}"}
+            cal_ids = [c.get("entity_id") for c in (cals or []) if c.get("entity_id")]
+            if not cal_ids:
+                return {"calendars": [], "days": days, "events": [],
+                        "note": "no calendar entities found"}
+        if len(cal_ids) == 1:
+            return await self._get_calendar_events(cal_ids[0], days)
+        combined: List[Dict[str, Any]] = []
+        for cid in cal_ids[:15]:
+            res = await self._get_calendar_events(cid, days)
+            if isinstance(res, dict) and res.get("events"):
+                for ev in res["events"]:
+                    combined.append({"calendar_entity": cid, **ev})
+        return {"calendars": cal_ids, "days": days, "events": combined}
 
     @staticmethod
     def _resolve_event_dates(args: Dict[str, Any]) -> Tuple[Optional[Dict[str, str]], Optional[str]]:

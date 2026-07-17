@@ -66,8 +66,13 @@ HOST_IP_ADDRESS="192.168.1.100"
 # API access key (set to anything)
 LLM_API_KEY="your_secret_key_here"
 
+# TTS engine (REQUIRED — both engines are profile-gated; if unset, no TTS starts)
+COMPOSE_PROFILES="kokoro"   # kokoro (default, fast) | chatterbox
+TTS_PROVIDER="kokoro"       # keep in sync with COMPOSE_PROFILES
+
 # GPU configuration
-CHATTERBOX_GPU="0"   # host GPU index for text-to-speech
+TTS_KOKORO_GPU="0"   # host GPU index for Kokoro TTS (default engine)
+CHATTERBOX_GPU="0"   # host GPU index for Chatterbox TTS (used when COMPOSE_PROFILES=chatterbox)
 STT_DEVICE="0"       # GPU for speech-to-text
 ```
 

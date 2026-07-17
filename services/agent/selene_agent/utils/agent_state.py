@@ -138,9 +138,10 @@ async def set_llm_provider_name(provider: str) -> datetime:
 #
 # Runtime-override for the active default voice. Set via /api/tts/voices/default
 # (used by the voice-cloning UI) so the operator can flip the assistant's voice
-# without redeploying. Resolution: this override → env CHATTERBOX_VOICE
-# → engine fallback. Stored as a plain voice name (no validation beyond
-# non-emptiness — TTS service rejects unknown names at synth time and logs).
+# without redeploying. Resolution: this override → the active engine's
+# configured default voice (CHATTERBOX_VOICE for Chatterbox, TTS_VOICE for
+# Kokoro) → engine fallback. Stored as a plain voice name (no validation
+# beyond non-emptiness — the TTS service rejects unknown names at synth time).
 
 _DEFAULT_VOICE_KEY = "tts_default_voice"
 
@@ -148,8 +149,8 @@ _DEFAULT_VOICE_KEY = "tts_default_voice"
 async def get_default_voice() -> Optional[str]:
     """Return the runtime-override default voice, or ``None`` if unset.
 
-    Callers should fall back to the engine's configured default
-    (CHATTERBOX_VOICE) when this is ``None``.
+    Callers should fall back to the active engine's configured default voice
+    (CHATTERBOX_VOICE for Chatterbox, TTS_VOICE for Kokoro) when this is ``None``.
     """
     try:
         row = await get_state(_DEFAULT_VOICE_KEY)

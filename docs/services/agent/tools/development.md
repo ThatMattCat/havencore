@@ -1,602 +1,10 @@
 # Tool Development Guide
 
-This guide covers creating custom tools and integrations for HavenCore, including both legacy tools and MCP (Model Context Protocol) servers.
+This guide covers creating tools and integrations for HavenCore. Every agent tool is an MCP (Model Context Protocol) server — there is no in-process "legacy" tool registry.
 
 ## Overview
 
-HavenCore supports two types of tools:
-- **Legacy Tools**: Python functions directly integrated into the agent
-- **MCP Tools**: External servers using Model Context Protocol for communication
-
-Both types can coexist and are managed through the Unified Tool Registry.
-
-## Legacy Tool Development
-
-### Tool Architecture
-
-Legacy tools consist of:
-1. **Function Implementation**: Python function that performs the actual work
-2. **Tool Definition**: JSON schema describing the tool's interface
-3. **Registration**: Adding the tool to the agent's tool registry
-
-### Creating a Basic Tool
-
-#### 1. Implement the Function
-
-Create or edit `services/agent/app/utils/custom_tools.py`:
-
-```python
-import requests
-import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-def get_cryptocurrency_price(
-    symbol: str, 
-    currency: str = "USD",
-    api_key: Optional[str] = None
-) -> Dict[str, Any]:
-    """Get current cryptocurrency price and market data.
-    
-    Args:
-        symbol: Cryptocurrency symbol (e.g., 'BTC', 'ETH', 'ADA')
-        currency: Target currency for price (default: 'USD')
-        api_key: Optional API key for rate limiting
-        
-    Returns:
-        Dict containing price data and market information
-    """
-    try:
-        # Use CoinGecko API (free tier)
-        base_url = "https://api.coingecko.com/api/v3"
-        endpoint = f"{base_url}/simple/price"
-        
-        params = {
-            "ids": symbol.lower(),
-            "vs_currencies": currency.lower(),
-            "include_market_cap": "true",
-            "include_24hr_change": "true",
-            "include_last_updated_at": "true"
-        }
-        
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-            
-        response = requests.get(endpoint, params=params, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        if not data:
-            return {"error": f"Cryptocurrency '{symbol}' not found"}
-            
-        coin_data = list(data.values())[0]
-        
-        return {
-            "symbol": symbol.upper(),
-            "currency": currency.upper(),
-            "price": coin_data.get(f"{currency.lower()}"),
-            "market_cap": coin_data.get(f"{currency.lower()}_market_cap"),
-            "24h_change": coin_data.get(f"{currency.lower()}_24h_change"),
-            "last_updated": datetime.fromtimestamp(
-                coin_data.get("last_updated_at", 0)
-            ).isoformat(),
-            "success": True
-        }
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API request failed: {e}")
-        return {"error": f"Failed to fetch cryptocurrency data: {str(e)}"}
-    except Exception as e:
-        logger.error(f"Unexpected error in get_cryptocurrency_price: {e}")
-        return {"error": f"Unexpected error: {str(e)}"}
-
-
-def calculate_tip(
-    bill_amount: float, 
-    tip_percentage: float = 15.0,
-    split_ways: int = 1
-) -> Dict[str, Any]:
-    """Calculate tip and split bill among multiple people.
-    
-    Args:
-        bill_amount: Total bill amount
-        tip_percentage: Tip percentage (default: 15%)
-        split_ways: Number of people to split bill (default: 1)
-        
-    Returns:
-        Dict containing tip calculation details
-    """
-    try:
-        if bill_amount <= 0:
-            return {"error": "Bill amount must be greater than 0"}
-            
-        if tip_percentage < 0:
-            return {"error": "Tip percentage cannot be negative"}
-            
-        if split_ways < 1:
-            return {"error": "Must split among at least 1 person"}
-            
-        tip_amount = bill_amount * (tip_percentage / 100)
-        total_amount = bill_amount + tip_amount
-        per_person = total_amount / split_ways
-        tip_per_person = tip_amount / split_ways
-        
-        return {
-            "bill_amount": round(bill_amount, 2),
-            "tip_percentage": tip_percentage,
-            "tip_amount": round(tip_amount, 2),
-            "total_amount": round(total_amount, 2),
-            "split_ways": split_ways,
-            "per_person_total": round(per_person, 2),
-            "per_person_tip": round(tip_per_person, 2),
-            "success": True
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in calculate_tip: {e}")
-        return {"error": f"Calculation error: {str(e)}"}
-```
-
-#### 2. Define Tool Schema
-
-Add tool definitions to `services/agent/app/utils/general_tools_defs.py`:
-
-```python
-# Cryptocurrency price tool definition
-cryptocurrency_price_tool = {
-    "type": "function",
-    "function": {
-        "name": "get_cryptocurrency_price",
-        "description": "Get current price and market data for cryptocurrencies like Bitcoin, Ethereum, etc.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Cryptocurrency symbol (e.g., BTC, ETH, ADA, DOGE)"
-                },
-                "currency": {
-                    "type": "string",
-                    "description": "Target currency for price (e.g., USD, EUR, GBP)",
-                    "default": "USD"
-                }
-            },
-            "required": ["symbol"]
-        }
-    }
-}
-
-# Tip calculator tool definition
-tip_calculator_tool = {
-    "type": "function", 
-    "function": {
-        "name": "calculate_tip",
-        "description": "Calculate tip amount and split bill among multiple people",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "bill_amount": {
-                    "type": "number",
-                    "description": "Total bill amount in dollars"
-                },
-                "tip_percentage": {
-                    "type": "number",
-                    "description": "Tip percentage (e.g., 15 for 15%)",
-                    "default": 15.0
-                },
-                "split_ways": {
-                    "type": "integer",
-                    "description": "Number of people to split the bill among",
-                    "default": 1
-                }
-            },
-            "required": ["bill_amount"]
-        }
-    }
-}
-```
-
-#### 3. Register Tools with Agent
-
-Update `services/agent/app/selene_agent.py`:
-
-```python
-from utils.custom_tools import get_cryptocurrency_price, calculate_tip
-from utils.general_tools_defs import cryptocurrency_price_tool, tip_calculator_tool
-
-class SeleneAgent:
-    def _setup_tool_functions(self) -> Dict[str, callable]:
-        """Map tool names to their implementation functions"""
-        return {
-            # Existing tools...
-            'home_assistant.get_domain_entity_states': self.haos.get_domain_entity_states,
-            'brave_search': self.brave_search,
-            'wolfram_alpha': self.wolfram_alpha,
-            
-            # New custom tools
-            'get_cryptocurrency_price': get_cryptocurrency_price,
-            'calculate_tip': calculate_tip,
-        }
-    
-    def _get_available_tools(self) -> List[Dict[str, Any]]:
-        """Get list of all available tool definitions"""
-        return [
-            # Existing tools...
-            haos_get_domain_entity_states_tool,
-            brave_search_tool,
-            wolfram_alpha_tool,
-            
-            # New custom tools
-            cryptocurrency_price_tool,
-            tip_calculator_tool,
-        ]
-```
-
-#### 4. Add Environment Configuration
-
-Add any required API keys to `.env.example`:
-
-```bash
-# Cryptocurrency API Configuration (optional)
-CRYPTO_API_KEY=""  # CoinGecko Pro API key for higher rate limits
-```
-
-#### 5. Test the Tools
-
-```bash
-# Restart agent to load new tools
-docker compose restart agent
-
-# Test via API
-curl -X POST http://localhost/v1/chat/completions \
-  -H "Authorization: Bearer your_api_key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-3.5-turbo",
-    "messages": [
-      {"role": "user", "content": "What is the current price of Bitcoin?"}
-    ]
-  }'
-
-# Test tip calculator
-curl -X POST http://localhost/v1/chat/completions \
-  -H "Authorization: Bearer your_api_key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-3.5-turbo", 
-    "messages": [
-      {"role": "user", "content": "Calculate a 20% tip on a $85 bill split 4 ways"}
-    ]
-  }'
-```
-
-### Advanced Tool Patterns
-
-#### Asynchronous Tools
-
-For I/O intensive operations, create async tools:
-
-```python
-import asyncio
-import aiohttp
-from typing import Dict, Any
-
-async def async_web_scraper(url: str, selector: str = None) -> Dict[str, Any]:
-    """Asynchronously scrape content from a web page.
-    
-    Args:
-        url: URL to scrape
-        selector: Optional CSS selector for specific content
-        
-    Returns:
-        Dict containing scraped content
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status != 200:
-                    return {"error": f"HTTP {response.status}: {response.reason}"}
-                
-                html = await response.text()
-                
-                # Use BeautifulSoup for parsing
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                if selector:
-                    elements = soup.select(selector)
-                    content = [elem.get_text().strip() for elem in elements]
-                else:
-                    # Extract title and meta description
-                    title = soup.find('title')
-                    title_text = title.get_text().strip() if title else "No title"
-                    
-                    meta_desc = soup.find('meta', attrs={'name': 'description'})
-                    desc_text = meta_desc.get('content', '') if meta_desc else ""
-                    
-                    content = {
-                        "title": title_text,
-                        "description": desc_text
-                    }
-                
-                return {
-                    "url": url,
-                    "content": content,
-                    "success": True
-                }
-                
-    except Exception as e:
-        logger.error(f"Web scraping error: {e}")
-        return {"error": f"Scraping failed: {str(e)}"}
-
-# Register async tool (requires special handling in agent)
-def web_scraper_sync_wrapper(url: str, selector: str = None) -> Dict[str, Any]:
-    """Synchronous wrapper for async web scraper tool."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(async_web_scraper(url, selector))
-    finally:
-        loop.close()
-```
-
-#### Stateful Tools
-
-Tools that maintain state between calls:
-
-```python
-class TaskManager:
-    """Tool for managing a simple task list."""
-    
-    def __init__(self):
-        self.tasks = []
-        self.next_id = 1
-    
-    def add_task(self, description: str, priority: str = "medium") -> Dict[str, Any]:
-        """Add a new task to the list."""
-        task = {
-            "id": self.next_id,
-            "description": description,
-            "priority": priority,
-            "completed": False,
-            "created_at": datetime.now().isoformat()
-        }
-        
-        self.tasks.append(task)
-        self.next_id += 1
-        
-        return {
-            "task": task,
-            "total_tasks": len(self.tasks),
-            "success": True
-        }
-    
-    def complete_task(self, task_id: int) -> Dict[str, Any]:
-        """Mark a task as completed."""
-        for task in self.tasks:
-            if task["id"] == task_id:
-                task["completed"] = True
-                task["completed_at"] = datetime.now().isoformat()
-                return {"task": task, "success": True}
-        
-        return {"error": f"Task with ID {task_id} not found"}
-    
-    def list_tasks(self, show_completed: bool = True) -> Dict[str, Any]:
-        """List all tasks, optionally filtering out completed ones."""
-        if show_completed:
-            filtered_tasks = self.tasks
-        else:
-            filtered_tasks = [t for t in self.tasks if not t["completed"]]
-        
-        return {
-            "tasks": filtered_tasks,
-            "total": len(filtered_tasks),
-            "success": True
-        }
-
-# Create global instance
-task_manager = TaskManager()
-
-# Tool functions that use the stateful manager
-def add_task(description: str, priority: str = "medium") -> Dict[str, Any]:
-    return task_manager.add_task(description, priority)
-
-def complete_task(task_id: int) -> Dict[str, Any]:
-    return task_manager.complete_task(task_id)
-
-def list_tasks(show_completed: bool = True) -> Dict[str, Any]:
-    return task_manager.list_tasks(show_completed)
-```
-
-#### Database-Integrated Tools
-
-Tools that interact with the PostgreSQL database:
-
-```python
-import asyncpg
-from shared.configs.shared_config import (
-    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, 
-    POSTGRES_USER, POSTGRES_PASSWORD
-)
-
-class DatabaseTool:
-    """Tool for interacting with the conversation database."""
-    
-    def __init__(self):
-        self.connection_string = (
-            f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
-            f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-        )
-    
-    async def get_conversation_stats(self) -> Dict[str, Any]:
-        """Get statistics about stored conversations."""
-        try:
-            conn = await asyncpg.connect(self.connection_string)
-            
-            # Total conversations
-            total = await conn.fetchval(
-                "SELECT COUNT(*) FROM conversation_histories"
-            )
-            
-            # Recent conversations (last 7 days)
-            recent = await conn.fetchval(
-                "SELECT COUNT(*) FROM conversation_histories "
-                "WHERE created_at > NOW() - INTERVAL '7 days'"
-            )
-            
-            # Average messages per conversation
-            avg_messages = await conn.fetchval(
-                "SELECT AVG((metadata->>'message_count')::int) "
-                "FROM conversation_histories "
-                "WHERE metadata->>'message_count' IS NOT NULL"
-            )
-            
-            await conn.close()
-            
-            return {
-                "total_conversations": total,
-                "recent_conversations": recent,
-                "average_messages": round(float(avg_messages or 0), 1),
-                "success": True
-            }
-            
-        except Exception as e:
-            logger.error(f"Database query error: {e}")
-            return {"error": f"Database error: {str(e)}"}
-
-# Create tool instance
-db_tool = DatabaseTool()
-
-def get_conversation_statistics() -> Dict[str, Any]:
-    """Get conversation statistics from the database."""
-    # Run async function in sync context
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(db_tool.get_conversation_stats())
-    finally:
-        loop.close()
-```
-
-### Error Handling Best Practices
-
-#### Comprehensive Error Handling
-
-```python
-import traceback
-from typing import Dict, Any, Optional
-
-def robust_api_tool(
-    endpoint: str, 
-    api_key: Optional[str] = None,
-    timeout: int = 30
-) -> Dict[str, Any]:
-    """Template for robust API tool with comprehensive error handling."""
-    
-    try:
-        # Input validation
-        if not endpoint:
-            return {"error": "Endpoint URL is required"}
-        
-        if not endpoint.startswith(('http://', 'https://')):
-            return {"error": "Invalid URL format"}
-        
-        # API call with proper error handling
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        
-        response = requests.get(
-            endpoint, 
-            headers=headers, 
-            timeout=timeout
-        )
-        
-        # Handle different HTTP status codes
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                return {"data": data, "success": True}
-            except ValueError as e:
-                return {"error": f"Invalid JSON response: {str(e)}"}
-                
-        elif response.status_code == 401:
-            return {"error": "Authentication failed - check API key"}
-            
-        elif response.status_code == 403:
-            return {"error": "Access forbidden - insufficient permissions"}
-            
-        elif response.status_code == 404:
-            return {"error": "Endpoint not found"}
-            
-        elif response.status_code == 429:
-            return {"error": "Rate limit exceeded - try again later"}
-            
-        else:
-            return {
-                "error": f"HTTP {response.status_code}: {response.reason}"
-            }
-            
-    except requests.exceptions.ConnectionError:
-        return {"error": "Connection failed - check network connectivity"}
-        
-    except requests.exceptions.Timeout:
-        return {"error": f"Request timed out after {timeout} seconds"}
-        
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Request failed: {str(e)}"}
-        
-    except Exception as e:
-        # Log full traceback for debugging
-        logger.error(f"Unexpected error in robust_api_tool: {traceback.format_exc()}")
-        return {"error": f"Unexpected error: {str(e)}"}
-```
-
-#### Logging and Debugging
-
-```python
-import logging
-from functools import wraps
-
-def log_tool_execution(func):
-    """Decorator to log tool execution details."""
-    
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        tool_name = func.__name__
-        logger.info(f"Executing tool: {tool_name}")
-        logger.debug(f"Tool args: {args}, kwargs: {kwargs}")
-        
-        try:
-            result = func(*args, **kwargs)
-            
-            if isinstance(result, dict) and result.get("success"):
-                logger.info(f"Tool {tool_name} completed successfully")
-            elif isinstance(result, dict) and "error" in result:
-                logger.warning(f"Tool {tool_name} failed: {result['error']}")
-            
-            logger.debug(f"Tool {tool_name} result: {result}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Tool {tool_name} crashed: {str(e)}")
-            return {"error": f"Tool execution failed: {str(e)}"}
-    
-    return wrapper
-
-# Usage
-@log_tool_execution
-def my_custom_tool(param1: str, param2: int = 10) -> Dict[str, Any]:
-    """Custom tool with automatic logging."""
-    # Tool implementation here
-    return {"result": "success", "success": True}
-```
-
----
+All of the agent's tools are provided by MCP servers: separate processes that advertise their tools over stdio and are wired into the LLM's function-calling interface via the `UnifiedTool` abstraction. To add a tool, add (or copy) an in-tree MCP module — see [Adding an MCP tool to HavenCore (in-tree)](#adding-an-mcp-tool-to-havencore-in-tree) below.
 
 ## Adding an MCP tool to HavenCore (in-tree)
 
@@ -605,7 +13,7 @@ modules under `services/agent/selene_agent/modules/` and register it in
 `.env`. The agent spawns each module as a subprocess at startup and discovers
 its tools over stdio — no agent code changes needed.
 
-Every in-tree module has the same three-file layout:
+Every in-tree module has the same three-file layout. The server file is named `mcp_server.py` by convention in the template modules, but it can have any name as long as `__main__.py` imports its `main()` — several in-tree modules use a different name (e.g. `face_mcp_server.py`, `github_mcp_server.py`, `qdrant_mcp_server.py`, `server.py`):
 
 ```
 services/agent/selene_agent/modules/mcp_<your_tool>/
@@ -709,7 +117,7 @@ directory changes.
 docker compose restart agent
 
 # From the host: confirm the server loaded and its tools are listed
-curl http://localhost:6002/api/mcp/status | jq '.servers_running, .tools_by_server'
+curl http://localhost:6002/api/mcp/status | jq '.connected_servers, .tools_by_server'
 ```
 
 Then run the stdio handshake from the **MCP server testing** section below
@@ -739,7 +147,6 @@ Model Context Protocol (MCP) is a standard for connecting AI assistants to exter
 - **Language agnostic**: Write servers in any language
 - **Process isolation**: Servers run independently
 - **Standardized interface**: Consistent tool interface
-- **Hot reloading**: Add/remove servers without restarting HavenCore
 
 ### Creating an MCP Server
 
@@ -980,10 +387,7 @@ server.run().catch(console.error);
 Add to your `.env` file:
 
 ```bash
-# Enable MCP support
-MCP_ENABLED=true
-
-# Configure MCP servers
+# Configure MCP servers (MCP is enabled by having entries here — no separate flag)
 MCP_SERVERS='[
   {
     "name": "file-manager",
@@ -1018,6 +422,8 @@ curl -X POST http://localhost/v1/chat/completions \
 ### Advanced MCP Patterns
 
 #### Python MCP Server
+
+> **Note:** The hand-rolled stdin/JSON loop below is illustrative only and is **not** how HavenCore connects to MCP servers. HavenCore uses the official `mcp` SDK `ClientSession`, which performs the full MCP handshake (`initialize` → `notifications/initialized`) before `tools/list`; a bare loop like this never completes that handshake and would fail to register. For a working Python server, use the `mcp.server.Server` + `stdio_server` pattern shown earlier under "Define your tools in `mcp_server.py`" and in every in-tree module.
 
 ```python
 # python_mcp_server.py
@@ -1156,63 +562,48 @@ if __name__ == "__main__":
 
 ## Tool Registry Management
 
-### Unified Tool Registry
+### Registered tools
 
-The Unified Tool Registry manages both legacy and MCP tools:
+Every agent tool is an MCP tool. List the current registry, grouped by MCP server, over HTTP:
 
-```python
-# Example of checking tool status
-curl http://localhost:6002/tools/status
+```bash
+# List all registered tools
+curl http://localhost:6002/api/tools
 
 # Response:
 {
-  "total_tools": 15,
-  "legacy_tools": 8,
-  "mcp_tools": 7,
-  "conflicts": ["weather_tool"],  # Tools with same name from both sources
-  "tool_preference": "legacy",    # Which version is used for conflicts
-  "tools": [
-    {
-      "name": "get_weather_forecast",
-      "source": "legacy",
-      "description": "Get weather forecast for a location"
-    },
-    {
-      "name": "list_files", 
-      "source": "mcp",
-      "server_name": "file-manager",
-      "description": "List files and directories"
-    }
-  ]
+  "tools_by_server": {
+    "homeassistant": [
+      {
+        "name": "ha_get_domain_entity_states",
+        "description": "Get states for all entities in a domain",
+        "parameters": {}
+      }
+    ],
+    "general_tools": [
+      {
+        "name": "brave_search",
+        "description": "Search the web with Brave",
+        "parameters": {}
+      }
+    ]
+  },
+  "total": 68
 }
 ```
 
-### Managing Tool Conflicts
+Because there is no legacy tool source, there is no name-conflict resolution: tool names simply have to be unique across servers.
 
-When both legacy and MCP tools have the same name:
+### Reloading MCP servers (requires restart)
 
-```bash
-# Set preference for MCP tools over legacy
-curl -X POST http://localhost:6002/tools/preference \
-  -H "Content-Type: application/json" \
-  -d '{"prefer_mcp": true}'
-
-# Set preference for legacy tools (default)
-curl -X POST http://localhost:6002/tools/preference \
-  -H "Content-Type: application/json" \
-  -d '{"prefer_mcp": false}'
-```
-
-### Dynamic Tool Loading
-
-MCP servers can be added/removed without restarting HavenCore:
+MCP servers are loaded once from `MCP_SERVERS` at agent startup — adding or removing a server requires restarting the agent to pick up the new configuration:
 
 ```bash
 # Update MCP_SERVERS in .env
 MCP_SERVERS='[
   {
     "name": "file-manager",
-    "command": "node", 
+    "command": "node",
     "args": ["mcp-servers/file-manager/server.js"],
     "enabled": true
   },
@@ -1230,139 +621,12 @@ docker compose restart agent
 
 ## Testing and Debugging Tools
 
-### Unit Testing Tools
+### Unit tests
 
-```python
-# test_custom_tools.py
-import pytest
-from unittest.mock import Mock, patch
-from utils.custom_tools import get_cryptocurrency_price, calculate_tip
+The agent's Python test suite lives in `services/agent/tests/` (pytest + pytest-asyncio, `asyncio_mode=auto`). Run it inside the agent container so imports and env resolve:
 
-class TestCryptocurrencyTool:
-    @patch('requests.get')
-    def test_successful_price_fetch(self, mock_get):
-        # Mock successful API response
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            "bitcoin": {
-                "usd": 45000.00,
-                "usd_market_cap": 850000000000,
-                "usd_24h_change": 2.5,
-                "last_updated_at": 1640995200
-            }
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_get.return_value = mock_response
-
-        result = get_cryptocurrency_price("BTC")
-
-        assert result["success"] is True
-        assert result["symbol"] == "BTC"
-        assert result["price"] == 45000.00
-        assert result["24h_change"] == 2.5
-
-    @patch('requests.get')
-    def test_api_error_handling(self, mock_get):
-        # Mock API error
-        mock_get.side_effect = Exception("Network error")
-
-        result = get_cryptocurrency_price("BTC")
-
-        assert "error" in result
-        assert "Network error" in result["error"]
-
-class TestTipCalculator:
-    def test_basic_calculation(self):
-        result = calculate_tip(100.0, 15.0, 1)
-        
-        assert result["success"] is True
-        assert result["bill_amount"] == 100.0
-        assert result["tip_amount"] == 15.0
-        assert result["total_amount"] == 115.0
-        assert result["per_person_total"] == 115.0
-
-    def test_split_bill(self):
-        result = calculate_tip(100.0, 20.0, 4)
-        
-        assert result["success"] is True
-        assert result["total_amount"] == 120.0
-        assert result["per_person_total"] == 30.0
-        assert result["per_person_tip"] == 5.0
-
-    def test_invalid_inputs(self):
-        # Test negative bill amount
-        result = calculate_tip(-10.0)
-        assert "error" in result
-
-        # Test zero split
-        result = calculate_tip(100.0, 15.0, 0)
-        assert "error" in result
-
-# Run tests
-# docker compose exec agent python -m pytest test_custom_tools.py -v
-```
-
-### Integration Testing
-
-```python
-# test_tool_integration.py
-import requests
-import json
-
-class TestToolIntegration:
-    def setup_method(self):
-        self.base_url = "http://localhost"
-        self.headers = {
-            "Authorization": "Bearer your_api_key",
-            "Content-Type": "application/json"
-        }
-
-    def test_cryptocurrency_tool_integration(self):
-        """Test cryptocurrency tool through chat API."""
-        payload = {
-            "model": "gpt-3.5-turbo",
-            "messages": [
-                {"role": "user", "content": "What is the current price of Ethereum?"}
-            ]
-        }
-
-        response = requests.post(
-            f"{self.base_url}/v1/chat/completions",
-            headers=self.headers,
-            json=payload
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert "choices" in data
-        
-        # Check that tool was called and price information is in response
-        assistant_message = data["choices"][0]["message"]["content"]
-        assert "ethereum" in assistant_message.lower() or "eth" in assistant_message.lower()
-
-    def test_tip_calculator_integration(self):
-        """Test tip calculator through chat API.""" 
-        payload = {
-            "model": "gpt-3.5-turbo",
-            "messages": [
-                {"role": "user", "content": "Calculate a 18% tip on a $75 bill for 3 people"}
-            ]
-        }
-
-        response = requests.post(
-            f"{self.base_url}/v1/chat/completions", 
-            headers=self.headers,
-            json=payload
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        
-        assistant_message = data["choices"][0]["message"]["content"]
-        # Should contain calculation results
-        assert "75" in assistant_message  # Original bill
-        assert "18" in assistant_message  # Tip percentage
-        assert "3" in assistant_message   # Number of people
+```bash
+docker compose exec -T agent pytest
 ```
 
 ### MCP Server Testing
@@ -1401,12 +665,14 @@ Swap the module for any of the others:
 | general_tools | `selene_agent.modules.mcp_general_tools` |
 | homeassistant | `selene_agent.modules.mcp_homeassistant_tools` |
 | plex | `selene_agent.modules.mcp_plex_tools` |
+| music_assistant | `selene_agent.modules.mcp_music_assistant_tools` |
 | mcp_server_qdrant | `selene_agent.modules.mcp_qdrant_tools` |
 | mqtt | `selene_agent.modules.mcp_mqtt_tools` |
 | face | `selene_agent.modules.mcp_face_tools` |
 | vision | `selene_agent.modules.mcp_vision_tools` |
 | github | `selene_agent.modules.mcp_github_tools` |
 | reminder | `selene_agent.modules.mcp_reminder_tools` |
+| device_action | `selene_agent.modules.mcp_device_action_tools` |
 
 (The `mcp_server_fetch` entry in `.env` is the upstream `mcp-server-fetch`
 package, not a local module.)
@@ -1435,9 +701,9 @@ the error text inside `content`. Bump `sleep` higher for slow tools.
 #### End-to-end via the chat API
 
 To test a tool the way the LLM actually invokes it — including tool
-selection, argument synthesis, and the follow-up response — hit
-`/v1/chat/completions` with a prompt that forces the tool. See the
-[Integration Testing](#integration-testing) section above for the pattern.
+selection, argument synthesis, and the follow-up response — POST a prompt
+that forces the tool to `/v1/chat/completions` and inspect the tool-call
+handling in the response.
 
 ### Debugging Tools
 
@@ -1471,6 +737,6 @@ def my_custom_tool(param: str) -> Dict[str, Any]:
 ---
 
 **Next Steps**:
-- [MCP Integration](MCP-Integration.md) - Deep dive into Model Context Protocol
+- [Agent Tools overview](README.md) - The MCP servers that make up the agent's tool surface
 - [Home Assistant Integration](../../../integrations/home-assistant.md) - Smart home tool development
-- [API Development](API-Development.md) - Building applications on HavenCore
+- [API Reference](../../../api-reference.md) - Building applications on HavenCore

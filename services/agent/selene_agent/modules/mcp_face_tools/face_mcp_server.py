@@ -38,7 +38,7 @@ URL_DOWNLOAD_MAX_BYTES = int(os.getenv("FACE_REC_URL_DOWNLOAD_MAX_BYTES", str(10
 ACCESS_LEVELS = ("unknown", "resident", "guest", "blocked")
 
 
-def _fuzzy_pick(query: str, choices: List[str]) -> List[str]:
+def _fuzzy_pick(query: str, choices: List[str], cutoff: float = 0.3) -> List[str]:
     """Resolve `query` against `choices`. Returns the list of candidates
     surfaced by the first stage that matches anything.
 
@@ -75,7 +75,7 @@ def _fuzzy_pick(query: str, choices: List[str]) -> List[str]:
         return substring_hits
 
     close_lower = difflib.get_close_matches(
-        q_lower, [c.lower() for c in choices], n=5, cutoff=0.3,
+        q_lower, [c.lower() for c in choices], n=5, cutoff=cutoff,
     )
     if close_lower:
         return [lower_to_orig[c] for c in close_lower]
@@ -125,7 +125,10 @@ class FaceMCPServer:
         """
         people = self._get("/api/people")
         names = [p["name"] for p in people]
-        hits = _fuzzy_pick(name, names)
+        # Strict cutoff for person names: the loose 0.3 (tuned for long camera
+        # entity_ids) produces false single-matches for short first names
+        # ('Ben'->'Ken', 'Sam'->'Pam'), which would mutate the WRONG person.
+        hits = _fuzzy_pick(name, names, cutoff=0.8)
         if not hits:
             return {
                 "error": f"no person matched '{name}'",
@@ -258,7 +261,10 @@ class FaceMCPServer:
 
         people = self._get("/api/people")
         names = [p["name"] for p in people]
-        hits = _fuzzy_pick(name, names)
+        # Strict cutoff for person names: the loose 0.3 (tuned for long camera
+        # entity_ids) produces false single-matches for short first names
+        # ('Ben'->'Ken', 'Sam'->'Pam'), which would mutate the WRONG person.
+        hits = _fuzzy_pick(name, names, cutoff=0.8)
         if len(hits) > 1:
             return {
                 "error": (

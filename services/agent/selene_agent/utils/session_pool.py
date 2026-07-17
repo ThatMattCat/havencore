@@ -66,6 +66,12 @@ class SessionOrchestratorPool:
         self._pool_lock = asyncio.Lock()
         self._sweep_task: Optional[asyncio.Task] = None
 
+        # Single-flight guard: sid → in-progress creation Future. Ensures two
+        # concurrent get_or_create() calls for the same sid share one hydrate/
+        # build instead of racing to construct duplicate orchestrators. Only
+        # touched under _pool_lock; entries are removed when creation settles.
+        self._inflight: Dict[str, "asyncio.Future[AgentOrchestrator]"] = {}
+
         # Per-session subscriber queues for out-of-band server → client events
         # (e.g. summary_reset fired by the background idle sweep). Bounded queue
         # with drop-on-full semantics — these are UI notifications, not source
@@ -161,48 +167,94 @@ class SessionOrchestratorPool:
         """Return the orchestrator for session_id, creating or hydrating as needed.
 
         Passing None (or an unknown sid absent from the DB) mints a new session.
+
+        `_pool_lock` is held only for O(1) dict bookkeeping — never across the
+        slow awaits (DB hydration, ``build_system_prompt``, ``initialize()``, or
+        the eviction flush's summarize LLM call), which previously serialized
+        every chat request behind one slow session. Concurrent calls for the
+        same sid dedupe on a single-flight Future so they don't build duplicate
+        orchestrators.
         """
+        fut: Optional["asyncio.Future[AgentOrchestrator]"] = None
+        waiter: Optional["asyncio.Future[AgentOrchestrator]"] = None
         async with self._pool_lock:
             # 1. In-pool → bump LRU and return.
             if session_id and session_id in self._sessions:
                 self._sessions.move_to_end(session_id)
                 return self._sessions[session_id]
 
-            # 2. Known sid but not in pool → try to cold-resume from DB.
-            resumed: Optional[AgentOrchestrator] = None
-            if session_id:
-                resumed = await self._hydrate_from_db(session_id)
+            # 2. Creation already in flight for this sid → await its result.
+            if session_id is not None:
+                waiter = self._inflight.get(session_id)
+                if waiter is None:
+                    # We become the creator; register before releasing the lock
+                    # so concurrent callers dedupe on this Future.
+                    fut = asyncio.get_running_loop().create_future()
+                    self._inflight[session_id] = fut
 
-            if resumed is not None:
-                await self._admit(session_id, resumed)
-                return resumed
+        if waiter is not None:
+            return await waiter
 
-            # 3. Mint a fresh session.
-            new_sid = session_id or str(uuid.uuid4())
-            orch = self._build_orchestrator(new_sid)
-            await orch.initialize()
-            self._maybe_append_mcp_note(orch)
-            await self._admit(new_sid, orch)
-            return orch
+        # 3. We are the creator (known sid) or a fresh mint (session_id is None).
+        try:
+            if session_id is None:
+                new_sid = str(uuid.uuid4())
+                orch = self._build_orchestrator(new_sid)
+                await orch.initialize()
+                self._maybe_append_mcp_note(orch)
+                await self._admit(new_sid, orch)
+                return orch
+
+            resumed = await self._hydrate_from_db(session_id)
+            if resumed is None:
+                resumed = self._build_orchestrator(session_id)
+                await resumed.initialize()
+                self._maybe_append_mcp_note(resumed)
+            await self._admit(session_id, resumed)
+            fut.set_result(resumed)
+            return resumed
+        except Exception as e:
+            if fut is not None and not fut.done():
+                fut.set_exception(e)
+            raise
+        finally:
+            if session_id is not None and fut is not None:
+                async with self._pool_lock:
+                    if self._inflight.get(session_id) is fut:
+                        self._inflight.pop(session_id, None)
 
     async def _admit(self, session_id: str, orch: AgentOrchestrator) -> None:
         """Insert an orchestrator, evicting the LRU entry if at capacity.
 
-        Caller must hold `_pool_lock`.
+        Must be called WITHOUT holding `_pool_lock` — it takes the lock itself
+        only for the dict mutations. The evicted session is popped under the
+        lock but flushed *after* releasing it: `_flush_one` can run a
+        summarization LLM call (~SESSION_SUMMARY_LLM_TIMEOUT_SEC) plus DB writes,
+        and holding `_pool_lock` across that would stall every other
+        get_or_create.
         """
-        if len(self._sessions) >= self._max_size and session_id not in self._sessions:
+        evictee: Optional[tuple] = None
+        async with self._pool_lock:
+            if len(self._sessions) >= self._max_size and session_id not in self._sessions:
+                try:
+                    evict_sid, evict_orch = next(iter(self._sessions.items()))
+                    self._sessions.pop(evict_sid, None)
+                    self._locks.pop(evict_sid, None)
+                    evictee = (evict_sid, evict_orch)
+                except StopIteration:
+                    pass
+
+            self._sessions[session_id] = orch
+            self._sessions.move_to_end(session_id)
+            self._locks.setdefault(session_id, asyncio.Lock())
+
+        if evictee is not None:
+            evict_sid, evict_orch = evictee
             try:
-                evict_sid, evict_orch = next(iter(self._sessions.items()))
                 await self._flush_one(evict_orch, reason="lru_eviction")
-                self._sessions.pop(evict_sid, None)
-                self._locks.pop(evict_sid, None)
                 logger.info(f"Evicted LRU session {evict_sid} (pool at max_size={self._max_size})")
             except Exception as e:
-                logger.error(f"LRU eviction failed: {e}")
-
-        self._sessions[session_id] = orch
-        self._sessions.move_to_end(session_id)
-        self._locks.setdefault(session_id, asyncio.Lock())
+                logger.error(f"LRU eviction failed for {evict_sid}: {e}")
 
     def lock_for(self, session_id: str) -> asyncio.Lock:
         """Return the per-session lock. Idempotent."""

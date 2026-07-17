@@ -7,11 +7,11 @@ HavenCore exposes two surfaces:
 
 ## Authentication
 
-The OpenAI-compatible endpoints forwarded to vLLM use the `LLM_API_KEY` configured in `.env`:
+`LLM_API_KEY` (configured in `.env`) is used internally by the agent when it calls vLLM. The gateway does **not** enforce it on external callers of the agent-, TTS-, or STT-backed `/v1` paths (`/v1/chat/completions` → agent, `/v1/audio/speech` → TTS, `/v1/audio/transcriptions` → STT). Those handlers ignore the `Authorization` header entirely — the agent's `chat_completions` handler performs no Bearer validation. The key is only relevant for the vLLM-direct routes that nginx proxies straight through (`/v1/models` and the `/v2/*` passthrough):
 
 ```bash
 LLM_API_KEY="your_secret_key"
-curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/chat/completions ...
+curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/models
 ```
 
 The `/api/*` dashboard endpoints are unauthenticated — the dashboard is intended for a private/home network. Do not expose port 6002 to the public internet without adding your own auth in front of it.
@@ -56,7 +56,7 @@ Authorization: Bearer your_api_key
 |-----------|------|----------|---------|-------------|
 | `model` | string | Yes | - | Model identifier (can be any value) |
 | `messages` | array | Yes | - | Array of message objects |
-| `temperature` | number | No | 0.7 | Randomness (0.0-2.0) |
+| `temperature` | number | No | 0 | Randomness (0.0-2.0) |
 | `max_tokens` | number | No | 1024 | Maximum response length |
 | `stream` | boolean | No | false | Enable streaming responses |
 
@@ -92,6 +92,8 @@ Authorization: Bearer your_api_key
   }
 }
 ```
+
+> **Note:** On this stateless endpoint the `usage` counts are approximate placeholders derived from Python character/string lengths (`prompt_tokens = len(str(messages))`, `completion_tokens = len(response_content)`), **not** real tokenization. Do not rely on them for billing or limits.
 
 #### Tool Calling
 
@@ -148,10 +150,26 @@ doc with the full tool list, arguments, config, and troubleshooting.
 - **General Tools** — `get_weather_forecast`, `brave_search`,
   `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_signal_message`,
   `query_multimodal_api`. See [MCP General](services/agent/tools/general.md).
-- **Qdrant** — semantic memory (`create_memory`, `search_memories`). See
+- **Qdrant** — semantic memory (`create_memory`, `search_memories`,
+  `delete_memory`). See
   [MCP Qdrant](services/agent/tools/qdrant.md).
 - **MQTT / Cameras** — `get_camera_snapshots`. See [MCP MQTT](services/agent/tools/mqtt.md).
 - **Device Actions** — `set_alarm` on the user's phone (intent-fire); plus the camera round-trip family `take_photo`, `identify_object_in_photo`, `read_text_from_image`, `who_is_in_view`. All five dispatch to the companion app via the `device_action` `/ws/chat` event; the camera tools additionally round-trip a JPEG through `/api/companion/upload`. The vision-chained variants chain to the vision pipeline server-side; `who_is_in_view` POSTs the JPEG to face-recognition's `/api/identify` for identity matching. See [MCP Device Actions](services/agent/tools/device-action.md).
+- **Face recognition** — `face_who_is_at`, `face_recent_visitors`,
+  `face_list_known_people`, `face_enroll_person`, `face_set_access_level`.
+  See [MCP Face](services/agent/tools/face.md).
+- **GitHub self-inspection** — `github_search_code`, `github_read_file`,
+  `github_list_dir`, `github_pull_latest`, `github_list_issues`,
+  `github_get_issue`, `github_create_issue`. See
+  [MCP GitHub](services/agent/tools/github.md).
+- **Vision** — `describe_image`, `describe_camera_snapshot`,
+  `compare_snapshots`, `identify_object`, `read_text_in_image`. See
+  [MCP Vision](services/agent/tools/vision.md).
+- **Reminders** — `schedule_reminder`, `list_reminders`,
+  `cancel_reminder`. See [MCP Reminders](services/agent/tools/reminder.md).
+
+This is a highlight, not the authoritative set — query `GET /api/tools`
+for the full registry (11 MCP modules, 68 tools).
 
 #### Example Request
 ```bash
@@ -172,17 +190,20 @@ curl -X POST http://localhost/v1/chat/completions \
 
 #### POST /v1/audio/speech
 
-Convert text to spoken audio. The engine is
-[Chatterbox-Turbo](services/text-to-speech/README.md) (port 6005) —
-expressive, zero-shot voice cloning, inline paralinguistic tags. The
-agent's `/api/tts/speak` proxy and the external nginx-fronted
-`/v1/audio/speech` endpoint both reach it.
+Convert text to spoken audio. The active engine is selected by `TTS_PROVIDER`
+— **Kokoro** (default: small, fast, fixed model voices) or **Chatterbox-Turbo**
+(opt-in: expressive, zero-shot cloning, paralinguistic tags). See
+[Text-to-Speech](services/text-to-speech/README.md). The agent's
+`/api/tts/speak` proxy and the external nginx-fronted `/v1/audio/speech`
+endpoint both reach whichever engine is active (shared `text-to-speech` alias).
 
 **Streaming alternative**: `POST /api/tts/speak/stream` returns an NDJSON
-stream of per-sentence `audio` + `visemes` events instead of a single
-audio blob. First audio reaches the client in ~1 s (vs ~5 s on the
-buffered path for a 3-sentence reply), and the viseme timeline rides the
-response body so there's no header-size ceiling. See the entry in the
+stream of per-sentence `audio` + `visemes` events instead of a single audio
+blob. Under Chatterbox first audio reaches the client in ~1 s (vs ~5 s buffered
+for a 3-sentence reply) and the viseme timeline rides the response body so
+there's no header-size ceiling. Kokoro has no upstream streaming, so the agent
+transparently returns the **same NDJSON shape as a single buffered chunk** —
+clients need no special-casing. See the entry in the
 [dashboard REST table](#rest-api) and
 [Text-to-Speech → Streaming](services/text-to-speech/README.md#streaming-post-v1audiospeechstream)
 for the event schema.
@@ -206,11 +227,11 @@ for the event schema.
 |-----------|------|----------|---------|-------------|
 | `input` | string | Yes | - | Text to convert to speech |
 | `model` | string | No | "tts-1" | TTS model (any value accepted) |
-| `voice` | string | No | engine default | A voice-registry clip name — `Olivia`, `Cora`, `Adrian`, … (any bundled clip or uploaded clone) — or an OpenAI alias (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`). |
+| `voice` | string | No | engine default | Chatterbox: a voice-registry clip name (`Olivia`, `Cora`, `Adrian`, … bundled or uploaded clone). Kokoro: a fixed model-voice name (`af_heart`, `am_adam`, …). Either engine also accepts an OpenAI alias (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`). |
 | `response_format` | string | No | "mp3" | Audio format (mp3, wav, opus, aac, flac, pcm) |
-| `speed` | number | No | 1.0 | Accepted for OpenAI compatibility but ignored — Chatterbox-Turbo has no speed knob. The service logs the request when `speed != 1.0`. |
+| `speed` | number | No | 1.0 | Honored by Kokoro; accepted but ignored by Chatterbox-Turbo (no speed knob). |
 
-**Voice resolution**: Registry clip names pass through. OpenAI aliases resolve to the configured default. Unknown names fall back to the default with a warning log. A runtime-override default voice persisted in `agent_state.tts_default_voice` (set via `POST /api/tts/voices/default`) takes precedence over `CHATTERBOX_VOICE`. `GET /v1/voices` returns the accepted catalog.
+**Voice resolution**: Known voice names pass through. OpenAI aliases resolve to the configured default. Unknown names fall back to the engine default with a warning log. A runtime-override default voice persisted in `agent_state.tts_default_voice` (set via `POST /api/tts/voices/default`) takes precedence over the engine's configured default (`CHATTERBOX_VOICE` / `TTS_VOICE`). `GET /v1/voices` returns the accepted catalog.
 
 **Output format**: `wav`, `flac`, `ogg`, `opus`, `pcm` encode directly. `mp3` and `aac` fall back to WAV in both engines (libsndfile can't encode them without extra codec libs). Content-Type reflects the actual bytes.
 
@@ -294,6 +315,9 @@ List available models in the system.
 **Endpoint**: `GET http://localhost/v1/models`
 
 #### Response
+
+Through the gateway, nginx routes `/v1/models` straight to vLLM, so the response enumerates only vLLM's single served chat model (named `gpt-3.5-turbo` per the compose config) with vLLM's own `owned_by` string. It does **not** enumerate the STT or TTS services — those are separate hosts and are not represented here.
+
 ```json
 {
   "object": "list",
@@ -302,39 +326,37 @@ List available models in the system.
       "id": "gpt-3.5-turbo",
       "object": "model",
       "created": 1677610602,
-      "owned_by": "openai"
-    },
-    {
-      "id": "whisper-1",
-      "object": "model", 
-      "created": 1677610602,
-      "owned_by": "openai"
+      "owned_by": "vllm"
     }
   ]
 }
 ```
+
+The agent also exposes its own hardcoded `/v1/models` directly on port 6002 (not via the gateway path above), which instead returns a single `selene` entry (`owned_by: "selene-agent"`).
 
 ## System Management APIs
 
 ### Health Check Endpoints
 
 #### GET /health
-System-wide health check through the gateway.
+Gateway liveness check. Returns a plain-text `200` — not JSON, and not a per-service aggregate.
 
 ```bash
 curl http://localhost/health
 ```
 
-**Response**:
+**Response** (`Content-Type: text/plain`):
+```
+AI Gateway healthy
+```
+
+For a JSON health payload, hit the agent's own `/health` on port 6002. It has no top-level `services` map either; its real shape is:
 ```json
 {
   "status": "healthy",
-  "services": {
-    "agent": "healthy",
-    "tts": "healthy", 
-    "stt": "healthy",
-    "llm": "healthy"
-  }
+  "agent": "selene",
+  "autonomy": { ... },
+  "memory_stats": { ... }
 }
 ```
 
@@ -368,21 +390,19 @@ build-host scp/rsync recommendation are documented in
 #### GET /mcp/status
 Get status of MCP (Model Context Protocol) connections.
 
-**Endpoint**: `GET http://localhost:6002/mcp/status`
+**Endpoint**: `GET http://localhost:6002/api/mcp/status` (the bare `/mcp/status` is a legacy alias for the same handler)
 
 #### Response
 ```json
 {
-  "mcp_enabled": true,
-  "active_servers": 2,
-  "servers": [
-    {
-      "name": "filesystem",
-      "status": "connected",
-      "tools": 5,
-      "last_ping": "2024-01-15T10:30:00Z"
-    }
-  ]
+  "configured_servers": ["homeassistant", "general", "qdrant"],
+  "connected_servers": ["homeassistant", "general", "qdrant"],
+  "failed_servers": {},
+  "total_mcp_tools": 68,
+  "tools_by_server": {
+    "homeassistant": 20,
+    "general": 7
+  }
 }
 ```
 
@@ -409,18 +429,17 @@ The agent service at `http://localhost:6002` serves both the SvelteKit dashboard
 | `GET`  | `/api/metrics/turns` | Recent per-turn timings. Each turn row carries `device_name` (string or `null`) — denormalized from the orchestrator at write time so the dashboard can label rows by room/device without joining `conversation_histories`. Rows also carry `cache_read_tokens` and `cache_creation_tokens` (Anthropic prompt-cache counters summed across the turn's LLM calls; `0` for vLLM turns and legacy rows). |
 | `GET`  | `/api/metrics/summary` | Daily aggregates, p95. Also exposes `cache_read_total` / `cache_create_total` (sums of the per-turn cache counters over the window) and a derived `cache_hit_rate = read / (read + create)`, guarded against zero. |
 | `GET`  | `/api/metrics/top-tools` | Tool invocation counts + avg latency |
-| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) via the Chatterbox-Turbo TTS service. When `voice` is omitted in the body the agent applies the runtime-override default (see `POST /api/tts/voices/default`) before forwarding upstream. Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. The agent's aiohttp client to the upstream uses `max_field_size=65536` (vs the 8190-byte default) so the `X-Visemes` header doesn't overflow on long utterances. |
-| `POST` | `/api/tts/speak/stream` | NDJSON streaming synthesis. Same request body as `/api/tts/speak` (`text`, `voice`, `format`, `speed`, `force_voice`), with the same runtime-override voice resolution. Response is `application/x-ndjson`: one JSON event per line, ending with `done` (or `error`). Audio chunks are base64-encoded self-contained WAV files keyed by `seq` and `offset_ms`; visemes ship inline as JSON cue arrays instead of an HTTP header. See [Text-to-Speech → Streaming](services/text-to-speech/README.md#streaming-post-v1audiospeechstream) for the full event schema and rationale. |
+| `POST` | `/api/tts/speak` | Synthesize speech (returns audio binary) via the active TTS engine (Kokoro or Chatterbox-Turbo). When `voice` is omitted in the body the agent applies the runtime-override default (see `POST /api/tts/voices/default`) before forwarding upstream. Also forwards the upstream `X-Visemes` response header (base64-JSON Rhubarb viseme timeline) for client-side avatar lip-sync. See `/v1/audio/speech` above for the contract. The agent's aiohttp client to the upstream uses `max_field_size=65536` (vs the 8190-byte default) so the `X-Visemes` header doesn't overflow on long utterances. |
+| `POST` | `/api/tts/speak/stream` | NDJSON streaming synthesis. Same request body as `/api/tts/speak` (`text`, `voice`, `format`, `speed`, `force_voice`), with the same runtime-override voice resolution. Response is `application/x-ndjson`: one JSON event per line, ending with `done` (or `error`). Audio chunks are base64-encoded self-contained WAV files keyed by `seq` and `offset_ms`; visemes ship inline as JSON cue arrays instead of an HTTP header. Under `TTS_PROVIDER=chatterbox` events are per-sentence; under Kokoro (no upstream streaming) the agent emits the same schema as a single buffered chunk. See [Text-to-Speech → Streaming](services/text-to-speech/README.md#streaming-post-v1audiospeechstream) for the full event schema and rationale. |
 | `GET`  | `/api/tts/voices` | Voice catalog + dashboard metadata. Returns `{voices, formats, default, default_override, user_voices, bundled_voices}`. Each entry in `voices` carries `{id, label, kind: "user"\|"bundled", deletable}`. `default_override` is the persisted runtime default (or `null`). |
-| `POST` | `/api/tts/voices/upload` | Multipart upload of a reference clip to clone. Form fields: `name` (1-40 chars, `[A-Za-z0-9_-]`) and `file` (WAV/FLAC/OGG, 3-120 s, 10-30 s recommended). Saved under the TTS service's `/app/voices/` (volume-mounted, persisted). Returns `{name, path, duration_sec, original_sample_rate, stored_sample_rate}`. |
-| `DELETE` | `/api/tts/voices/{name}` | Delete an uploaded clone. Bundled voices 403. If the deleted voice was the runtime-override default, the override is cleared automatically. |
+| `POST` | `/api/tts/voices/upload` | Multipart upload of a reference clip to clone. **Chatterbox-only — returns 501 under `TTS_PROVIDER=kokoro`** (Kokoro has fixed model voices). Form fields: `name` (1-40 chars, `[A-Za-z0-9_-]`) and `file` (WAV/FLAC/OGG, 3-120 s, 10-30 s recommended). Saved under the TTS service's `/app/voices/` (volume-mounted, persisted). Returns `{name, path, duration_sec, original_sample_rate, stored_sample_rate}`. |
+| `DELETE` | `/api/tts/voices/{name}` | Delete an uploaded clone. **Chatterbox-only — 501 under Kokoro.** Bundled voices 403. If the deleted voice was the runtime-override default, the override is cleared automatically. |
 | `POST` | `/api/tts/voices/default` | Set or clear the runtime-override default voice. Body `{"voice": "<name>"}` to set, `{"voice": null}` to clear. Override is persisted in `agent_state.tts_default_voice` and applied by both `/api/tts/speak` and the autonomy speaker channel. Single source of truth for the assistant's voice across chat, autonomy announcements, companion app, and satellites. |
 | `POST` | `/api/stt/transcribe` | Multipart transcription proxy |
 | `POST` | `/api/vision/ask` | Multipart `file` (image OR short video) + `prompt` to the vision LLM (`vllm-vision`). MIME branches the upload to an `image_url` vs `video_url` chat-completion content part; unknown MIME → 415. The legacy `image` field name is still accepted. Returns `{response, latency_ms, usage, model, media_type}`. Used by the dashboard playground. nginx cap on `/api/` is 100 MB. |
 | `POST` | `/api/vision/ask_url` | JSON `{text, image_url, max_tokens?, temperature?}` for image-URL inputs (the vision service fetches the URL itself). Used by the `query_multimodal_api` MCP tool — single chokepoint for logging/metrics. Returns `{response, latency_ms, usage, model}`. Image-only by design; for video, the multipart `/api/vision/ask` endpoint or the `mcp_vision_tools` server are the right entry points. |
-| `POST` | `/api/comfy/generate` | Queue ComfyUI workflow |
-| `GET`  | `/api/comfy/status/{prompt_id}` | Poll generation status |
-| `GET`  | `/api/comfy/view` | Stream a generated image |
+| `POST` | `/api/comfy/generate` | Queue ComfyUI workflow; returns a locally-minted `job_id` |
+| `GET`  | `/api/comfy/status/{job_id}` | Poll generation status. Completed images are fetched as static files from the `/outputs/{filename}` URL returned in the status payload |
 | `GET`  | `/api/{tts,stt,vision,comfy}/health` | Per-service health proxies |
 | `GET`  | `/api/autonomy/status` | Autonomy engine state (running/paused, last dispatch, next-due) |
 | `POST` | `/api/autonomy/pause` | Runtime kill switch — stop dispatch without restart |

@@ -19,6 +19,17 @@ router = APIRouter()
 COMFY_BASE = "http://text-to-image:8188"
 
 _jobs: Dict[str, Dict[str, Any]] = {}
+_JOBS_MAX = 200
+
+
+def _evict_old_jobs() -> None:
+    """Bound the in-memory job registry so it can't grow without limit over a
+    long-running process (keep the most recent _JOBS_MAX by start time)."""
+    if len(_jobs) <= _JOBS_MAX:
+        return
+    stale = sorted(_jobs, key=lambda j: _jobs[j].get("started_at", 0))[: len(_jobs) - _JOBS_MAX]
+    for jid in stale:
+        _jobs.pop(jid, None)
 
 
 class GenerateRequest(BaseModel):
@@ -68,6 +79,7 @@ async def generate(req: GenerateRequest):
         "started_at": time.time(),
         "images": [],
     }
+    _evict_old_jobs()
     asyncio.create_task(_run_job(job_id, req))
     return {"job_id": job_id, "status": "pending"}
 

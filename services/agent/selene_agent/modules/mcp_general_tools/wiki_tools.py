@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import requests
 import json
@@ -172,24 +173,25 @@ async def get_wikipedia_with_context(search_term: str, include_categories: bool 
 
 
 # Example usage
-if __name__ == "__main__":
-    # Test the function
+async def _demo() -> None:
     test_queries = [
         "Quantum Computing",
         "python programming language",
     ]
-    
+
     for query in test_queries:
         print(f"\n{'='*50}")
         print(f"Query: {query}")
         print(f"{'='*50}")
-        result = query_wikipedia(query)
-        print(result)
+        print(await query_wikipedia(query))
         print()
     for query in test_queries:
         print(f"\n{'='*50}")
         print(f"Query: {query}")
         print(f"{'='*50}")
-        context_result = get_wikipedia_with_context(query, include_categories=True)
-        print(context_result)
+        print(await get_wikipedia_with_context(query, include_categories=True))
         print()
+
+
+if __name__ == "__main__":
+    asyncio.run(_demo())

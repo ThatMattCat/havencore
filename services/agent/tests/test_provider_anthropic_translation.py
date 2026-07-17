@@ -259,7 +259,9 @@ def test_tool_choice_maps_to_anthropic_forms():
 
     assert _translate_tool_choice("auto", True) is None
     assert _translate_tool_choice(None, True) is None
-    assert _translate_tool_choice("none", True) is None
+    # "none" must map to Anthropic's explicit {"type": "none"} — returning None
+    # would omit tool_choice, which Anthropic treats as "auto" (tools stay on).
+    assert _translate_tool_choice("none", True) == {"type": "none"}
     assert _translate_tool_choice("required", True) == {"type": "any"}
     assert _translate_tool_choice(
         {"type": "function", "function": {"name": "get_weather"}}, True

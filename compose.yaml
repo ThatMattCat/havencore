@@ -29,8 +29,11 @@ services:
     depends_on:
       agent:
         condition: service_healthy
-      text-to-speech:
-        condition: service_healthy
+      # No depends_on for the TTS service: it is now profile-gated (kokoro OR
+      # chatterbox) and reached at the shared `text-to-speech` network alias.
+      # nginx resolves that alias lazily per-request (see nginx.conf), so it
+      # must NOT hard-depend on a specific TTS service — doing so would
+      # auto-enable that engine's profile and break mutual exclusivity.
       speech-to-text:
         condition: service_started
     restart: unless-stopped
@@ -88,6 +91,13 @@ services:
     # client-side avatar lip-sync. Pinned to a single GPU via
     # CUDA_VISIBLE_DEVICES (same pattern as vllm-vision / face-recognition);
     # ~1.5-2 GB peak VRAM for single-user inference.
+    #
+    # Profile-gated: only starts when COMPOSE_PROFILES=chatterbox. The default
+    # deployment runs Kokoro (text-to-speech-kokoro) instead — set both
+    # COMPOSE_PROFILES=chatterbox and TTS_PROVIDER=chatterbox to switch. The
+    # two engines are mutually exclusive; both answer at the `text-to-speech`
+    # network alias so nginx / the agent reach whichever one is active.
+    profiles: ["chatterbox"]
     build:
       context: ./services/text-to-speech
       dockerfile: Dockerfile
@@ -120,6 +130,55 @@ services:
     volumes:
       - ./services/text-to-speech/app:/app
       - ./services/text-to-speech/voices:/app/voices
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./shared:/app/shared:ro
+    restart: unless-stopped
+  text-to-speech-kokoro:
+    # Kokoro v1 TTS (hexgrad/Kokoro-82M) — small, fast, low-latency. The
+    # default TTS engine. Same OpenAI-compatible /v1/audio/speech surface and
+    # X-Visemes response header (Rhubarb, provider-independent) as Chatterbox,
+    # but NO streaming / voice-cloning endpoints (fixed model voices). The
+    # agent gates those off via TTS_PROVIDER=kokoro.
+    #
+    # Profile-gated: starts when COMPOSE_PROFILES=kokoro (the default). Claims
+    # the `text-to-speech` network alias so nginx and the agent reach it at the
+    # same hostname as Chatterbox — the two engines are mutually exclusive.
+    profiles: ["kokoro"]
+    build:
+      context: ./services/text-to-speech-kokoro
+      dockerfile: Dockerfile
+    image: text-to-speech-kokoro:${VERSION:-latest}
+    ports:
+      - "6015:6005" # host 6015 -> container 6005 (avoids a clash if both engines are ever up)
+    env_file:
+      - .env
+    environment:
+      - CUDA_VISIBLE_DEVICES=${TTS_KOKORO_GPU:-0}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6005/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Kokoro is an 82M model — cold start is fast, but the first HF download
+      # of the weights on a cold cache can take a minute.
+      start_period: 120s
+    deploy:
+      resources:
+        reservations: # GPU device selected via CUDA_VISIBLE_DEVICES env var
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      default:
+        # Both TTS engines answer at `text-to-speech` so consumers (nginx
+        # upstream, agent TTS_BASE_URL) need no per-engine hostname. Safe only
+        # because the two are mutually exclusive (one profile active at a time).
+        aliases:
+          - text-to-speech
+    volumes:
+      - ./services/text-to-speech-kokoro/app:/app
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./shared:/app/shared:ro
     restart: unless-stopped

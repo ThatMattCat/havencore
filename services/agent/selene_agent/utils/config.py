@@ -55,9 +55,18 @@ MASS_TOKEN = os.getenv("MASS_TOKEN", "")
 
 LOKI_URL = os.getenv("LOKI_URL", "")
 
-# TTS service — Chatterbox-Turbo, reached at text-to-speech:6005. Exposes an
-# OpenAI-compatible /v1/audio/speech surface plus an X-Visemes response
-# header. The agent's TTS client and /api/tts/* proxy use TTS_BASE_URL.
+# TTS engine selection. Two text-to-speech services exist but are mutually
+# exclusive (profile-gated in compose) and BOTH answer at the same
+# `text-to-speech` network alias, so TTS_BASE_URL is provider-independent —
+# the agent always reaches whichever engine is currently running.
+# TTS_PROVIDER tells the agent which engine that is, so it can gate
+# engine-specific behavior:
+#   kokoro     (default) — small/fast, fixed model voices, NO streaming and NO
+#                          voice cloning, and does NOT understand the inline
+#                          [laugh]/[sigh] paralinguistic tags (would speak them).
+#   chatterbox           — expressive zero-shot cloning, streaming, and tags.
+# Keep TTS_PROVIDER in sync with COMPOSE_PROFILES.
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "kokoro").lower()
 TTS_BASE_URL = os.getenv("TTS_BASE_URL", "http://text-to-speech:6005")
 
 parsed_url = urlparse(HAOS_URL)
@@ -142,7 +151,11 @@ AUTONOMY_DEFAULT_EVENT_RATE_LIMIT = os.getenv("AUTONOMY_DEFAULT_EVENT_RATE_LIMIT
 
 # --- v4 voice + actuation ---
 AUTONOMY_SPEAKER_DEFAULT_DEVICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_DEVICE", "")
-AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOICE", "Olivia")
+# Default speaker voice must be one the ACTIVE engine recognizes: Kokoro
+# ships `af_heart`, Chatterbox ships `Olivia`. An explicit env var always wins.
+AUTONOMY_SPEAKER_DEFAULT_VOICE = os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOICE", "") or (
+    "Olivia" if TTS_PROVIDER == "chatterbox" else "af_heart"
+)
 AUTONOMY_SPEAKER_DEFAULT_VOLUME = float(os.getenv("AUTONOMY_SPEAKER_DEFAULT_VOLUME", "0.5"))
 AUTONOMY_TTS_AUDIO_TTL_SEC = int(os.getenv("AUTONOMY_TTS_AUDIO_TTL_SEC", "600"))
 AUTONOMY_ACT_ENABLED = os.getenv("AUTONOMY_ACT_ENABLED", "false").lower() == "true"

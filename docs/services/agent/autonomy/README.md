@@ -17,10 +17,10 @@ The engine is the same FastAPI process that serves the dashboard, so a single re
 
 | Kind | Purpose | Trigger |
 |---|---|---|
-| `briefing` | Morning briefing — pulls calendar + weather + optional overnight history, asks the LLM for a single summary, sends it through the chosen channel. | Cron (default `0 8 * * *`) |
+| `briefing` | Morning briefing — pulls calendar + weather + optional overnight history, asks the LLM for a single summary, sends it via Signal. | Cron (default `0 8 * * *`) |
 | `anomaly_sweep` | Snapshot presence + watched-domain entity states, query memory for household routine context, ask the LLM for a strict JSON anomaly judgment, push if unusual. | Cron (default `*/15 * * * *`) |
 | `reminder` | Scheduled notify with optional LLM body rewrite. `personalize: true` (default) re-renders the body in Selene's voice at fire time and may attach a generated image (Signal channel only). `one_shot: true` deletes the agenda row after the first successful fire. | Cron |
-| `watch` | Reactive trigger-driven notify. Template-renders `body_template` against the trigger payload, optionally gates on an HA entity state condition, routes through the anomaly-style notification path so per-signature cooldown applies. | MQTT or HA webhook |
+| `watch` | Reactive trigger-driven notify. Template-renders `body_template` against the trigger payload, optionally requires an HA entity to have held its current state for `min_duration_sec`, routes through the anomaly-style notification path so per-signature cooldown applies. | MQTT or HA webhook |
 | `watch_llm` | Same trigger surface as `watch`, but the engine hands the event + a bounded state gather to the LLM and asks for a JSON judgment (`unusual`, `severity`, `summary`, `signature`, `evidence`). For "is this noteworthy?" calls that don't reduce to a boolean condition. Reuses anomaly cooldown. | MQTT or HA webhook |
 | `routine` | Goal-oriented LLM turn — fresh `AutonomousTurn` with a per-item prompt, optional `tools_override` (must be a subset of the current tier's allow-list), result delivered via `deliver.channel`. | Cron |
 | `act` | Two-phase, permission-gated actuation. Plan-only `observe`-tier turn produces a strict-JSON step list; engine validates each step against a per-item `action_allow_list` and either executes inline or parks `status='awaiting_confirmation'` with a deep-link to confirm. **Flagged off by default** — set `AUTONOMY_ACT_ENABLED=true` to enable. | Cron |
@@ -57,7 +57,7 @@ Camera/sensor events plug into the same surface via a generic `haven/<domain>/<k
 │                └─ Notifier (protocol)                            │
 │                     ├─ SignalNotifier      → send_signal_message │
 │                     ├─ HAPushNotifier      → ha_send_notification│
-│                     ├─ SpeakerNotifier     → Chatterbox + MA     │
+│                     ├─ SpeakerNotifier     → active TTS + MA     │
 │                     ├─ NtfyFanoutNotifier  → companion-app push  │
 │                     └─ NullNotifier                              │
 │                                                                  │
@@ -130,9 +130,9 @@ Four default rows are seeded on startup (idempotent upsert keyed on `(kind, crea
 | `kind` | text | denormalized for query convenience |
 | `triggered_at` / `completed_at` | timestamptz | |
 | `scheduled_for` | timestamptz | populated when a run is deferred past quiet hours |
-| `trigger_source` | text | `cron` / `mqtt` / `webhook` / `manual` / `deferred` |
+| `trigger_source` | text | `cron` / `mqtt` / `webhook` / `manual` |
 | `trigger_event` | jsonb | raw event payload for reactive runs; `null` for cron |
-| `status` | text | `ok` / `error` / `skipped_cooldown` / `skipped_killswitch` / `skipped_quiet_hours` / `skipped_rate_limit` / `skipped_trigger_mismatch` / `scheduled` / `rate_limited` / `awaiting_confirmation` / `confirmation_denied` / `confirmation_timeout` |
+| `status` | text | `ok` / `error` / `skipped_cooldown` / `skipped_quiet_hours` / `skipped_trigger_mismatch` / `scheduled` / `rate_limited` / `awaiting_confirmation` / `confirmation_denied` / `confirmation_timeout` |
 | `summary` | text | one-line human summary (e.g. `nominal`, `garage open >10min`) |
 | `severity` | text | `none` / `low` / `med` / `high` (anomaly / watch_llm) |
 | `signature_hash` | text | sha1(first 16) of the dedup signature — drives cooldown. For triggers carrying a normalized `sensor_event` (camera/face/etc.) the signature is `{domain}:{kind}:{zone}:{subject}`; otherwise it's the LLM-emitted slug. |
@@ -142,6 +142,7 @@ Four default rows are seeded on startup (idempotent upsert keyed on `(kind, crea
 | `error` | text | nullable |
 | `confirmation_token` | text | random 24-byte token for `act` runs; never returned over list endpoints |
 | `confirmation_response` | text | `approved` / `denied` / `timeout` |
+| `confirmation_prompt_id` | text | nullable; v4 confirmation-flow linkage (ties an `act` run to its outstanding confirmation prompt) |
 | `action_audit` | jsonb | list of `{tool, args, rationale, outcome, result?, error?}` for `act` runs |
 
 A trigger on `INSERT` notifies channel `autonomy_runs_ch` with the new row id; the `WS /ws/autonomy/runs` endpoint streams those frames. A partial index on `status='awaiting_confirmation'` keeps the timeout sweep cheap.
@@ -179,9 +180,10 @@ AUTONOMY_DEFAULT_QUIET_END=""            # "07:00"
 AUTONOMY_DEFAULT_QUIET_POLICY="defer"    # "defer" | "drop"
 AUTONOMY_DEFAULT_EVENT_RATE_LIMIT="10/min"
 
-# Speaker channel (Chatterbox-Turbo TTS → Music Assistant)
+# Speaker channel (active TTS engine → Music Assistant)
 AUTONOMY_SPEAKER_DEFAULT_DEVICE=""       # MA player name
-AUTONOMY_SPEAKER_DEFAULT_VOICE="Olivia"
+# Leave unset to follow the active engine (af_heart on Kokoro, Olivia on Chatterbox)
+#AUTONOMY_SPEAKER_DEFAULT_VOICE="af_heart"
 AUTONOMY_SPEAKER_DEFAULT_VOLUME=0.5      # 0.0-1.0 (normalized to 0-100)
 AUTONOMY_TTS_AUDIO_TTL_SEC=600           # AudioStore entry TTL
 
@@ -235,12 +237,12 @@ The agent's `/health` endpoint surfaces an `autonomy` block: `running`, `paused`
 
 | Tier | Adds on top of previous |
 |---|---|
-| `observe` | Read-only HA state (`ha_get_*`, `ha_list_*`), `search_memories`, knowledge tools (`brave_search`, `wolfram_alpha`, `get_weather_forecast`, `search_wikipedia`, `query_multimodal_api`, `fetch`) |
+| `observe` | Read-only HA state (`ha_list_entities`, `ha_get_entity_history`, `ha_list_services`, `ha_get_presence`, `ha_get_calendar_events`, `ha_list_areas`, `ha_evaluate_template`), `search_memories`, `get_camera_snapshots` (MQTT camera capture), vision tools (`describe_image`, `describe_camera_snapshot`, `compare_snapshots`, `identify_object`, `read_text_in_image`), knowledge tools (`brave_search`, `wolfram_alpha`, `get_weather_forecast`, `search_wikipedia`, `query_multimodal_api`, `fetch`) |
 | `notify` | `send_signal_message`, `ha_send_notification` |
 | `speak` | (same surface as `notify`; delivery channel differs — handlers route through `SpeakerNotifier`) |
 | `act`   | `ha_control_light`, `ha_control_switch`, `ha_control_climate`, `ha_control_media_player`, `ha_activate_scene`, `ha_trigger_script`, `ha_execute_service`, `mass_play_media`, `mass_playback_control` |
 
-A hard deny set (`mcp_qdrant_tools.create_memory` / `delete_memory`, raw HA actuators outside the `act` allow set) is enforced on top of the allow-list for defense in depth. Notifiers themselves are invoked by handlers directly — not via the LLM's tool-calling surface — so the LLM cannot decide whether or where to notify.
+A hard deny set (`ha_trigger_automation`, `ha_toggle_automation`, `create_memory`, `delete_memory`, `play_media`, `pause_media`) is enforced as an explicit denylist layered on top of the tier allow-list for defense in depth. Notifiers themselves are invoked by handlers directly — not via the LLM's tool-calling surface — so the LLM cannot decide whether or where to notify.
 
 `act`-tier items still enforce a per-item `action_allow_list`; the tier grant is *necessary*, the per-item allow-list is *sufficient*.
 
@@ -279,7 +281,7 @@ If the trigger_spec resolves to a non-match, the engine still inserts a `status=
 
 `config.quiet_hours = { start, end, policy }`, timezone-aware via `CURRENT_TIMEZONE`. Cross-midnight windows (`22:00` → `07:00`) work. When quiet hours suppress a run:
 
-- `policy='defer'` — insert `status='scheduled'` + `scheduled_for = next_end_of_quiet`. The dispatcher sweeps every scheduled row that has become due on each tick and fires it with `trigger_source='deferred'`. Claiming uses `DELETE ... RETURNING` so there's no lingering `in_flight` state — the subsequent fire creates a fresh `autonomy_runs` row.
+- `policy='defer'` — insert `status='scheduled'` + `scheduled_for = next_end_of_quiet`. The dispatcher sweeps every scheduled row that has become due on each tick and re-fires it under its **original** `trigger_source` (`cron` / `mqtt` / `webhook` / `manual`) — the deferral is reflected by the intermediate `status='scheduled'` + `scheduled_for` row, not a distinct trigger_source. Claiming uses `DELETE ... RETURNING` so there's no lingering `in_flight` state — the subsequent fire creates a fresh `autonomy_runs` row.
 - `policy='drop'` — insert `status='skipped_quiet_hours'` and walk away.
 
 `POST /api/autonomy/trigger/{id}?bypass_quiet=true` skips this gate.
@@ -288,7 +290,7 @@ If `config.quiet_hours` is omitted, the engine falls back to the `AUTONOMY_DEFAU
 
 ## Event rate limiting
 
-`config.event_rate_limit = "N/sec" | "N/min" | "N/hr"`. Applied **only** to reactive triggers (`mqtt` / `webhook`). Implementation is an in-memory leaky bucket keyed on `item_id`; overflow is recorded as `status='skipped_rate_limit'`. The global hourly `AUTONOMY_MAX_RUNS_PER_HOUR` cap still applies on top.
+`config.event_rate_limit = "N/sec" | "N/min" | "N/hr"`. Applied **only** to reactive triggers (`mqtt` / `webhook`). Implementation is an in-memory leaky bucket keyed on `item_id`; overflow is recorded as `status='rate_limited'`. The global hourly `AUTONOMY_MAX_RUNS_PER_HOUR` cap still applies on top (also `status='rate_limited'` — the two are distinguished by the summary text).
 
 ## act tier — plan / validate / execute
 
@@ -366,10 +368,12 @@ Example `act` config:
     "severity": "warn",
     "quiet_hours": { "start": "00:00", "end": "06:00", "policy": "defer" },
     "event_rate_limit": "3/min",
-    "condition": { "entity_id": "binary_sensor.front_door", "state": "on", "min_duration_sec": 0 }
+    "condition": { "entity_id": "binary_sensor.front_door", "min_duration_sec": 0 }
   }
 }
 ```
+
+`condition` gates only on **duration in the current state** — `_condition_holds` checks that `entity_id` has held its present state for at least `min_duration_sec`; it does **not** compare against a target value. Encode any state-value match in `trigger_spec.match.payload` instead.
 
 ### `routine`
 
@@ -478,7 +482,7 @@ Reactive-source hand checks once the flags are on:
 2. Create an MQTT watch on a topic you can publish to; `mosquitto_pub -h localhost -t <topic> -m '{...}'`; confirm a run row streams into the live feed.
 3. Create a webhook watch; `curl -X POST -d '{"state":"open"}' http://localhost:6002/api/autonomy/webhook/<name>`; confirm matched + fired.
 4. Build a quiet-hours window that covers now with `policy='defer'`; trigger the item; confirm `status='scheduled'`; walk the clock forward and confirm it fires.
-5. Trigger repeatedly past the per-item rate limit and confirm `status='skipped_rate_limit'`.
+5. Trigger repeatedly past the per-item rate limit and confirm `status='rate_limited'`.
 6. Edit an MQTT item's topic via `PATCH`; confirm the listener diff-resubscribes (inspect `/events/summary`).
 7. Disconnect the broker and confirm the listener reconnects with exponential backoff capped at `AUTONOMY_MQTT_RECONNECT_MAX_SEC`.
 

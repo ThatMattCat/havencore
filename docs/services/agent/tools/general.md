@@ -50,8 +50,10 @@ ComfyUI image generation and the vision gateway use in-cluster routing
 (`text-to-image:8188` directly; `query_multimodal_api` posts to the agent's
 own `/api/vision/ask_url`, which then talks to `vllm-vision`) and require no
 additional credentials — they only work when their respective services are
-running. The agent reads `VISION_API_BASE`, `VISION_API_KEY`, and
-`VISION_SERVED_NAME` for the upstream call; see
+running. The agent reads `VISION_API_BASE` and `VISION_SERVED_NAME` for
+the upstream call (`VISION_API_KEY` is defined in `config.py` but currently
+unused — the `vllm-vision` instance is unauthenticated on the internal
+network); see
 [Configuration](../../../configuration.md) and the
 [vllm-vision service doc](../../vllm-vision/README.md).
 
@@ -69,10 +71,12 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 ## Internals worth knowing
 
 - **`generate_image` uses the `SimpleComfyUI` helper** in
-  `comfyui_tools.py` with workflow `default`. The returned JSON contains
-  both the filepath and a URL pointing at the ComfyUI service
-  (`text-to-image:8188`) — the dashboard proxies these through
-  `/api/comfy/view` on the agent (port 6002).
+  `comfyui_tools.py` with workflow `default`. The helper downloads the
+  finished image from ComfyUI itself and saves it into the agent's local
+  output dir. Each returned image carries a `path`
+  (`/app/selene_agent/outputs/<file>`) and a `url`
+  (`http://<HOST_IP_ADDRESS>:6002/outputs/<file>`) served directly by the
+  agent's `/outputs` static mount — not a `text-to-image:8188` URL.
 - **`query_multimodal_api` routes through the agent's own FastAPI proxy,
   not directly at `vllm-vision`.** The tool POSTs JSON to
   `http://agent:6002/api/vision/ask_url`, which fills in the served-model

@@ -318,7 +318,20 @@ async def list_all_items() -> List[Dict[str, Any]]:
     return [_row_to_agenda(r) for r in rows]
 
 
+def _as_uuid(val: Any) -> Optional[uuid.UUID]:
+    """Parse a value into a UUID, or None if it isn't one. Lets the public
+    lookups treat a malformed id as 'not found' (clean 404) instead of letting
+    uuid.UUID() raise ValueError up into an unhandled HTTP 500."""
+    try:
+        return uuid.UUID(str(val))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 async def get_item(item_id: str) -> Optional[Dict[str, Any]]:
+    uid = _as_uuid(item_id)
+    if uid is None:
+        return None
     pool = conversation_db.pool
     if not pool:
         return None
@@ -328,7 +341,7 @@ async def get_item(item_id: str) -> Optional[Dict[str, Any]]:
             SELECT {AGENDA_COLUMNS}
             FROM agenda_items WHERE id = $1
             """,
-            uuid.UUID(item_id),
+            uid,
         )
     return _row_to_agenda(row) if row else None
 
@@ -415,6 +428,9 @@ async def update_item(item_id: str, patch: Dict[str, Any]) -> Optional[Dict[str,
     Accepted keys: name, schedule_cron, trigger_spec, config, autonomy_level,
     enabled, next_fire_at.
     """
+    uid = _as_uuid(item_id)
+    if uid is None:
+        return None
     pool = conversation_db.pool
     if not pool:
         return None
@@ -434,7 +450,7 @@ async def update_item(item_id: str, patch: Dict[str, Any]) -> Optional[Dict[str,
         sets.append(f"{key} = ${len(args)}{cast}")
     if not sets:
         return await get_item(item_id)
-    args.append(uuid.UUID(item_id))
+    args.append(uid)
     async with pool.acquire() as conn:
         await conn.execute(
             f"UPDATE agenda_items SET {', '.join(sets)} WHERE id = ${len(args)}",
@@ -445,6 +461,9 @@ async def update_item(item_id: str, patch: Dict[str, Any]) -> Optional[Dict[str,
 
 async def delete_item(item_id: str) -> bool:
     """Delete an agenda item plus any still-scheduled deferred runs for it."""
+    uid = _as_uuid(item_id)
+    if uid is None:
+        return False
     pool = conversation_db.pool
     if not pool:
         return False
@@ -455,11 +474,11 @@ async def delete_item(item_id: str) -> bool:
                 DELETE FROM autonomy_runs
                 WHERE agenda_item_id = $1 AND status = 'scheduled'
                 """,
-                uuid.UUID(item_id),
+                uid,
             )
             result = await conn.execute(
                 "DELETE FROM agenda_items WHERE id = $1",
-                uuid.UUID(item_id),
+                uid,
             )
     return result.endswith(" 1")
 
@@ -663,6 +682,9 @@ async def count_deferred_runs() -> int:
 
 
 async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dict[str, Any]]:
+    uid = _as_uuid(run_id)
+    if uid is None:
+        return None
     pool = conversation_db.pool
     if not pool:
         return None
@@ -676,7 +698,7 @@ async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dic
                    confirmation_response, action_audit
             FROM autonomy_runs WHERE id = $1
             """,
-            uuid.UUID(run_id),
+            uid,
         )
     return _row_to_run(row, include_messages=include_messages) if row else None
 

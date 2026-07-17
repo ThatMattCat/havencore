@@ -38,7 +38,10 @@ def _filter_messages_for_resume(messages: List[Dict[str, Any]]) -> List[Dict[str
 
 
 @router.get("/conversations")
-async def list_conversations(limit: int = 20, offset: int = 0):
+async def list_conversations(
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
     """List recent conversations with pagination"""
     conversations = await conversation_db.list_conversations(limit=limit, offset=offset)
     if conversations is None:

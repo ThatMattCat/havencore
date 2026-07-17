@@ -37,7 +37,7 @@
 			key: 'tts',
 			href: '/playgrounds/tts',
 			title: 'Text to Speech',
-			desc: 'Synthesize speech with Chatterbox-Turbo. Pick a voice, choose a format, hear it back.',
+			desc: 'Synthesize speech with the active TTS engine. Pick a voice, choose a format, hear it back.',
 		},
 		{
 			key: 'stt',

@@ -21,10 +21,10 @@ itself.
 | HA client | Minimal aiohttp REST (`_HAServiceClient` in `plex_client.py`) — used only for wake/launch |
 | Tool count | 5 |
 
-The server replaced the old DLNA media-scanner that lived inside
-`mcp_homeassistant_tools`. That module shrank from ~1430 lines to ~170;
-everything library / playback is now here, and HA is involved only for
-transport control and optional wake/launch.
+The DLNA media-scanner that used to live inside
+`mcp_homeassistant_tools` was removed; everything Plex library / playback
+now lives here, and HA is involved only for transport control and
+optional wake/launch.
 
 ## Tool inventory
 

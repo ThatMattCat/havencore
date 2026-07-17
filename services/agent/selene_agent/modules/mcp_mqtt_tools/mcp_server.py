@@ -35,8 +35,10 @@ class HACamSnapper:
         self.mqtt_port = mqtt_port
         self.snapshot_urls = []
         
-        # Future for waiting on MQTT responses
+        # Future for waiting on MQTT responses (+ the loop that owns it, so the
+        # paho network thread can resolve it thread-safely).
         self._snapshot_future: Optional[Future] = None
+        self._snapshot_loop = None
         
         # Setup MQTT client
         self.mqtt_client = mqtt.Client()
@@ -71,14 +73,36 @@ class HACamSnapper:
                 self.snapshot_urls = payload.get('urls', [])
                 self.logger.info(f"Received snapshot URLs: {self.snapshot_urls}")
                 
-                # Resolve the future if we're waiting for snapshots
-                if self._snapshot_future and not self._snapshot_future.done():
-                    self._snapshot_future.set_result(self.snapshot_urls)
-                    
+                # Resolve the future if we're waiting for snapshots. This
+                # callback runs on paho's network thread, so the asyncio Future
+                # must be resolved via the loop's thread-safe scheduler — a bare
+                # set_result() does not wake a loop parked in its selector, and
+                # the waiter would stall until the wait_for timeout expired.
+                self._resolve_snapshot_future(result=self.snapshot_urls)
+
         except Exception as e:
             self.logger.error(f"Error processing MQTT message: {e}")
-            if self._snapshot_future and not self._snapshot_future.done():
-                self._snapshot_future.set_exception(e)
+            self._resolve_snapshot_future(exc=e)
+
+    def _resolve_snapshot_future(self, result=None, exc=None):
+        loop = self._snapshot_loop
+        fut = self._snapshot_future
+        if not fut or not loop:
+            return
+
+        def _set():
+            if fut.done():
+                return
+            if exc is not None:
+                fut.set_exception(exc)
+            else:
+                fut.set_result(result)
+
+        try:
+            loop.call_soon_threadsafe(_set)
+        except RuntimeError:
+            # Loop already closed — nothing waiting.
+            pass
     
     async def get_camera_snapshots(self, timeout: float = 10.0) -> dict:
         """
@@ -95,8 +119,10 @@ class HACamSnapper:
         # Clear previous URLs
         self.snapshot_urls = []
         
-        # Create a future to wait for MQTT response
+        # Create a future to wait for MQTT response. Stash the running loop so
+        # the paho network-thread callback can resolve the future thread-safely.
         loop = asyncio.get_event_loop()
+        self._snapshot_loop = loop
         self._snapshot_future = loop.create_future()
         
         try:
@@ -140,7 +166,8 @@ class HACamSnapper:
             }
         finally:
             self._snapshot_future = None
-    
+            self._snapshot_loop = None
+
     def cleanup(self):
         """Clean up MQTT connection"""
         self.mqtt_client.loop_stop()

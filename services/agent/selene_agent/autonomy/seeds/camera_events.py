@@ -134,11 +134,12 @@ SEEDS = [
         "kind": "watch_llm",
         "autonomy_level": "notify",
         # Off by default — only useful once an LPR / vehicle source publishes
-        # on haven/vehicles/+. Operator flips this on when ready.
+        # on haven/vehicle/+ (singular 'vehicle' — the normalizer's ALLOWED_DOMAINS
+        # and the haven/<domain>/<kind> contract are singular). Flip on when ready.
         "enabled": False,
         "trigger_spec": {
             "source": "mqtt",
-            "match": {"topic": "haven/vehicles/+"},
+            "match": {"topic": "haven/vehicle/+"},
         },
         "config": {
             "subject": (

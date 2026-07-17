@@ -9,7 +9,7 @@
 ## Nightly job
 Runs at `AUTONOMY_MEMORY_REVIEW_CRON` (default `0 3 * * *`). Handler: `selene_agent.autonomy.handlers.memory_review`. Pipeline:
 
-1. Scan L2 → compute `importance_effective` via `exp(-age/halflife) + coef*log(1+accesses)`.
+1. Scan L2 → compute `importance_effective` via `base_importance * exp(-age/half_life) + access_coef * log(1+accesses)`, clamped to `[0, 10]` (`half_life` = `MEMORY_HALF_LIFE_DAYS`, default 60; `access_coef` = `MEMORY_ACCESS_COEF`, default 0.5).
 2. Cluster new L2 (since last run) with HDBSCAN; LLM summarizes each cluster into one L3 entry that **absorbs its sources**: the L3 payload stores `source_texts: [{id, text, timestamp, importance}]` alongside `source_ids`, and the originating L2 points are hard-deleted once the L3 upsert verifies. If the verification read fails, the L2s are left in place for the next run to retry.
 3. Flag eligible L3 as `pending_l4_approval=true` (age ≥ 14d, importance_effective ≥ 4, access_count ≥ 3 OR tag `core_fact`).
 4. Prune stale low-importance L2 entries. No source-protection set is needed — any L2 that got clustered into an L3 is already gone.

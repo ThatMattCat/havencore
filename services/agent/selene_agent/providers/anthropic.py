@@ -63,15 +63,23 @@ _STOP_REASON_MAP = {
 
 # Static context-window sizes (input tokens) for Anthropic models. The API
 # doesn't expose this on a per-model endpoint, so we keep a small map of the
-# models we actually run. Unknown models fall back to ``_ANTHROPIC_DEFAULT``,
-# which matches the long-standing 200K Claude window.
+# models we actually run. Prefixes are matched in order (first match wins), so
+# the current-gen 1M-window models are listed before the generic older-family
+# catch-alls. Unknown models fall back to ``_ANTHROPIC_DEFAULT`` (a conservative
+# 200K — under-reporting only summarizes a session earlier, never overflows).
 _ANTHROPIC_DEFAULT_MAX_TOKENS = 200_000
 _ANTHROPIC_MAX_TOKENS_BY_PREFIX = (
-    ("claude-opus-4-7", 200_000),
-    ("claude-opus-4-6", 200_000),
-    ("claude-opus-4-5", 200_000),
+    # Current-generation: 1,000,000-token context window.
+    ("claude-opus-4-8", 1_000_000),
+    ("claude-opus-4-7", 1_000_000),
+    ("claude-opus-4-6", 1_000_000),
+    ("claude-opus-4-5", 1_000_000),
+    ("claude-sonnet-5", 1_000_000),
+    ("claude-sonnet-4-6", 1_000_000),
+    # Older / smaller-window models: 200K.
+    ("claude-opus-4-1", 200_000),
+    ("claude-opus-4-0", 200_000),
     ("claude-opus-4", 200_000),
-    ("claude-sonnet-4-6", 200_000),
     ("claude-sonnet-4-5", 200_000),
     ("claude-sonnet-4", 200_000),
     ("claude-haiku-4-5", 200_000),
@@ -146,7 +154,10 @@ def _translate_tool_choice(
     if tc == "required":
         return {"type": "any"}
     if tc == "none":
-        return None
+        # Anthropic honors {"type": "none"} to actually suppress tool use even
+        # when a tools array is attached; returning None would omit tool_choice,
+        # which Anthropic treats as "auto" (tools still enabled).
+        return {"type": "none"}
     if isinstance(tc, dict):
         name = (tc.get("function") or {}).get("name")
         if name:
@@ -355,7 +366,16 @@ def _to_openai_response(
     )
 
     usage_obj = getattr(anthropic_msg, "usage", None)
-    prompt_tokens = int(getattr(usage_obj, "input_tokens", 0) or 0) if usage_obj else 0
+    # input_tokens is the UNCACHED remainder only; add the cache read/creation
+    # tokens so prompt_tokens reflects the full prompt (matching vLLM's
+    # inclusive prompt_tokens) instead of collapsing to ~0 on a cache hit.
+    prompt_tokens = 0
+    if usage_obj:
+        prompt_tokens = (
+            int(getattr(usage_obj, "input_tokens", 0) or 0)
+            + int(getattr(usage_obj, "cache_read_input_tokens", 0) or 0)
+            + int(getattr(usage_obj, "cache_creation_input_tokens", 0) or 0)
+        )
     completion_tokens = int(getattr(usage_obj, "output_tokens", 0) or 0) if usage_obj else 0
     usage = CompletionUsage(
         prompt_tokens=prompt_tokens,

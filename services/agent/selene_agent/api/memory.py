@@ -6,6 +6,7 @@ existing no-auth pattern (matches /api/autonomy/*).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid as _uuid
 from datetime import datetime, timezone
@@ -468,30 +469,42 @@ def admin_purge(body: PurgeRequest):
 @router.get("/memory/stats")
 async def stats():
     from qdrant_client.models import Filter, FieldCondition, MatchValue
-    c = _qdrant_client()
 
-    def _count(flt):
-        return c.count(collection_name=_collection(), count_filter=flt, exact=True).count
+    def _counts():
+        # Blocking Qdrant I/O — run off the event loop and close the per-call
+        # client so dashboard polling neither stalls the loop nor leaks pools.
+        c = _qdrant_client()
+        try:
+            def _count(flt):
+                return c.count(collection_name=_collection(), count_filter=flt, exact=True).count
+            return {
+                "l2": _count(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))])),
+                "l3": _count(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))])),
+                "l4": _count(Filter(must=[
+                    FieldCondition(key="tier", match=MatchValue(value="L4")),
+                    FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
+                ])),
+                "pending": _count(Filter(must=[
+                    FieldCondition(key="tier", match=MatchValue(value="L3")),
+                    FieldCondition(key="pending_l4_approval", match=MatchValue(value=True)),
+                ])),
+            }
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
 
-    l2 = _count(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L2"))]))
-    l3 = _count(Filter(must=[FieldCondition(key="tier", match=MatchValue(value="L3"))]))
-    l4 = _count(Filter(must=[
-        FieldCondition(key="tier", match=MatchValue(value="L4")),
-        FieldCondition(key="pending_l4_approval", match=MatchValue(value=False)),
-    ]))
-    pending = _count(Filter(must=[
-        FieldCondition(key="tier", match=MatchValue(value="L3")),
-        FieldCondition(key="pending_l4_approval", match=MatchValue(value=True)),
-    ]))
+    counts = await asyncio.get_running_loop().run_in_executor(None, _counts)
 
     # Approximate token count: ~4 chars per token applied to the rendered block.
     block = await l4_context.build_l4_block()
     l4_est_tokens = max(0, len(block) // 4)
 
     return {
-        "l2_count": l2,
-        "l3_count": l3,
-        "l4_count": l4,
-        "pending_proposals": pending,
+        "l2_count": counts["l2"],
+        "l3_count": counts["l3"],
+        "l4_count": counts["l4"],
+        "pending_proposals": counts["pending"],
         "l4_est_tokens": l4_est_tokens,
     }

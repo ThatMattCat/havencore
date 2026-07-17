@@ -2,6 +2,9 @@
 Home Assistant proxy API router — thin proxies to HA REST API for the dashboard.
 """
 
+import asyncio
+import functools
+
 import requests as http_requests
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
@@ -14,7 +17,16 @@ logger = custom_logger.get_logger('loki')
 router = APIRouter()
 
 
-def _ha_request(path: str, timeout: int = 10) -> dict:
+async def _ha_request(path: str, timeout: int = 10) -> dict:
+    """Async wrapper — runs the blocking HA REST call in a thread so it never
+    stalls the event loop (which would freeze every concurrent request,
+    including live voice turns)."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, functools.partial(_ha_request_sync, path, timeout)
+    )
+
+
+def _ha_request_sync(path: str, timeout: int = 10) -> dict:
     """Make an authenticated request to the Home Assistant REST API"""
     if not config.HAOS_URL or not config.HAOS_TOKEN:
         raise HTTPException(status_code=503, detail="Home Assistant not configured")
@@ -43,7 +55,7 @@ def _ha_request(path: str, timeout: int = 10) -> dict:
 @router.get("/ha/entities")
 async def get_entities(domain: Optional[str] = Query(None, description="Filter by domain (e.g. light, switch, media_player)")):
     """Get Home Assistant entity states, optionally filtered by domain"""
-    states = _ha_request("states")
+    states = await _ha_request("states")
 
     if domain:
         states = [s for s in states if s.get("entity_id", "").startswith(f"{domain}.")]
@@ -65,7 +77,7 @@ async def get_entities(domain: Optional[str] = Query(None, description="Filter b
 @router.get("/ha/entities/summary")
 async def get_entity_summary():
     """Get a summary of entity counts by domain"""
-    states = _ha_request("states")
+    states = await _ha_request("states")
 
     domain_counts = {}
     domain_active = {}
@@ -95,7 +107,7 @@ async def get_entity_summary():
 @router.get("/ha/automations")
 async def get_automations():
     """Get Home Assistant automations"""
-    states = _ha_request("states")
+    states = await _ha_request("states")
     automations = [
         {
             "entity_id": s.get("entity_id"),
@@ -112,7 +124,7 @@ async def get_automations():
 @router.get("/ha/scenes")
 async def get_scenes():
     """Get Home Assistant scenes"""
-    states = _ha_request("states")
+    states = await _ha_request("states")
     scenes = [
         {
             "entity_id": s.get("entity_id"),

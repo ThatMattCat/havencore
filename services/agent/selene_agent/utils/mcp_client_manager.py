@@ -81,7 +81,9 @@ class MCPServerConnection:
     async def connect(self):
         """Connect to the MCP server"""
         try:
-            self.mcp_config.env = dict(os.environ)
+            # Merge any per-server env overrides (from the MCP_SERVERS config)
+            # OVER the inherited environment, rather than discarding them.
+            self.mcp_config.env = {**os.environ, **(self.mcp_config.env or {})}
             stdio_params = self.mcp_config.to_stdio_params()
             
             self._context_manager = stdio_client(stdio_params)

@@ -256,8 +256,32 @@ async def websocket_chat(websocket: WebSocket):
                 notif_task = None
 
             if recv_task in done:
-                data = recv_task.result()
+                try:
+                    data = recv_task.result()
+                except (WebSocketDisconnect, asyncio.CancelledError):
+                    raise
+                except Exception as e:
+                    # Malformed / non-JSON client frame — reject it and keep the
+                    # session alive rather than tearing down the whole socket.
+                    logger.warning(f"Ignoring malformed WS frame: {e}")
+                    recv_task = asyncio.create_task(websocket.receive_json())
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "Invalid message frame (expected a JSON object)",
+                        })
+                    except Exception:
+                        pass
+                    continue
                 recv_task = asyncio.create_task(websocket.receive_json())
+
+                if not isinstance(data, dict):
+                    # Well-formed JSON but not an object (e.g. "ping" or [1,2]).
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Invalid message frame (expected a JSON object)",
+                    })
+                    continue
 
                 # Session-bind frame: may be sent as the first frame or mid-stream.
                 # `session_id` is honored only on the first frame (once the session is
@@ -303,5 +327,15 @@ async def websocket_chat(websocket: WebSocket):
         if session_id and notif_queue is not None:
             pool.unsubscribe(session_id, notif_queue)
         for t in (recv_task, notif_task):
-            if t is not None and not t.done():
+            if t is None:
+                continue
+            if not t.done():
                 t.cancel()
+            else:
+                # Retrieve any stored exception (e.g. a background receive_json
+                # that already saw the disconnect) so asyncio doesn't log
+                # "Task exception was never retrieved".
+                try:
+                    t.exception()
+                except asyncio.CancelledError:
+                    pass

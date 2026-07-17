@@ -93,7 +93,7 @@ publisher  ──►  mosquitto  ──►  agent autonomy/mqtt_listener
                             watch_llm handler (per matched item)
                                         │
                                         ▼
-                          gather: HA entities + L4 memory
+                          gather: HA entities + L2/L3 memory (search_memories)
                                   + ha_get_presence
                                   + face_recent_visitors
                                   + query_multimodal_api (scene description
@@ -108,6 +108,10 @@ publisher  ──►  mosquitto  ──►  agent autonomy/mqtt_listener
                                         ▼
               SignalNotifier | HAPushNotifier | SpeakerNotifier
 ```
+
+L4 promoted facts reach the triage LLM separately — injected into the system
+prompt via `build_l4_block`, not through the gather's `search_memories` call
+(which returns L2/L3 hits only).
 
 The normalizer sits in `services/agent/selene_agent/autonomy/sensor_events.py`.
 It maps the raw camera entity_id (e.g. `camera.front_duo_3_clear`) to a
@@ -237,7 +241,7 @@ The agent seeds four `watch_llm` agenda items at first startup
 | `face_no_face_triage`    | ✅ | `haven/face/no_face`    | Person sensor tripped, no face visible. Higher severity floor (`med`) since these are noisier (wildlife, shadows). Default `cooldown_min=45`. Ships with `scene_description: true` plus a tailored prompt biased toward resident/pet/delivery/wildlife disambiguation. |
 | `vehicle_event_triage`   | ❌ | `haven/vehicles/+`      | Off by default; flip on once an LPR / vehicle source publishes. |
 
-Both are `created_by='system_camera'`. Re-running the seed only inserts
+All four are `created_by='system_camera'`. Re-running the seed only inserts
 missing rows — your dashboard tweaks survive restarts. The exception is a
 narrow one-time migration that adds `scene_description` (and the no_face
 prompt override) to existing system-seeded rows that don't already have the

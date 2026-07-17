@@ -155,10 +155,12 @@ class ComfyUIClient:
                 "filename": img['filename']
             })
         
+        # Note: the full ComfyUI history/result graph is intentionally NOT
+        # returned — this dict is json.dumps'd straight into the LLM tool result,
+        # and the graph is thousands of tokens of irrelevant node data.
         return {
             "prompt_id": prompt_id,
             "images": downloaded,
-            "history": result
         }
     
     @staticmethod
