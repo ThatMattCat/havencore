@@ -60,7 +60,7 @@ logger = custom_logger.get_logger('loki')
 # out the lines we actually care about. Apply after get_logger() so the
 # dictConfig in the custom logger module doesn't override these.
 import logging as _logging
-for _noisy in ("httpx", "httpcore", "openai"):
+for _noisy in ("httpx", "httpcore", "openai", "urllib3"):
     _logging.getLogger(_noisy).setLevel(_logging.WARNING)
 
 
@@ -605,7 +605,14 @@ def main():
     if args.api_key:
         config.LLM_API_KEY = args.api_key
 
-    uvicorn.run(app, host="0.0.0.0", port=6002, log_level="info")
+    # log_config=None: the app already owns logging via custom_logger's
+    # _configure_once() (console + async Loki QueueListener). Letting uvicorn run
+    # its own dictConfig at startup calls logging.shutdown()/_clearExistingHandlers
+    # while the Loki background thread is mid-emit() -> requests.post -> urllib3 ->
+    # logging.debug. That crosses the global logging lock and the Loki handler lock
+    # in opposite orders, deadlocking startup so uvicorn never binds port 6002
+    # (agent stays unhealthy, nginx never comes up). Keep uvicorn out of logging.
+    uvicorn.run(app, host="0.0.0.0", port=6002, log_level="info", log_config=None)
 
 
 if __name__ == "__main__":
