@@ -32,7 +32,10 @@ logger = get_logger('loki')
 # Get configuration from environment
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 BRAVE_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
-TIMEZONE = os.getenv("TIMEZONE")
+# Nothing in the deployment sets TIMEZONE — compose/.env define CURRENT_TIMEZONE
+# (via shared config) and TZ. Reading the wrong name left this None, and
+# pytz.timezone(None) raised on every dated forecast query.
+TIMEZONE = os.getenv("CURRENT_TIMEZONE") or os.getenv("TZ") or "UTC"
 WOLFRAM_ALPHA_API_KEY = os.getenv("WOLFRAM_ALPHA_API_KEY")
 
 SIGNAL_API_URL = os.environ.get('SIGNAL_API_URL', 'http://signal-api:8080').rstrip('/')
@@ -410,7 +413,11 @@ class GeneralToolsServer:
             
             if date:
                 target_date = datetime.strptime(date, "%Y-%m-%d").date()
-                local_tz = pytz.timezone(TIMEZONE)
+                try:
+                    local_tz = pytz.timezone(TIMEZONE)
+                except pytz.UnknownTimeZoneError:
+                    logger.warning(f"Unknown timezone {TIMEZONE!r}, falling back to UTC")
+                    local_tz = pytz.UTC
                 now_local = datetime.now(local_tz)
                 today = now_local.date()
                 days_ahead = (target_date - today).days
