@@ -2,7 +2,10 @@ import logging
 import os
 from urllib.parse import urlparse
 
-DEBUG = os.getenv('DEBUG_LOGGING', 0)
+# Parsed as a boolean, not truthiness: os.getenv returns a *string* when the var
+# is set, and "0"/"false"/"no" are all truthy, which would invert the operator's
+# intent (.env ships DEBUG_LOGGING=0 meaning "off").
+DEBUG = os.getenv('DEBUG_LOGGING', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 if DEBUG:
     LOG_LEVEL_APP = logging.DEBUG
 else:
