@@ -34,6 +34,7 @@ Device-name attribution:
 """
 
 import asyncio
+from contextlib import aclosing
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request, Response, Header
@@ -158,23 +159,28 @@ async def chat(
 
     lock = pool.lock_for(session_id)
     async with lock:
-        async for event in orchestrator.run(request.message):
-            # REASONING events are dashboard-only chain-of-thought surfaced on
-            # /ws/chat. Drop them from the REST response so satellites and
-            # other REST callers never see the CoT text.
-            if event.type == EventType.REASONING:
-                continue
-            events.append({"type": event.type.value, **event.data})
-            if event.type == EventType.METRIC:
-                await metrics_db.record_turn(
-                    orchestrator.session_id,
-                    event.data,
-                    device_name=orchestrator.device_name,
-                )
-            elif event.type == EventType.DONE:
-                final_content = event.data.get("content", "")
-            elif event.type == EventType.ERROR:
-                final_content = event.data.get("error", "ERROR: Unknown error")
+        # aclosing(): uvicorn cancels this handler task when the client goes
+        # away. Closing the generator deterministically lets run()'s finally
+        # repair any tool_calls the abandoned turn left unanswered, instead of
+        # leaving the pooled session wedged until GC finalizes the generator.
+        async with aclosing(orchestrator.run(request.message)) as stream:
+            async for event in stream:
+                # REASONING events are dashboard-only chain-of-thought surfaced
+                # on /ws/chat. Drop them from the REST response so satellites
+                # and other REST callers never see the CoT text.
+                if event.type == EventType.REASONING:
+                    continue
+                events.append({"type": event.type.value, **event.data})
+                if event.type == EventType.METRIC:
+                    await metrics_db.record_turn(
+                        orchestrator.session_id,
+                        event.data,
+                        device_name=orchestrator.device_name,
+                    )
+                elif event.type == EventType.DONE:
+                    final_content = event.data.get("content", "")
+                elif event.type == EventType.ERROR:
+                    final_content = event.data.get("error", "ERROR: Unknown error")
 
     return ChatResponse(response=final_content, events=events, session_id=session_id)
 
@@ -303,17 +309,38 @@ async def websocket_chat(websocket: WebSocket):
 
                 lock = pool.lock_for(sid)
                 async with lock:
-                    async for event in orch.run(user_message):
-                        await websocket.send_json({
-                            "type": event.type.value,
-                            **event.data,
-                        })
-                        if event.type == EventType.METRIC:
-                            await metrics_db.record_turn(
-                                orch.session_id,
-                                event.data,
-                                device_name=orch.device_name,
-                            )
+                    # If the client vanishes mid-turn, sending raises. Do NOT
+                    # let that abandon the generator at its current yield: the
+                    # assistant message carrying tool_calls is already in
+                    # orch.messages and the matching tool results are appended
+                    # after the yields, so a dropped turn would leave the
+                    # pooled session (and its conversation_db flush) in a
+                    # sequence the provider rejects on every later turn.
+                    # Instead stop sending and drain the turn to completion.
+                    send_error: Optional[Exception] = None
+                    async with aclosing(orch.run(user_message)) as stream:
+                        async for event in stream:
+                            if send_error is None:
+                                try:
+                                    await websocket.send_json({
+                                        "type": event.type.value,
+                                        **event.data,
+                                    })
+                                except Exception as e:
+                                    send_error = e
+                                    logger.warning(
+                                        f"WS send failed mid-turn (session={sid}): {e}. "
+                                        "Draining the turn so session state settles."
+                                    )
+                            if event.type == EventType.METRIC:
+                                await metrics_db.record_turn(
+                                    orch.session_id,
+                                    event.data,
+                                    device_name=orch.device_name,
+                                )
+                    if send_error is not None:
+                        # Turn finished cleanly; the socket is the casualty.
+                        raise WebSocketDisconnect(code=1006)
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected (session={session_id})")
