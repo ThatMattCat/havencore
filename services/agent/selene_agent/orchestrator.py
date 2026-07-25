@@ -702,6 +702,15 @@ class AgentOrchestrator:
         retrieval_block = await self._build_retrieval_block(user_message)
 
         try:
+            # Heal history poisoned before this fix (or by a cold resume from a
+            # conversation_db row flushed mid-turn) so the very first turn on a
+            # recovered session isn't rejected by the provider.
+            inherited = self._repair_dangling_tool_calls()
+            if inherited:
+                logger.warning(
+                    f"Session {self.session_id} carried {inherited} unanswered "
+                    "tool_call(s) into this turn; synthesized placeholder results"
+                )
             self.messages.append({"role": "user", "content": wrapped_message})
             logger.info(f"Query: {user_message}")
 
@@ -991,6 +1000,75 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"Error in query: {e}\n{traceback.format_exc()}")
             yield AgentEvent(type=EventType.ERROR, data={"error": f"ERROR: {str(e)}"})
+        finally:
+            # Runs on the normal path, on error, and on GeneratorExit /
+            # CancelledError (client disconnect mid-turn) — see
+            # _repair_dangling_tool_calls. Must stay await-free: a `finally`
+            # in an async generator cannot suspend while it's being closed.
+            repaired = self._repair_dangling_tool_calls()
+            if repaired:
+                logger.warning(
+                    f"Turn abandoned mid tool-loop (session_id={self.session_id}); "
+                    f"synthesized {repaired} placeholder tool result(s) to keep "
+                    "the message history valid"
+                )
+
+    def _repair_dangling_tool_calls(self) -> int:
+        """Answer any assistant tool_calls in self.messages left without a result.
+
+        run() appends the assistant message carrying `tool_calls` *before* it
+        yields TOOL_CALL/TOOL_RESULT and appends the matching `role=tool`
+        replies. A turn abandoned in that window (WS client disconnect, REST
+        request cancellation) leaves an assistant entry whose tool_calls have
+        no responses — an invalid sequence the provider rejects, wedging every
+        later turn on the session and poisoning the conversation_db flush.
+
+        Fill each gap with a synthetic tool result, inserted immediately after
+        that assistant message's existing tool replies. Returns how many were
+        synthesized (0 = history was already well-formed, nothing mutated).
+        """
+        repaired: List[Dict[str, Any]] = []
+        pending: List[str] = []
+        synthesized = 0
+
+        def _flush() -> int:
+            n = len(pending)
+            for tcid in pending:
+                repaired.append({
+                    "role": "tool",
+                    "tool_call_id": tcid,
+                    "content": json.dumps({
+                        "error": "tool_call_abandoned",
+                        "detail": (
+                            "The turn ended before this tool call completed "
+                            "(client disconnected). No result is available."
+                        ),
+                    }),
+                })
+            pending.clear()
+            return n
+
+        for m in self.messages:
+            role = m.get("role")
+            if role == "tool":
+                tcid = m.get("tool_call_id")
+                if tcid in pending:
+                    pending.remove(tcid)
+                repaired.append(m)
+                continue
+            # Any non-tool message ends this assistant's run of tool replies.
+            synthesized += _flush()
+            if role == "assistant":
+                for tc in (m.get("tool_calls") or []):
+                    tcid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if tcid:
+                        pending.append(tcid)
+            repaired.append(m)
+        synthesized += _flush()
+
+        if synthesized:
+            self.messages[:] = repaired
+        return synthesized
 
     async def _execute_tool_call(self, tool_call) -> str:
         """Execute a single tool call via MCP (or the companion-upload path)."""
