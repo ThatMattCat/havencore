@@ -250,11 +250,23 @@ class AutonomyEngine:
         except Exception as e:
             logger.error(f"[engine] deferred sweep failed: {e}")
             due_deferred = []
-        for run_row in due_deferred:
-            asyncio.create_task(self._dispatch_deferred(run_row))
+        if due_deferred:
+            # Sequentially, not one task each: the global rate gate counts only
+            # completed runs, so a concurrent release let every deferred run
+            # pass the check before any of them had finished.
+            asyncio.create_task(self._dispatch_deferred_batch(due_deferred))
 
         # Confirmation-timeout sweep (act-tier parked runs past their deadline).
         await self._sweep_confirmation_timeouts(self.last_dispatch_at)
+
+    async def _dispatch_deferred_batch(self, run_rows: List[Dict[str, Any]]) -> None:
+        """Release deferred runs one at a time so each re-checks the rate gate
+        against the ones already finished."""
+        for run_row in run_rows:
+            try:
+                await self._dispatch_deferred(run_row)
+            except Exception as e:
+                logger.error(f"[engine] deferred dispatch failed for {run_row.get('id')}: {e}")
 
     async def _dispatch_deferred(self, run_row: Dict[str, Any]) -> None:
         claimed = await autonomy_db.claim_scheduled_run(run_row["id"])
@@ -372,6 +384,12 @@ class AutonomyEngine:
                 policy = quiet_hours_mod.policy(quiet_spec)
                 if policy == "defer":
                     next_end = quiet_hours_mod.next_end_at(triggered_at, quiet_spec)
+                    # One pending deferral per item. A long quiet window
+                    # otherwise queued a row per suppressed fire and released
+                    # them all concurrently at quiet end.
+                    if await autonomy_db.coalesce_deferred_run(item_id):
+                        await self._advance(item, triggered_at)
+                        return {"status": "coalesced_into_pending_defer"}
                     await autonomy_db.insert_run({
                         **agenda_fields,
                         "status": "scheduled",

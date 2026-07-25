@@ -556,6 +556,42 @@ async def insert_run(run: Dict[str, Any]) -> str:
     return run_id
 
 
+async def coalesce_deferred_run(agenda_item_id: str) -> bool:
+    """Fold another quiet-hours deferral into this item's pending placeholder.
+
+    Returns True when an existing ``scheduled`` row absorbed the fire (and its
+    ``metrics.coalesced`` counter was bumped so the suppression stays visible),
+    False when there is nothing to coalesce into and the caller should insert.
+
+    Without this, every suppressed fire inserted its own row — an overnight
+    quiet window produced hundreds, and they all dispatched at once at quiet
+    end.
+    """
+    if not agenda_item_id:
+        return False
+    pool = conversation_db.pool
+    if not pool:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE autonomy_runs
+               SET metrics = jsonb_set(
+                       COALESCE(metrics, '{}'::jsonb), '{coalesced}',
+                       to_jsonb(COALESCE((metrics->>'coalesced')::int, 1) + 1)
+                   )
+             WHERE id = (
+                   SELECT id FROM autonomy_runs
+                    WHERE agenda_item_id = $1 AND status = 'scheduled'
+                    ORDER BY scheduled_for ASC
+                    LIMIT 1
+                   )
+            """,
+            uuid.UUID(agenda_item_id),
+        )
+    return result.endswith(" 1")
+
+
 async def list_scheduled_runs_due(now_utc: datetime) -> List[Dict[str, Any]]:
     """Deferred runs whose ``scheduled_for`` has arrived, still ``scheduled``."""
     pool = conversation_db.pool
