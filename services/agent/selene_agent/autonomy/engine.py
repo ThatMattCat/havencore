@@ -616,6 +616,20 @@ class AutonomyEngine:
             if not hmac.compare_digest(stored, token):
                 return {"status": "invalid_token"}
 
+        # Atomically claim the run before doing anything irreversible. The read
+        # above is advisory only: without this CAS, two concurrent confirms (a
+        # double-tapped Approve deep-link) both saw 'awaiting_confirmation' and
+        # both ran every pending actuator call, and a confirm arriving just
+        # after the timeout sweep executed actions it had already given up on.
+        # Token validation stays ahead of the claim so a bad token can't strand
+        # the run in 'confirming'.
+        if not await autonomy_db.claim_confirmation(run_id):
+            fresh = await autonomy_db.get_run(run_id, include_messages=False)
+            return {
+                "status": "invalid_state",
+                "current": (fresh or {}).get("status"),
+            }
+
         item_id = run_row.get("agenda_item_id")
         item = await autonomy_db.get_item(item_id) if item_id else None
 
@@ -638,9 +652,23 @@ class AutonomyEngine:
             })
             return {"status": "error", "error": "item_missing"}
 
-        exec_result = await act_handler.execute_approved(
-            run_row, item, self.mcp_manager
-        )
+        try:
+            exec_result = await act_handler.execute_approved(
+                run_row, item, self.mcp_manager
+            )
+        except Exception as e:
+            # We hold the claim, and the timeout sweep only reclaims
+            # 'awaiting_confirmation' rows — so a raise here would strand the
+            # run in 'confirming' forever. Land it as an error instead.
+            logger.error(f"[engine] approved execution failed for run {run_id}: {e}")
+            await autonomy_db.finalize_run(run_id, {
+                "status": "error",
+                "confirmation_response": "approved",
+                "completed_at": datetime.now(timezone.utc),
+                "error": f"approved execution failed: {e}",
+            })
+            await self._advance(item, datetime.now(timezone.utc))
+            return {"status": "error", "error": str(e)}
         patch = {
             "status": exec_result.get("status", "ok"),
             "summary": exec_result.get("summary"),

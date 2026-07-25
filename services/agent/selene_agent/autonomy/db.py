@@ -879,6 +879,29 @@ async def claim_confirmation_timeout(
     return result.endswith(" 1")
 
 
+async def claim_confirmation(run_id: str) -> bool:
+    """Atomically transition a run from ``awaiting_confirmation`` to
+    ``confirming``, reserving it for exactly one confirm request.
+
+    Returns True for the caller that won. A False means someone else already
+    took it — a double-tapped Approve, or the confirmation-timeout sweep — and
+    the caller must not execute the actions.
+    """
+    pool = conversation_db.pool
+    if not pool:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE autonomy_runs
+               SET status = 'confirming'
+             WHERE id = $1 AND status = 'awaiting_confirmation'
+            """,
+            uuid.UUID(run_id),
+        )
+    return result.endswith(" 1")
+
+
 async def list_expired_confirmations(now_utc: datetime) -> List[Dict[str, Any]]:
     """Awaiting-confirmation runs whose deadline (triggered_at + timeout) has
     passed. The per-item timeout is read from the item's config; we return the
