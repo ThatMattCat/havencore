@@ -178,7 +178,15 @@ async def create_item(body: AgendaCreate, req: Request):
 
 @router.patch("/autonomy/items/{item_id}")
 async def patch_item(item_id: str, body: AgendaPatch, req: Request):
-    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k == "enabled"}
+    # schedule_cron / trigger_spec are explicitly nullable: the edit form sends
+    # null to clear the trigger the user switched away from. Combined with
+    # exclude_unset, a null only arrives when the client meant it. Every other
+    # field keeps "None means untouched".
+    patch = {
+        k: v
+        for k, v in body.model_dump(exclude_unset=True).items()
+        if v is not None or k in ("enabled", "schedule_cron", "trigger_spec")
+    }
     if not patch:
         current = await autonomy_db.get_item(item_id)
         if current is None:
@@ -196,9 +204,15 @@ async def patch_item(item_id: str, body: AgendaPatch, req: Request):
             "schedule_cron": effective.get("schedule_cron"),
             "trigger_spec": effective.get("trigger_spec"),
         })
-        if patch.get("schedule_cron"):
-            patch["next_fire_at"] = autonomy_schedule.next_fire_at(
-                patch["schedule_cron"], after=datetime.now(timezone.utc)
+        if "schedule_cron" in patch:
+            # Clearing the cron must clear next_fire_at too — the engine
+            # dispatches on next_fire_at, so a stale one keeps firing.
+            patch["next_fire_at"] = (
+                autonomy_schedule.next_fire_at(
+                    patch["schedule_cron"], after=datetime.now(timezone.utc)
+                )
+                if patch["schedule_cron"]
+                else None
             )
     updated = await autonomy_db.update_item(item_id, patch)
     if updated is None:
