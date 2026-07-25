@@ -1202,7 +1202,23 @@ class HomeAssistantMCPServer:
 
     async def _trigger_script(self, script_entity: str, variables: Dict[str, Any]) -> str:
         try:
-            return await self.ha_client.execute_service(script_entity, "turn_on", **variables)
+            # LLMs routinely hand back a JSON *string* where the schema asks for
+            # an object; decode it rather than failing the call.
+            if isinstance(variables, str):
+                try:
+                    variables = json.loads(variables)
+                except ValueError:
+                    return (f"Error triggering script '{script_entity}': "
+                            "'variables' must be a JSON object")
+            if variables and not isinstance(variables, dict):
+                return (f"Error triggering script '{script_entity}': "
+                        f"'variables' must be an object, got {type(variables).__name__}")
+            # script.turn_on is built with make_entity_service_schema (PREVENT_EXTRA)
+            # and accepts only an optional `variables` dict. Spreading the caller's
+            # keys at the top level makes HA reject the request with 400
+            # "extra keys not allowed".
+            extras = {"variables": variables} if variables else {}
+            return await self.ha_client.execute_service(script_entity, "turn_on", **extras)
         except EntityNotFoundError as e:
             return await self._format_entity_not_found(e, "Script")
         except Exception as e:
