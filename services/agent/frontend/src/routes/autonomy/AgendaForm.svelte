@@ -227,6 +227,54 @@
 		return null;
 	});
 
+	// Config keys this form actually renders, per kind. Anything else in a
+	// stored config (seeded keys like attach_snapshot, gather.presence,
+	// gather.scene_description, …) is preserved on edit rather than dropped —
+	// PATCH replaces the config column wholesale, so rebuilding it from only
+	// the rendered fields silently deleted everything the form doesn't model.
+	const OWNED_KEYS = {
+		reminder: ['title', 'body', 'channel', 'to', 'one_shot', 'personalize'],
+		watch: ['body_template', 'channel', 'to', 'severity', 'condition'],
+		routine: ['prompt', 'tools_override', 'deliver'],
+		watch_llm: ['subject', 'gather', 'severity_floor', 'cooldown_min', 'notify'],
+		act: [
+			'prompt', 'action_allow_list', 'require_confirmation',
+			'confirmation_timeout_sec', 'strict_execute', 'deliver',
+		],
+	};
+	// Nested objects the form only *partially* models: replace these sub-keys,
+	// keep the rest.
+	const OWNED_SUBKEYS = {
+		gather: ['entities', 'memories_k'],
+		notify: ['channel', 'to', 'device', 'voice', 'volume'],
+		deliver: ['channel', 'to', 'device', 'voice', 'volume'],
+		condition: ['entity_id', 'state', 'min_duration_sec'],
+		quiet_hours: ['start', 'end', 'policy'],
+	};
+	const COMMON_OWNED = ['quiet_hours', 'event_rate_limit'];
+
+	function mergeConfig(base, next, owned) {
+		const out = structuredClone(base ?? {});
+		for (const key of owned) {
+			const subOwned = OWNED_SUBKEYS[key];
+			const prev = out[key];
+			if (subOwned && prev && typeof prev === 'object' && !Array.isArray(prev)) {
+				const kept = { ...prev };
+				for (const sk of subOwned) delete kept[sk];
+				const merged = { ...kept, ...(next[key] ?? {}) };
+				if (Object.keys(merged).length > 0) out[key] = merged;
+				else delete out[key];
+			} else if (key in next) {
+				out[key] = next[key];
+			} else {
+				// Field cleared in the form — drop it rather than resurrecting
+				// the stored value from the base copy.
+				delete out[key];
+			}
+		}
+		return out;
+	}
+
 	let configObj = $derived.by(() => {
 		const cfg = {};
 		if (kind === 'reminder') {
@@ -312,7 +360,8 @@
 			if (quietEnd) cfg.quiet_hours.end = quietEnd;
 		}
 		if (eventRateLimit) cfg.event_rate_limit = eventRateLimit;
-		return cfg;
+		if (!isEdit) return cfg;
+		return mergeConfig(item?.config, cfg, [...(OWNED_KEYS[kind] ?? []), ...COMMON_OWNED]);
 	});
 
 	let payload = $derived({
@@ -332,9 +381,15 @@
 		saving = true;
 		try {
 			const body = { ...payload };
-			if (body.schedule_cron === null) delete body.schedule_cron;
-			if (body.trigger_spec === null) delete body.trigger_spec;
 			if (body.name === null) delete body.name;
+			if (!isEdit) {
+				// Create has no "clear" semantics — just omit the unused trigger.
+				if (body.schedule_cron === null) delete body.schedule_cron;
+				if (body.trigger_spec === null) delete body.trigger_spec;
+			}
+			// On PATCH the nulls are meaningful: they clear whichever trigger the
+			// user switched away from. Dropping them left the old one live, so an
+			// item that moved cron -> mqtt kept firing on both paths.
 
 			const url = isEdit ? `/api/autonomy/items/${item.id}` : '/api/autonomy/items';
 			const method = isEdit ? 'PATCH' : 'POST';
