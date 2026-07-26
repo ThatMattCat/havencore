@@ -717,7 +717,12 @@ async def count_deferred_runs() -> int:
     return int(val or 0)
 
 
-async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dict[str, Any]]:
+async def get_run(
+    run_id: str, *, include_messages: bool = True, include_token: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Fetch one run. ``include_token=True`` is for the confirm path only —
+    see ``_row_to_run``; every API/WS caller must leave it off.
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return None
@@ -736,7 +741,11 @@ async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dic
             """,
             uid,
         )
-    return _row_to_run(row, include_messages=include_messages) if row else None
+    return (
+        _row_to_run(row, include_messages=include_messages, include_token=include_token)
+        if row
+        else None
+    )
 
 
 async def count_runs_since(since: datetime) -> int:
@@ -784,7 +793,18 @@ async def last_run_for_signature(signature_hash: str, since: datetime) -> Option
     }
 
 
-def _row_to_run(row, include_messages: bool = False) -> Dict[str, Any]:
+def _row_to_run(
+    row, include_messages: bool = False, *, include_token: bool = False
+) -> Dict[str, Any]:
+    """Serialize an ``autonomy_runs`` row.
+
+    ``confirmation_token`` is a bearer secret — whoever holds it can approve a
+    parked act run (i.e. fire real actuators). It is therefore **opt-in**: only
+    callers that actually validate it (the engine's confirm path) pass
+    ``include_token=True``. Every client-facing surface — ``GET
+    /api/autonomy/runs``, ``/runs/awaiting``, ``/runs/{id}``, the
+    ``/ws/autonomy/runs`` feed — goes through the default and never sees it.
+    """
     keys = row.keys() if hasattr(row, "keys") else []
     out = {
         "id": str(row["id"]),
@@ -807,7 +827,7 @@ def _row_to_run(row, include_messages: bool = False) -> Dict[str, Any]:
         out["trigger_source"] = row["trigger_source"]
     if "trigger_event" in keys:
         out["trigger_event"] = _maybe_json(row["trigger_event"])
-    if "confirmation_token" in keys:
+    if include_token and "confirmation_token" in keys:
         out["confirmation_token"] = row["confirmation_token"]
     if "confirmation_prompt_id" in keys:
         out["confirmation_prompt_id"] = row["confirmation_prompt_id"]
@@ -853,12 +873,15 @@ async def list_runs(
     args.append(offset)
     off_placeholder = f"${len(args)}"
     async with pool.acquire() as conn:
+        # confirmation_token is deliberately NOT selected: every consumer of
+        # this listing is a client-facing surface, and no listing caller
+        # validates the token. Defence in depth on top of _row_to_run's gate.
         rows = await conn.fetch(
             f"""
             SELECT id, agenda_item_id, kind, triggered_at, completed_at,
                    status, summary, severity, signature_hash, notified_via,
                    messages, metrics, error, scheduled_for, trigger_source,
-                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   trigger_event, confirmation_prompt_id,
                    confirmation_response, action_audit
             FROM autonomy_runs
             {where}
@@ -876,12 +899,14 @@ async def list_awaiting_confirmation_runs() -> List[Dict[str, Any]]:
     if not pool:
         return []
     async with pool.acquire() as conn:
+        # No confirmation_token here either — this feeds the dashboard's
+        # "awaiting approval" banner, which approves by origin, not by token.
         rows = await conn.fetch(
             """
             SELECT id, agenda_item_id, kind, triggered_at, completed_at,
                    status, summary, severity, signature_hash, notified_via,
                    messages, metrics, error, scheduled_for, trigger_source,
-                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   trigger_event, confirmation_prompt_id,
                    confirmation_response, action_audit
             FROM autonomy_runs
             WHERE status = 'awaiting_confirmation'

@@ -239,20 +239,20 @@ class ConfirmBody(BaseModel):
 
 @router.get("/autonomy/runs/awaiting")
 async def runs_awaiting():
+    # The token is never serialized (autonomy_db._row_to_run gates it behind
+    # include_token, and this query doesn't even select the column).
     runs_ = await autonomy_db.list_awaiting_confirmation_runs()
-    # Strip the token so UI listings don't expose it.
-    for r in runs_:
-        r.pop("confirmation_token", None)
     return {"runs": runs_}
 
 
 @router.get("/autonomy/runs/{run_id}")
 async def get_run(run_id: str, include_messages: int = 0):
+    # include_token defaults to False — approvals must use the notification
+    # deep-link's token (or come from an allowlisted browser origin), so no
+    # read-only surface ever hands the token out.
     run = await autonomy_db.get_run(run_id, include_messages=bool(include_messages))
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
-    # Always hide the token — approvals must use the notification deep-link.
-    run.pop("confirmation_token", None)
     return {"run": run}
 
 

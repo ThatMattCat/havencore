@@ -623,7 +623,11 @@ class AutonomyEngine:
         """Called by POST /api/autonomy/runs/{id}/confirm after the user
         decides. Validates state, runs or cancels, and updates the row.
         """
-        run_row = await autonomy_db.get_run(run_id, include_messages=False)
+        # include_token=True: this is the one code path that validates the
+        # token, so it is the one code path allowed to read it back out.
+        run_row = await autonomy_db.get_run(
+            run_id, include_messages=False, include_token=True
+        )
         if run_row is None:
             return {"status": "not_found"}
         if run_row.get("status") != "awaiting_confirmation":
