@@ -25,7 +25,52 @@ LLM_API_KEY="your_secret_key"  # Set to any value for API access
 # Debug and logging
 DEBUG_LOGGING=0  # 0 = INFO, 1 = DEBUG
 LOKI_URL="http://localhost:3100/loki/api/v1/push"  # Loki logging endpoint
+
+# Optional: browser origins allowed to call the agent (comma-separated).
+# Empty (default) => derived from HOST_IP_ADDRESS, see below.
+AGENT_CORS_ORIGINS=""
 ```
+
+#### Browser origin allowlist (`AGENT_CORS_ORIGINS`)
+
+`/api/*`, `/ws/*` and `/v1/*` are unauthenticated, so the browser's origin
+checks are the only thing stopping a web page a household member happens to
+open from calling `POST /api/chat` and driving the full tool-calling loop
+(lights, locks, Signal messages) — and reading the reply. The agent therefore
+enforces an origin allowlist in two places, because they are separate
+mechanisms:
+
+- **HTTP** — `CORSMiddleware` with explicit origins, methods and headers, and
+  `allow_credentials=false` (nothing here is cookie-authenticated).
+- **WebSockets** — CORS does not apply to WS handshakes at all, so `/ws/chat`,
+  `/ws/logs` and `/ws/autonomy/runs` additionally validate the `Origin` header
+  on the handshake and close mismatches with code `1008`.
+
+Leave `AGENT_CORS_ORIGINS` empty and the default set is derived from
+`HOST_IP_ADDRESS` — no `.env` edit needed for a stock install:
+
+| Origin | Why |
+|---|---|
+| `http://<HOST_IP_ADDRESS>:6002` | agent's published port (dashboard, `/api/*`, `/ws/*`, `/v1/*`) |
+| `http://<HOST_IP_ADDRESS>` | nginx on `:80`, which reverse-proxies `/`, `/api/`, `/ws/` and `/v1/...` to `agent:6002` |
+| `http://localhost:6002`, `http://localhost` | browsing from the Docker host itself |
+| `http://127.0.0.1:6002`, `http://127.0.0.1` | same, by IP |
+
+Set it explicitly when you reach the dashboard by hostname or over TLS (a
+hostname cannot be derived from an IP):
+
+```bash
+AGENT_CORS_ORIGINS="http://havencore.lan,https://havencore.example.com"
+```
+
+`AGENT_CORS_ORIGINS="*"` restores the old allow-everything behavior. Don't —
+it re-opens the drive-by vector described above.
+
+**Non-browser clients are unaffected.** A handshake or request with **no**
+`Origin` header is always allowed: browsers always send `Origin`, while the
+ESP32 satellite firmware, the Android companion app and CLI tools
+(`websocat`, `curl`, python scripts) never do. No client-side configuration
+changes when this allowlist changes.
 
 #### Agent Configuration
 ```bash

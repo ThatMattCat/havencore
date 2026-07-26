@@ -45,6 +45,17 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 CURRENT_TIMEZONE = os.getenv("CURRENT_TIMEZONE", "")
 
+# --- Cross-origin access control -------------------------------------------
+# Nothing on /api/*, /ws/* or /v1/* is authenticated (LAN-only deployment), so
+# the browser's origin checks are the only thing between a malicious page a
+# household member happens to open and full tool-calling control of the house.
+# AGENT_CORS_ORIGINS is a comma-separated allowlist of browser origins
+# (scheme://host[:port], no path). Empty => derive the default set from
+# HOST_IP_ADDRESS; see selene_agent/utils/origins.py. "*" restores the old
+# allow-everything behavior and is strongly discouraged.
+HOST_IP_ADDRESS = os.getenv("HOST_IP_ADDRESS", "127.0.0.1")
+AGENT_CORS_ORIGINS = os.getenv("AGENT_CORS_ORIGINS", "")
+
 HAOS_TOKEN = os.getenv("HAOS_TOKEN", "")
 HAOS_URL = os.getenv("HAOS_URL", "")
 HAOS_USE_SSL = os.getenv("HAOS_USE_SSL", "")

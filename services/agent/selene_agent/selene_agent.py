@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 import os
@@ -28,6 +27,7 @@ from selene_agent.orchestrator import AgentOrchestrator, EventType, collect_resp
 from selene_agent.providers import build_provider
 from selene_agent.providers.vllm import VLLMProvider
 from selene_agent.utils.session_pool import SessionOrchestratorPool
+from selene_agent.utils.origins import install_origin_policy
 
 # API routers
 from selene_agent.api.chat import router as chat_router, ws_router as chat_ws_router
@@ -308,14 +308,15 @@ if os.path.exists(outputs_dir):
 else:
     logger.warning(f"Outputs directory {outputs_dir} does not exist")
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Cross-origin policy. /api/*, /ws/* and /v1/* have no auth gate, so the
+# browser's origin checks are the only thing stopping a random web page a
+# household member opens from driving the tool-calling loop. This installs BOTH
+# the HTTP CORS allowlist and a WebSocket handshake origin guard — CORS does not
+# apply to WS at all, so /ws/chat would otherwise stay wide open. Allowlist
+# defaults to HOST_IP_ADDRESS-derived origins; override with AGENT_CORS_ORIGINS.
+# See selene_agent/utils/origins.py.
+_cors_origins = install_origin_policy(app)
+logger.info(f"Origin allowlist (HTTP CORS + WS handshake): {', '.join(_cors_origins)}")
 
 # Register API routers
 app.include_router(chat_router, prefix="/api")

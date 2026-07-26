@@ -16,6 +16,8 @@ curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/models
 
 The `/api/*` dashboard endpoints are unauthenticated — the dashboard is intended for a private/home network. Do not expose port 6002 to the public internet without adding your own auth in front of it.
 
+Because there is no auth gate, the agent does enforce a **browser origin allowlist** so a random web page on a machine that can reach the LAN cannot drive the API cross-origin. `/api/*` and `/v1/*` run behind a non-wildcard `CORSMiddleware`, and `/ws/*` handshakes (which CORS does not cover) validate the `Origin` header and close mismatches with code `1008`. Requests and handshakes with **no** `Origin` header — the satellite firmware, the companion app, `curl` — are always allowed. Configure with `AGENT_CORS_ORIGINS`; see [configuration.md](configuration.md#browser-origin-allowlist-agent_cors_origins).
+
 ## Chat Completions API
 
 ### POST /v1/chat/completions
