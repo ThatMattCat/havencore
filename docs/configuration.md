@@ -630,9 +630,11 @@ GITHUB_MAX_ISSUES_PER_HOUR=5
 ```
 
 Issue bodies and comments returned by `github_list_issues` /
-`github_get_issue` are wrapped in `<UNTRUSTED_USER_TEXT author="...">`
-markers — the system prompt tells the model to treat text inside those
-blocks as data rather than instructions. Do not strip the markers.
+`github_get_issue` are enclosed in per-call `<UNTRUSTED_USER_TEXT_<nonce>
+author="...">` markers (random nonce per call, so untrusted text cannot
+close the block early) — the system prompt tells the model to treat text
+inside those blocks as data rather than instructions. Do not strip the
+markers.
 
 `git` and `ripgrep` are installed into the agent image for this
 module's code-search path.
