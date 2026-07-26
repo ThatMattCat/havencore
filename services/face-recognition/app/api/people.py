@@ -308,16 +308,31 @@ async def delete_person(
     delete the person row, then unlink files, then drop Qdrant points by
     payload filter. Detection rows survive with person_id NULL'd
     (ON DELETE SET NULL on face_detections.person_id).
+
+    face_images.path is stored relative to SNAPSHOT_DIR, so every path has to
+    go through _resolve_face_image_path before it is unlinked — resolving
+    against the process CWD silently removes nothing and leaves the person's
+    biometric JPEGs on disk. images_removed counts real unlinks, not rows.
     """
     images = await db.delete_person(person_id)
     if images is None:
         raise HTTPException(status_code=404, detail="person not found")
 
+    images_removed = 0
     for img in images:
+        abs_path = _resolve_face_image_path(img["path"])
         try:
-            Path(img["path"]).unlink(missing_ok=True)
+            if abs_path.exists():
+                abs_path.unlink()
+                images_removed += 1
         except Exception as e:
-            logger.warning("Failed to unlink %s during person delete: %s", img["path"], e)
+            logger.warning("Failed to unlink %s during person delete: %s", abs_path, e)
+
+    if images_removed != len(images):
+        logger.warning(
+            "Person %s delete: %d/%d face image files removed from disk",
+            person_id, images_removed, len(images),
+        )
 
     try:
         vector_store.delete_by_person(str(person_id))
@@ -328,7 +343,7 @@ async def delete_person(
 
     return PersonDeleteResult(
         id=person_id,
-        images_removed=len(images),
+        images_removed=images_removed,
         qdrant_points_removed=len(images),
     )
 

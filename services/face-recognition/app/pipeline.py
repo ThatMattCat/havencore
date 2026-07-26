@@ -152,10 +152,16 @@ async def _maybe_contribute_embedding(
             )
             return False
         # Best-effort cleanup; orphans get caught by step-8 reconcile pass.
+        # face_images.path is relative to SNAPSHOT_DIR (pre-normalization rows
+        # may still be absolute), so resolve before unlinking — otherwise the
+        # unlink hits the process CWD and silently keeps the evicted JPEG.
+        evicted_path = Path(evicted["path"])
+        if not evicted_path.is_absolute():
+            evicted_path = SNAPSHOT_DIR / evicted_path
         try:
-            Path(evicted["path"]).unlink(missing_ok=True)
+            evicted_path.unlink(missing_ok=True)
         except Exception as e:
-            logger.warning("Failed to unlink evicted file %s: %s", evicted["path"], e)
+            logger.warning("Failed to unlink evicted file %s: %s", evicted_path, e)
         try:
             vector_store.delete_point(str(evicted["qdrant_point_id"]))
         except Exception as e:
