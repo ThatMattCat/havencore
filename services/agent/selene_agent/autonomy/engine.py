@@ -465,7 +465,8 @@ class AutonomyEngine:
                 provider_getter=self.provider_getter,
             )
 
-            # Act-tier parked run: persist + notify user, don't advance schedule.
+            # Act-tier parked run: persist + notify the user. (The schedule
+            # *is* advanced below — see the comment there.)
             if result.get("status") == "awaiting_confirmation":
                 run_id = await autonomy_db.insert_run({
                     **agenda_fields,
