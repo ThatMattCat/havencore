@@ -7,6 +7,7 @@ per-signature cooldowns, and (v3) reactive event dispatch + quiet hours.
 from __future__ import annotations
 
 import asyncio
+import hmac
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -618,10 +619,30 @@ class AutonomyEngine:
         return channel if delivered else None
 
     async def resume_confirmed_run(
-        self, run_id: str, *, approved: bool, token: Optional[str] = None
+        self,
+        run_id: str,
+        *,
+        approved: bool,
+        token: Optional[str] = None,
+        allow_tokenless: bool = False,
     ) -> Dict[str, Any]:
         """Called by POST /api/autonomy/runs/{id}/confirm after the user
         decides. Validates state, runs or cancels, and updates the row.
+
+        Authorization is one of two proofs:
+
+        * **the token** — presented by the notification deep-link, which is the
+          only place it is ever published. Always sufficient, whatever the
+          caller's origin.
+        * **an allowlisted browser Origin** (``allow_tokenless=True``, decided
+          by the HTTP layer) — this is the dashboard's Approve button, which
+          has no token because no read-only surface hands it out any more.
+
+        A token that is *present but wrong* is rejected outright: a bad token is
+        an active red flag, never a fallback to the origin path. And a caller
+        with neither proof is rejected — that closes the hole where any client
+        that had merely learned a run_id (they are broadcast on the WS feed)
+        could approve a parked actuator plan.
         """
         # include_token=True: this is the one code path that validates the
         # token, so it is the one code path allowed to read it back out.
@@ -632,11 +653,12 @@ class AutonomyEngine:
             return {"status": "not_found"}
         if run_row.get("status") != "awaiting_confirmation":
             return {"status": "invalid_state", "current": run_row.get("status")}
-        if token is not None:
-            import hmac
-            stored = run_row.get("confirmation_token") or ""
-            if not hmac.compare_digest(stored, token):
-                return {"status": "invalid_token"}
+        stored = run_row.get("confirmation_token") or ""
+        if token is None:
+            if not allow_tokenless:
+                return {"status": "token_required"}
+        elif not stored or not hmac.compare_digest(stored, token):
+            return {"status": "invalid_token"}
 
         # Atomically claim the run before doing anything irreversible. The read
         # above is advisory only: without this CAS, two concurrent confirms (a

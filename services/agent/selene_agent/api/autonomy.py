@@ -13,6 +13,7 @@ from selene_agent.autonomy import db as autonomy_db
 from selene_agent.autonomy import schedule as autonomy_schedule
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
+from selene_agent.utils.origins import is_origin_allowed
 
 logger = custom_logger.get_logger('loki')
 
@@ -258,8 +259,28 @@ async def get_run(run_id: str, include_messages: int = 0):
 
 @router.post("/autonomy/runs/{run_id}/confirm")
 async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
+    """Approve or deny a parked act run.
+
+    Two accepted proofs, no third: the confirmation token (from the
+    notification deep-link, which the companion/Signal path always carries), or
+    an allowlisted browser ``Origin`` (the dashboard's Approve button, which has
+    no token to present because nothing publishes it any more).
+
+    Note the absent-Origin rule is the **inverse** of ``WebSocketOriginGuard``'s:
+    there a missing Origin means "non-browser client" and is allowed, because
+    the worst case is a satellite opening a socket. Here the worst case is a
+    `curl` firing every actuator in an approved plan, so **no Origin means the
+    token is mandatory**. This is a POST, and browsers send Origin on every
+    non-GET request (including same-origin ones), so the dashboard always
+    qualifies without a client-side change.
+    """
+    origin = req.headers.get("origin")
+    allow_tokenless = origin is not None and is_origin_allowed(origin)
     result = await _engine(req).resume_confirmed_run(
-        run_id, approved=body.approved, token=body.token
+        run_id,
+        approved=body.approved,
+        token=body.token,
+        allow_tokenless=allow_tokenless,
     )
     status_val = result.get("status")
     if status_val == "not_found":
@@ -271,6 +292,16 @@ async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
         )
     if status_val == "invalid_token":
         raise HTTPException(status_code=403, detail="invalid token")
+    if status_val == "token_required":
+        logger.warning(
+            "[autonomy] token-less confirm rejected for run %s (origin=%r)",
+            run_id,
+            origin,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="confirmation token required (use the notification link)",
+        )
     return result
 
 
