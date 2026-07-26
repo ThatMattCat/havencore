@@ -273,6 +273,11 @@ async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
     token is mandatory**. This is a POST, and browsers send Origin on every
     non-GET request (including same-origin ones), so the dashboard always
     qualifies without a client-side change.
+
+    Being authorized is not the same as being allowed: an approval that clears
+    both proofs is still refused with **409** if the act tier is switched off or
+    the engine is paused, and the run is finalized as an error rather than left
+    parked.
     """
     origin = req.headers.get("origin")
     allow_tokenless = origin is not None and is_origin_allowed(origin)
@@ -301,6 +306,20 @@ async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
         raise HTTPException(
             status_code=403,
             detail="confirmation token required (use the notification link)",
+        )
+    if status_val == "act_disabled":
+        # 409, not 403: the caller proved who they are, and this is not
+        # retryable — the engine already finalized the run as an error. Same
+        # class as 'invalid_state' above (server state forbids the
+        # transition), and it keeps 403 meaning "authorization failed".
+        logger.warning(
+            "[autonomy] approved confirm blocked for run %s: %s",
+            run_id,
+            result.get("reason"),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"act tier unavailable: {result.get('reason')} (run finalized as error)",
         )
     return result
 

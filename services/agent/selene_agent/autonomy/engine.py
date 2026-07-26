@@ -200,6 +200,21 @@ class AutonomyEngine:
         self.paused = False
         logger.info("AutonomyEngine resumed")
 
+    def act_gate_reason(self) -> Optional[str]:
+        """Why an ``act`` plan must not actuate right now — ``None`` if it may.
+
+        Deliberately the *same* expression ``handlers/act.handle`` uses for the
+        kill switch (a live attribute read off the config module, not a value
+        captured at import), so the plan-time gate and the confirm-time gate
+        can never disagree — including under a test monkeypatch or any future
+        runtime override of the flag.
+        """
+        if not getattr(config, "AUTONOMY_ACT_ENABLED", False):
+            return "AUTONOMY_ACT_ENABLED is false"
+        if self.is_paused():
+            return "autonomy engine paused"
+        return None
+
     async def status(self) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
         runs_last_hour = await autonomy_db.count_runs_since(now - timedelta(hours=1))
@@ -643,6 +658,11 @@ class AutonomyEngine:
         with neither proof is rejected — that closes the hole where any client
         that had merely learned a run_id (they are broadcast on the WS feed)
         could approve a parked actuator plan.
+
+        Authorization is not the last word: an authorized approval still has to
+        clear ``act_gate_reason`` (the act kill switch and the engine's pause
+        state) before anything actuates, and is finalized as an error run —
+        status ``act_disabled`` — if it does not.
         """
         # include_token=True: this is the one code path that validates the
         # token, so it is the one code path allowed to read it back out.
@@ -695,6 +715,44 @@ class AutonomyEngine:
                 "error": "agenda item missing at confirm time",
             })
             return {"status": "error", "error": "item_missing"}
+
+        # Re-check the act kill switch and the pause state before actuating.
+        # ``handlers/act.handle`` gates *planning* on them, but a plan can sit
+        # in 'awaiting_confirmation' across the moment they flip: the flag is
+        # read from the environment at import, so turning it off means
+        # recreating the container — which the parked row (it lives in
+        # Postgres) survives, while a paused engine additionally stops running
+        # _sweep_confirmation_timeouts, so the deep-link never even expires.
+        # Without this check the approve link keeps firing actuators after the
+        # operator has shut the tier down.
+        #
+        # This sits *after* claim_confirmation on purpose. The claim is what
+        # makes the outcome exclusive and terminal, and it actuates nothing —
+        # so taking it first costs nothing, while gating ahead of it would mean
+        # finalizing a row we do not own, racing the timeout sweep and any
+        # concurrent confirm.
+        gate_reason = self.act_gate_reason()
+        if gate_reason is not None:
+            logger.warning(
+                f"[engine] approved run {run_id} blocked at confirm time: {gate_reason}"
+            )
+            now = datetime.now(timezone.utc)
+            audit = list(run_row.get("action_audit") or [])
+            for entry in audit:
+                if isinstance(entry, dict) and entry.get("outcome") == "pending":
+                    entry["outcome"] = "skipped_denied"
+            await autonomy_db.finalize_run(run_id, {
+                # Same status/error the plan-time gate produces, so a disabled
+                # tier looks identical whichever phase it trips in.
+                "status": "error",
+                "confirmation_response": "blocked",
+                "completed_at": now,
+                "summary": f"act blocked at confirm time: {gate_reason}",
+                "error": gate_reason,
+                "action_audit": audit,
+            })
+            await self._advance(item, now)
+            return {"status": "act_disabled", "reason": gate_reason}
 
         try:
             exec_result = await act_handler.execute_approved(

@@ -64,8 +64,12 @@ def confirm(monkeypatch):
     from selene_agent.autonomy.engine import AutonomyEngine
 
     # Pin the allowlist so the test doesn't depend on the container's
-    # HOST_IP_ADDRESS / AGENT_CORS_ORIGINS.
+    # HOST_IP_ADDRESS / AGENT_CORS_ORIGINS. Same for the act tier's kill
+    # switch, which the confirm path re-checks before executing (#84) — these
+    # tests are about authorization, not about whether the tier is on.
     monkeypatch.setattr(config, "AGENT_CORS_ORIGINS", ALLOWED_ORIGIN, raising=False)
+    monkeypatch.setattr(config, "AUTONOMY_ACT_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "AUTONOMY_ENABLED", True, raising=False)
 
     mcp = MagicMock()
     mcp.execute_tool = AsyncMock(return_value={"success": True})
