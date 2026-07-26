@@ -131,6 +131,14 @@ to exercise your new tool without going through the LLM.
 - **Wrap external calls in timeouts.** The orchestrator already caps
   `call_tool()` at `MCP_TOOL_TIMEOUT_SECONDS` (default 120s), but a tool
   that blocks on a hung socket burns that entire window.
+- **A crashed server recovers itself.** Transport-level failures (broken or
+  closed stream, EOF, dead process) mark the connection dead and trigger a
+  bounded reconnect — `MCP_RECONNECT_MAX_ATTEMPTS` (default 3) tries with
+  exponential backoff seeded by `MCP_RECONNECT_BACKOFF_SECONDS` (default 2s).
+  Calls made while the server is down fail fast instead of waiting out the
+  tool timeout. An ordinary tool error (a raised exception, or a result with
+  `isError`) is *not* treated as a dead transport, so one failing tool never
+  takes its sibling tools offline.
 - **Return actionable errors.** The LLM recovers well from
   `"Error: city 'Foo' not found — try one of: [Rome, Foothill, ...]"`
   and poorly from `"Error: 404"`.

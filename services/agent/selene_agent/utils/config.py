@@ -122,6 +122,14 @@ CONVERSATION_CONTEXT_LIMIT_FRACTION = float(os.getenv("CONVERSATION_CONTEXT_LIMI
 CONVERSATION_CONTEXT_LIMIT_TOKENS_OVERRIDE = int(os.getenv("CONVERSATION_CONTEXT_LIMIT_TOKENS", "0"))
 TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120"))
+# Recovery for a crashed MCP stdio subprocess (OOM kill, segfault, unhandled
+# exception in a server module). Transport-level failures mark the connection
+# dead and kick a *bounded* background reconnect: at most MAX_ATTEMPTS tries
+# per outage, with exponential backoff seeded by BACKOFF_SECONDS, so a server
+# module that will never come up cannot turn into a respawn storm.
+MCP_RECONNECT_MAX_ATTEMPTS = int(os.getenv("MCP_RECONNECT_MAX_ATTEMPTS", "3"))
+MCP_RECONNECT_BACKOFF_SECONDS = float(os.getenv("MCP_RECONNECT_BACKOFF_SECONDS", "2"))
+MCP_RECONNECT_TIMEOUT_SECONDS = float(os.getenv("MCP_RECONNECT_TIMEOUT_SECONDS", "30"))
 
 # Companion-app camera tools (see api/companion.py + mcp_device_action_tools).
 # Timeout caps how long a take_photo / vision-chained tool blocks waiting on

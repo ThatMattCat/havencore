@@ -399,6 +399,8 @@ Get status of MCP (Model Context Protocol) connections.
 {
   "configured_servers": ["homeassistant", "general", "qdrant"],
   "connected_servers": ["homeassistant", "general", "qdrant"],
+  "disconnected_servers": {},
+  "reconnecting_servers": [],
   "failed_servers": {},
   "total_mcp_tools": 68,
   "tools_by_server": {
@@ -407,6 +409,13 @@ Get status of MCP (Model Context Protocol) connections.
   }
 }
 ```
+
+`connected_servers` reflects real transport health. If an MCP stdio subprocess
+dies mid-uptime (OOM kill, crash), the server drops out of `connected_servers`
+and appears in `disconnected_servers` (name → failure reason) while a bounded
+reconnect runs — `reconnecting_servers` lists the in-flight attempts. After
+`MCP_RECONNECT_MAX_ATTEMPTS` failed tries the server moves to `failed_servers`
+and is left alone until the agent restarts.
 
 ## Agent Dashboard APIs
 
