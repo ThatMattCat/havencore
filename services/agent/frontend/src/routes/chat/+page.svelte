@@ -3,13 +3,12 @@
 	import { messages, isConnected, isProcessing, connectionState, currentSessionId, currentDeviceName, connect, sendMessage, disconnect, clearMessages, retryNow, startNewChat } from '$lib/stores/chat';
 	import ToolCallCard from '$lib/components/ToolCallCard.svelte';
 	import { sttTranscribe, ttsSpeakStream, base64ToBlob } from '$lib/api';
-	import { marked } from 'marked';
+	// Assistant content is untrusted (LLM output that echoes web pages, GitHub
+	// issues, Signal messages). renderMarkdown sanitizes before {@html}.
+	import { renderMarkdown } from '$lib/markdown';
 
 	let inputText = $state('');
 	let messagesContainer = $state(null);
-
-	// Configure marked for safe rendering
-	marked.setOptions({ breaks: true, gfm: true });
 
 	onMount(() => {
 		connect();
@@ -52,11 +51,6 @@
 			scrollToBottom();
 		}
 	});
-
-	function renderMarkdown(text) {
-		if (!text) return '';
-		return marked.parse(text);
-	}
 
 	function fmtMs(n) {
 		if (n == null) return '';

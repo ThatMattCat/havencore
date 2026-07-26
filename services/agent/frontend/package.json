@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "cronstrue": "^3.14.0",
+    "dompurify": "^3.4.12",
     "marked": "^15.0.0"
   },
   "type": "module"
