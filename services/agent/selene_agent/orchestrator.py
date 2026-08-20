@@ -335,7 +335,7 @@ class AgentOrchestrator:
 
         self.temperature = 0.3
         self.top_p = 1.0
-        self.max_tokens = 1024
+        self.max_tokens = getattr(config, "LLM_MAX_TOKENS", 4096)
         self._l4_pending = True
 
         self.idle_timeout_override: Optional[int] = None
@@ -622,17 +622,31 @@ class AgentOrchestrator:
             return None
 
     def _messages_for_llm(self, retrieval_block: Optional[str]) -> List[Dict[str, Any]]:
-        """Return self.messages with the retrieval block inserted before the
-        most recent user message. Does not mutate self.messages.
+        """Return self.messages shaped for the provider: the retrieval block
+        inserted before the most recent user message, any system message past
+        index 0 re-tagged as a user message, and None-valued keys dropped.
+        Some chat templates (e.g. Qwen3.8's) raise unless the only system
+        message is the first one; the mid-history blocks (retrieval, summary
+        recap, MCP-failure note — including ones replayed from stored history)
+        are self-describing, so re-tagging loses nothing. The None-stripping
+        is for vLLM's request schema, which rejects explicit
+        ``"tool_calls": null`` on assistant messages (older builds tolerated
+        it) — model_dump() emits exactly that shape, and already-persisted
+        histories carry it. ``content`` stays even when None, which the
+        schema accepts. Does not mutate self.messages.
         """
-        if not retrieval_block:
-            return self.messages
         msgs = list(self.messages)
-        # Find the last user message and insert the retrieval block before it.
-        for i in range(len(msgs) - 1, -1, -1):
-            if msgs[i].get("role") == "user":
-                msgs.insert(i, {"role": "system", "content": retrieval_block})
-                return msgs
+        if retrieval_block:
+            # Insert the retrieval block right before the last user message.
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get("role") == "user":
+                    msgs.insert(i, {"role": "system", "content": retrieval_block})
+                    break
+        for i, m in enumerate(msgs):
+            cleaned = {k: v for k, v in m.items() if v is not None or k == "content"}
+            if i > 0 and cleaned.get("role") == "system":
+                cleaned["role"] = "user"
+            msgs[i] = cleaned
         return msgs
 
     async def prepare(self) -> None:
@@ -715,6 +729,7 @@ class AgentOrchestrator:
             logger.info(f"Query: {user_message}")
 
             iteration = 0
+            degenerate_finish_reason: Optional[str] = None
 
             while iteration < MAX_TOOL_ITERATIONS:
                 iteration += 1
@@ -977,7 +992,22 @@ class AgentOrchestrator:
                     )
                     return
 
-                logger.warning("Response had neither tool calls nor content")
+                # Degenerate response: no answer channel at all. With a
+                # reasoning model this is typically the completion budget
+                # exhausted inside the think block (finish_reason=length,
+                # the whole response under ``reasoning``). The dumped
+                # assistant message carries nothing the model needs to see
+                # again — pop it so the session history stays clean for a
+                # retry instead of poisoning every later turn.
+                degenerate_finish_reason = getattr(
+                    response.choices[0], "finish_reason", None
+                )
+                logger.warning(
+                    "Response had neither tool calls nor content "
+                    f"(finish_reason={degenerate_finish_reason})"
+                )
+                if self.messages and self.messages[-1] is dumped_message:
+                    self.messages.pop()
                 break
 
             if iteration >= MAX_TOOL_ITERATIONS:
@@ -995,7 +1025,15 @@ class AgentOrchestrator:
                 )
                 return
 
-            yield AgentEvent(type=EventType.ERROR, data={"error": "ERROR: No valid response generated"})
+            if degenerate_finish_reason == "length":
+                error_text = (
+                    "ERROR: The model spent its entire completion budget "
+                    f"({self.max_tokens} tokens) reasoning and produced no "
+                    "answer. Raise LLM_MAX_TOKENS if this recurs."
+                )
+            else:
+                error_text = "ERROR: No valid response generated"
+            yield AgentEvent(type=EventType.ERROR, data={"error": error_text})
 
         except Exception as e:
             logger.error(f"Error in query: {e}\n{traceback.format_exc()}")
