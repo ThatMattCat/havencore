@@ -229,12 +229,12 @@ services:
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --enable-auto-tool-choice
-      --api-key 1234123412341234
       --host 0.0.0.0
       --port 8000
 
     healthcheck:
-      # /health is exempt from --api-key auth; /v1/models would 401 now.
+      # /health works with or without --api-key auth, so re-enabling the
+      # flag later won't break the healthcheck (/v1/models would 401).
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 5s
