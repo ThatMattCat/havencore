@@ -131,7 +131,12 @@ def _detect_model(base_url: str, max_retries: int = 30, retry_interval: int = 30
     for attempt in range(1, max_retries + 1):
         try:
             models_url = f"{base_url.rstrip('/')}/models"
-            response = requests.get(models_url, timeout=5)
+            # vLLM enforces --api-key on /v1/*; harmless extra header if it doesn't.
+            response = requests.get(
+                models_url,
+                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+                timeout=5,
+            )
             response.raise_for_status()
             data = response.json()
             if 'data' in data and data['data']:
