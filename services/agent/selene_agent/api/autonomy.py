@@ -13,7 +13,7 @@ from selene_agent.autonomy import db as autonomy_db
 from selene_agent.autonomy import schedule as autonomy_schedule
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
-from selene_agent.utils.origins import is_origin_allowed
+from selene_agent.utils.origins import is_origin_allowed, is_same_host_origin
 
 logger = custom_logger.get_logger('loki')
 
@@ -263,8 +263,11 @@ async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
 
     Two accepted proofs, no third: the confirmation token (from the
     notification deep-link, which the companion/Signal path always carries), or
-    an allowlisted browser ``Origin`` (the dashboard's Approve button, which has
-    no token to present because nothing publishes it any more).
+    a browser ``Origin`` that is allowlisted *or equal to the request's own
+    Host* (the dashboard's Approve button, which has no token to present
+    because nothing publishes it any more — the same-host clause keeps it
+    working behind a TLS/hostname front with no AGENT_CORS_ORIGINS entry,
+    mirroring ``WebSocketOriginGuard``).
 
     Note the absent-Origin rule is the **inverse** of ``WebSocketOriginGuard``'s:
     there a missing Origin means "non-browser client" and is allowed, because
@@ -280,7 +283,10 @@ async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
     parked.
     """
     origin = req.headers.get("origin")
-    allow_tokenless = origin is not None and is_origin_allowed(origin)
+    allow_tokenless = origin is not None and (
+        is_origin_allowed(origin)
+        or is_same_host_origin(origin, req.headers.get("host"))
+    )
     result = await _engine(req).resume_confirmed_run(
         run_id,
         approved=body.approved,

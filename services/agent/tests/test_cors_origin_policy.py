@@ -162,3 +162,63 @@ def test_ws_handshake_with_allowed_origin_is_accepted(client):
 
     with client.websocket_connect("/ws/chat", headers={"Origin": ALLOWED_ORIGIN}) as ws:
         assert ws.receive_json()["type"] == "error"
+
+
+# --- same-host auto-allow --------------------------------------------------
+# TLS / hostname reverse-proxy fronts: the page's Origin names a host the agent
+# can never derive from HOST_IP_ADDRESS, but it *is* the host the request was
+# addressed to — the Host header proves it. TestClient sends `Host: testserver`.
+
+def test_ws_handshake_from_own_host_origin_is_accepted(client):
+    # http://testserver = origin port 80; portless Host implies 80/443.
+    with client.websocket_connect(
+        "/ws/chat", headers={"Origin": "http://testserver"}
+    ) as ws:
+        assert ws.receive_json()["type"] == "error"  # pool None; handshake OK
+
+
+def test_ws_handshake_from_own_host_https_origin_is_accepted(client):
+    # The real deployment shape: browser at https://<hostname> behind a proxy.
+    with client.websocket_connect(
+        "/ws/chat", headers={"Origin": "https://testserver"}
+    ) as ws:
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_ws_handshake_same_hostname_different_port_is_rejected(client):
+    # A page served by *another* service on the same Docker host (e.g. ComfyUI
+    # on :8188) must not inherit access — the match is port-exact.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+            "/ws/chat", headers={"Origin": "http://testserver:8188"}
+        ):
+            pass
+    assert exc.value.code == 1008
+
+
+@pytest.mark.parametrize(
+    "origin,host,expected",
+    [
+        # The TLS-proxy front this exists for.
+        ("https://selene.example", "selene.example", True),
+        ("https://selene.example:443", "selene.example", True),
+        ("http://selene.example", "selene.example", True),
+        ("https://SELENE.EXAMPLE", "selene.example", True),
+        # Direct-to-port access.
+        ("http://10.0.0.134:6002", "10.0.0.134:6002", True),
+        # Sibling service on the same host IP — port mismatch.
+        ("http://10.0.0.134:8188", "10.0.0.134:6002", False),
+        ("http://10.0.0.134:6002", "10.0.0.134", False),
+        # Different host entirely.
+        ("http://evil.example", "10.0.0.134:6002", False),
+        # Sandboxed-iframe Origin, junk schemes, missing/garbage headers.
+        ("null", "10.0.0.134:6002", False),
+        ("file://selene.example", "selene.example", False),
+        ("https://selene.example", None, False),
+        ("https://selene.example", "selene.example:not-a-port", False),
+        ("", "selene.example", False),
+    ],
+)
+def test_is_same_host_origin_matrix(origin, host, expected):
+    from selene_agent.utils.origins import is_same_host_origin
+    assert is_same_host_origin(origin, host) is expected

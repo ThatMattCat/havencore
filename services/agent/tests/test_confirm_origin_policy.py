@@ -5,8 +5,10 @@ are exactly two:
 
 * the confirmation token from the notification deep-link (companion app /
   Signal), which works from anywhere, and
-* an allowlisted browser ``Origin`` — the dashboard's Approve button, which has
-  no token to send because nothing publishes it any more.
+* a browser ``Origin`` that is allowlisted or equal to the request's own
+  ``Host`` (same-host auto-allow, for TLS/hostname fronts) — the dashboard's
+  Approve button, which has no token to send because nothing publishes it any
+  more.
 
 The absent-Origin rule here is the **inverse** of ``WebSocketOriginGuard``'s: a
 missing Origin there means "non-browser client, allow"; here it means "not a
@@ -133,6 +135,17 @@ def test_tokenless_confirm_from_foreign_origin_is_rejected(confirm):
     resp = post({"approved": True}, origin=EVIL_ORIGIN)
     assert resp.status_code == 403
     mcp.execute_tool.assert_not_awaited()
+
+
+def test_tokenless_confirm_from_same_host_origin_is_accepted(confirm):
+    """A TLS/hostname front: Origin equals the request's own Host (TestClient
+    sends `Host: testserver`) but is NOT in the pinned allowlist — the Approve
+    button must keep working with zero AGENT_CORS_ORIGINS config."""
+    post, mcp = confirm
+    resp = post({"approved": True}, origin="http://testserver")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+    mcp.execute_tool.assert_awaited_once()
 
 
 def test_explicit_null_token_is_treated_as_no_token(confirm):

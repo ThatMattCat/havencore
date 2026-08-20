@@ -33,10 +33,22 @@ WebSocket handshake; non-browser clients (the ESP32 satellite firmware, the
 Android companion app's OkHttp socket, `websocat`, python scripts) never do.
 That asymmetry is what lets this block the drive-by browser vector with **zero
 client-side changes**.
+
+Same-host auto-allow
+--------------------
+An Origin whose host:port equals the request's own ``Host`` header is allowed
+even when not allowlisted: that page was served by this very deployment, so a
+TLS / hostname reverse-proxy front (``https://assistant.example``) works with
+no ``AGENT_CORS_ORIGINS`` entry — the agent could never derive such a hostname
+from ``HOST_IP_ADDRESS`` anyway. See ``is_same_host_origin`` for why the match
+is port-exact. Only the WebSocket guard and the autonomy confirm gate consult
+it; ``CORSMiddleware`` doesn't need it because same-origin HTTP is never
+subject to CORS in the first place.
 """
 from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
+from urllib.parse import urlsplit
 
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -112,8 +124,9 @@ def default_origins(host_ip: Optional[str] = None) -> List[str]:
       - the same pair for ``localhost`` / ``127.0.0.1`` (browsing from the
         Docker host itself).
 
-    Deployments fronted by TLS or a hostname must set AGENT_CORS_ORIGINS —
-    a hostname is not derivable from an IP.
+    TLS / hostname fronts are covered by the same-host auto-allow instead (see
+    ``is_same_host_origin``); AGENT_CORS_ORIGINS is only needed for a page on
+    one host calling an agent on a *different* host — genuinely cross-origin.
     """
     if host_ip is None:
         host_ip = getattr(config, "HOST_IP_ADDRESS", "") or ""
@@ -145,12 +158,69 @@ def is_origin_allowed(origin: str, origins: Optional[Sequence[str]] = None) -> b
     return _normalize(origin) in {_normalize(o) for o in allowed}
 
 
-def origin_from_scope(scope: Scope) -> Optional[str]:
-    """Read the raw `Origin` header off an ASGI scope, or None if absent."""
-    for name, value in scope.get("headers") or []:
-        if name == b"origin":
+# Ports a browser omits when serializing an Origin, keyed by scheme. Also the
+# only ports a portless `Host` header can imply.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def is_same_host_origin(origin: str, host: Optional[str]) -> bool:
+    """True when `origin` names the very host:port this request was sent to.
+
+    The zero-config path for TLS / hostname reverse-proxy fronts: the dashboard
+    page and its WebSocket both target the host that served the page, so an
+    ``Origin`` equal to the request's own ``Host`` is proof the page came from
+    this deployment — no allowlist can anticipate a hostname the agent never
+    sees in ``.env``.
+
+    Port-exact on purpose, not hostname-only: other services publish ports on
+    the same Docker-host IP (ComfyUI on :8188, ntfy on :8585), and a page one
+    of *them* served must not inherit access to the agent. A portless ``Host``
+    (browsers omit default ports) matches origin ports 80/443 only.
+
+    Requires proxies to forward the client's ``Host`` (nginx.conf does:
+    ``proxy_set_header Host $host``). Known limit: any Host-based check can be
+    fooled by DNS rebinding — but rebinding already defeats same-origin HTTP
+    everywhere (CORS never gates same-origin fetches), so this adds no new
+    exposure beyond the existing LAN-only trust model.
+    """
+    if not origin or not host:
+        return False
+    try:
+        parsed = urlsplit(origin.strip())
+        origin_port = parsed.port
+        target = urlsplit(f"//{host.strip()}")
+        target_port = target.port
+    except ValueError:  # malformed explicit port, bad IPv6 brackets, ...
+        return False
+    scheme = parsed.scheme.lower()
+    if scheme not in _DEFAULT_PORTS or not parsed.hostname or not target.hostname:
+        return False
+    if parsed.hostname != target.hostname:  # .hostname is already lowercased
+        return False
+    if origin_port is None:
+        origin_port = _DEFAULT_PORTS[scheme]
+    if target_port is None:
+        # A portless Host means the client connected on a default port — a
+        # proxy front, either scheme.
+        return origin_port in (80, 443)
+    return origin_port == target_port
+
+
+def _scope_header(scope: Scope, name: bytes) -> Optional[str]:
+    for key, value in scope.get("headers") or []:
+        if key == name:
             return value.decode("latin-1")
     return None
+
+
+def origin_from_scope(scope: Scope) -> Optional[str]:
+    """Read the raw `Origin` header off an ASGI scope, or None if absent."""
+    return _scope_header(scope, b"origin")
+
+
+def host_from_scope(scope: Scope) -> Optional[str]:
+    """Read the raw `Host` header off an ASGI scope, or None if absent."""
+    return _scope_header(scope, b"host")
 
 
 class WebSocketOriginGuard:
@@ -175,9 +245,15 @@ class WebSocketOriginGuard:
             return
 
         origin = origin_from_scope(scope)
-        # Absent Origin => non-browser client => allow. Only a present-and-not-
-        # allowlisted Origin is a cross-origin browser attempt.
-        if origin is not None and not is_origin_allowed(origin, self._origins):
+        # Absent Origin => non-browser client => allow. An Origin equal to the
+        # request's own Host is the page this deployment served (TLS/hostname
+        # fronts no IP-derived default can anticipate) => allow. Only a
+        # present, unlisted, cross-host Origin is a drive-by browser attempt.
+        if (
+            origin is not None
+            and not is_origin_allowed(origin, self._origins)
+            and not is_same_host_origin(origin, host_from_scope(scope))
+        ):
             logger.warning(
                 "Rejected cross-origin WebSocket handshake path=%s origin=%s "
                 "(not in AGENT_CORS_ORIGINS)",
