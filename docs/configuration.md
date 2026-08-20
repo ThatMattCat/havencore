@@ -20,8 +20,8 @@ HavenCore configuration is managed through:
 HOST_IP_ADDRESS="192.168.1.100"  # Find with: ip route get 1.1.1.1 | awk '{print $7}'
 
 # Required: API access key. Sent by the agent as a bearer token on every
-# vLLM call, and enforced by vLLM itself — compose interpolates it into
-# the server's --api-key flag, so the two always match.
+# vLLM call. vLLM only enforces it if --api-key is present in its compose
+# command (currently absent — see services/vllm/README.md#authentication).
 LLM_API_KEY="your_secret_key"
 
 # Debug and logging

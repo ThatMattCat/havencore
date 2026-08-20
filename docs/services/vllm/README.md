@@ -33,7 +33,6 @@ vllm:
     --tool-call-parser qwen3_coder
     --reasoning-parser qwen3
     --enable-auto-tool-choice
-    --api-key ${LLM_API_KEY:-1234123412341234}
     --host 0.0.0.0
     --port 8000
 ```
@@ -85,12 +84,14 @@ active) with `--enable-expert-parallel --tool-call-parser glm45
 
 ## Authentication
 
-`--api-key` is interpolated from `LLM_API_KEY` in `.env` — the same
-value the agent sends as a bearer token, so the two stay in lockstep.
-Every `/v1/*` call must carry `Authorization: Bearer <key>`; `/health`
-stays open (which is why the container healthcheck probes it). To run
-the endpoint open (e.g. for a client that mishandles auth), delete the
-`--api-key` line and recreate the container.
+The endpoint currently runs **open** — `--api-key` is deliberately
+absent from the command while a client app that mishandles auth is in
+use. To enforce the key, add `--api-key ${LLM_API_KEY:-changeme}` to the
+command block (interpolated from `.env`, so it stays in lockstep with
+the bearer token the agent sends) and recreate the container; clients
+then must send `Authorization: Bearer <key>` on every `/v1/*` call.
+`/health` stays open in both states, which is why the container
+healthcheck and the agent's probes are auth-proof either way.
 
 ## Command-line options
 
