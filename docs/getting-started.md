@@ -64,7 +64,7 @@ Edit the `.env` file with these **required** settings:
 HOST_IP_ADDRESS="192.168.1.100"
 
 # API access key (set to anything; the agent sends it to vLLM as a bearer
-# token — vLLM only checks it if you add --api-key to its compose command)
+# token, and compose feeds the same value to vLLM's --api-key enforcement)
 LLM_API_KEY="your_secret_key_here"
 
 # TTS engine (REQUIRED — both engines are profile-gated; if unset, no TTS starts)

@@ -33,6 +33,7 @@ vllm:
     --tool-call-parser qwen3_coder
     --reasoning-parser qwen3
     --enable-auto-tool-choice
+    --api-key ${LLM_API_KEY:-1234123412341234}
     --host 0.0.0.0
     --port 8000
 ```
@@ -84,13 +85,12 @@ active) with `--enable-expert-parallel --tool-call-parser glm45
 
 ## Authentication
 
-The serving endpoint currently enforces **no API key** — `--api-key` is
-deliberately absent from the command (a client app in use mishandles
-authenticated endpoints). The agent still sends `LLM_API_KEY` from
-`.env` as a bearer token; vLLM ignores it. To turn enforcement on, add
-`--api-key <value of LLM_API_KEY>` to the command block and recreate the
-container — clients then must send `Authorization: Bearer <key>` on
-every `/v1/*` call (`/health` stays open).
+`--api-key` is interpolated from `LLM_API_KEY` in `.env` — the same
+value the agent sends as a bearer token, so the two stay in lockstep.
+Every `/v1/*` call must carry `Authorization: Bearer <key>`; `/health`
+stays open (which is why the container healthcheck probes it). To run
+the endpoint open (e.g. for a client that mishandles auth), delete the
+`--api-key` line and recreate the container.
 
 ## Command-line options
 
@@ -156,8 +156,8 @@ command: [
 # Check model loading
 docker compose logs -f vllm
 
-# Test API directly
-curl http://localhost:8000/v1/models
+# Test API directly (source .env first, or paste the key)
+curl -H "Authorization: Bearer ${LLM_API_KEY}" http://localhost:8000/v1/models
 
 # Monitor GPU usage
 nvidia-smi -l 1
