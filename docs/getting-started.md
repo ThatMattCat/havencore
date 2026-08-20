@@ -8,12 +8,12 @@ Before starting, ensure you have:
 
 ### Hardware Requirements
 - **NVIDIA GPU(s)**: Required for AI model inference. The default vLLM
-  model (GLM-4.5-Air-AWQ-FP16Mix, MoE ~106B total / ~12B active) needs
-  roughly 72 GB of VRAM sharded across 4× 24 GB cards via
-  `-tp 4 --enable-expert-parallel`. STT, TTS, vision, and image-gen
-  contend for leftover VRAM on whichever card you pin them to — a
-  4-GPU host is the target. Fewer-GPU configurations work if you swap
-  in a smaller/non-MoE model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB).
+  model (Qwen3.8-27B, dense hybrid-attention, unquantized BF16) needs
+  ~53 GB of VRAM for weights plus KV cache, sharded across 4× 24 GB
+  cards via `-tp 4`. STT, TTS, vision, and image-gen contend for
+  leftover VRAM on whichever card you pin them to — a 4-GPU host is
+  the target. Fewer-GPU configurations work if you swap in a smaller
+  model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB).
 - **RAM**: Minimum 32GB, recommended 64GB+
 - **Storage**: At least 150GB free space for model weights, container
   images, and Docker volumes.
@@ -63,7 +63,8 @@ Edit the `.env` file with these **required** settings:
 # Your Docker host IP address (find with: ip route get 1.1.1.1 | awk '{print $7}')
 HOST_IP_ADDRESS="192.168.1.100"
 
-# API access key (set to anything)
+# API access key (set to anything; the agent sends it to vLLM as a bearer
+# token — vLLM only checks it if you add --api-key to its compose command)
 LLM_API_KEY="your_secret_key_here"
 
 # TTS engine (REQUIRED — both engines are profile-gated; if unset, no TTS starts)
@@ -164,7 +165,7 @@ docker compose build --no-cache --progress=plain
 #### Model Download Issues
 ```bash
 # Pre-download models manually
-huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+huggingface-cli download Qwen/Qwen3.8-27B
 
 # Check network connectivity
 curl -I https://huggingface.co

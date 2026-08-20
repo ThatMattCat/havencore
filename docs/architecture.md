@@ -102,8 +102,8 @@ conversation_histories (
 #### vLLM Chat Backend (Port 8000)
 - High-performance inference server
 - Optimized for throughput and latency
-- Supports AWQ quantized models
-- Serves `GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
+- Supports quantized (AWQ/GPTQ) and full-precision models
+- Serves `Qwen3.8-27B` (dense hybrid-attention, BF16) under the OpenAI-compat name `gpt-3.5-turbo`
 
 #### vLLM Vision Backend (Port 8001)
 - Serves `Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
@@ -289,7 +289,7 @@ services:
 - **Proxy**: Nginx (reverse proxy, load balancer)
 
 ### AI/ML Stack
-- **Chat LLM**: vLLM serving `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` (MoE) under the OpenAI-compat name `gpt-3.5-turbo`
+- **Chat LLM**: vLLM serving `Qwen/Qwen3.8-27B` (dense hybrid-attention, BF16) under the OpenAI-compat name `gpt-3.5-turbo`
 - **Vision LLM**: vLLM serving `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
 - **Speech-to-Text**: Faster-Whisper
 - **Text-to-Speech**: Kokoro (default) or Chatterbox-Turbo (Resemble AI) — selectable

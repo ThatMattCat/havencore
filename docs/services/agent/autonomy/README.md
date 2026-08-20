@@ -222,7 +222,7 @@ All endpoints live under `/api/autonomy/*` on port 6002. No auth (same conventio
 | `GET`  | `/api/autonomy/runs?limit=50&kind=&status=&trigger_source=&include_messages=0` | Filterable run history |
 | `GET`  | `/api/autonomy/runs/{run_id}?include_messages=1` | Single run fetch (token stripped) |
 | `GET`  | `/api/autonomy/runs/awaiting` | Unfiltered list of `awaiting_confirmation` runs (token stripped) |
-| `POST` | `/api/autonomy/runs/{run_id}/confirm` | Body `{approved: bool, token?: string}`. The token is **mandatory** (constant-time compare) unless the request carries an allowlisted browser `Origin` — see [Confirming an act run](#confirming-an-act-run). `403` on a missing or wrong token, `409` if the run is not parked or the act gate refuses it. |
+| `POST` | `/api/autonomy/runs/{run_id}/confirm` | Body `{approved: bool, token?: string}`. The token is **mandatory** (constant-time compare) unless the request carries a browser `Origin` that is allowlisted or equal to the request's own `Host` — see [Confirming an act run](#confirming-an-act-run). `403` on a missing or wrong token, `409` if the run is not parked or the act gate refuses it. |
 | `POST` | `/api/autonomy/trigger/{id}?bypass_quiet=true` | Fire now, bypassing schedule + global rate limit; `bypass_quiet=true` ignores quiet hours too |
 | `POST` | `/api/autonomy/webhook/{name}` | HA webhook intake; matches body against `trigger_spec.source='webhook'` items |
 | `GET`  | `/api/autonomy/events/summary` | MQTT subscribed topics + webhook-item names + runs-by-source over last 24h + deferred queue depth |
@@ -313,7 +313,7 @@ When `AUTONOMY_ACT_ENABLED=true`, an `act` agenda item runs in three phases:
 
 1. **Authorization — two accepted proofs, no third.**
    * **The confirmation token**, constant-time compared. It is published in exactly one place, the notification deep-link, and no read-only endpoint hands it back out. Always sufficient, whatever the caller's origin.
-   * **An allowlisted browser `Origin`** — the dashboard's Approve button, which has no token to present. This is a POST and browsers attach `Origin` to every non-GET request (including same-origin ones), so the dashboard qualifies without a client-side change.
+   * **A browser `Origin` that is allowlisted *or equal to the request's own `Host`*** — the dashboard's Approve button, which has no token to present. This is a POST and browsers attach `Origin` to every non-GET request (including same-origin ones), so the dashboard qualifies without a client-side change. The same-host clause keeps the button working behind a TLS/hostname reverse-proxy front with no `AGENT_CORS_ORIGINS` entry, mirroring `WebSocketOriginGuard`'s same-host auto-allow (port-exact; see [configuration.md](../../../configuration.md#browser-origin-allowlist-agent_cors_origins)).
 
    A caller with neither is rejected `403`: run ids are broadcast on `WS /ws/autonomy/runs`, so a token-less confirm would let anything that had merely seen one approve a parked actuator plan. Note this makes the absent-`Origin` rule the **inverse** of `WebSocketOriginGuard`'s — there a missing `Origin` means "non-browser client, allow"; here it means "not a browser, so prove it with the token". A token that is present but *wrong* is rejected outright (`403`) rather than falling back to the origin path.
 
@@ -421,7 +421,7 @@ Non-negotiable engine behavior:
 6. **Per-turn timeout** — `AUTONOMY_TURN_TIMEOUT_SEC` (default 60). Overages are aborted and logged as `status='error'` with a timeout message.
 7. **System prompt discipline** — autonomous prompts explicitly instruct: "You are running autonomously. Do not ask questions. Complete your assessment and exit. Output must match the required format."
 8. **All outcomes persisted** — `ok`, `error`, `skipped_*`, `rate_limited`, `awaiting_confirmation`, `confirmation_*` all produce `autonomy_runs` rows for audit.
-9. **Confirmation tokens never leak** — tokens never appear in `GET /api/autonomy/runs`, `GET /api/autonomy/runs/{id}`, `GET /api/autonomy/runs/awaiting`, or the WS feed; `_row_to_run` withholds the column unless explicitly asked, and only the confirm path asks. The notification channel is the only path that carries the token, so the confirmation channel must be one you trust to reach you. Correspondingly the token is **required** to approve a run — the sole exemption is an allowlisted browser `Origin`, i.e. the dashboard.
+9. **Confirmation tokens never leak** — tokens never appear in `GET /api/autonomy/runs`, `GET /api/autonomy/runs/{id}`, `GET /api/autonomy/runs/awaiting`, or the WS feed; `_row_to_run` withholds the column unless explicitly asked, and only the confirm path asks. The notification channel is the only path that carries the token, so the confirmation channel must be one you trust to reach you. Correspondingly the token is **required** to approve a run — the sole exemption is a browser `Origin` that is allowlisted or same-host, i.e. the dashboard.
 10. **The act tier is re-checked at confirm time** — `AUTONOMY_ACT_ENABLED` and the pause state are evaluated again immediately before an approved plan actuates, not only when it was planned. A run parked before the operator shut the tier down cannot execute afterwards; it finalizes as `error` / `confirmation_response='blocked'`.
 
 ## Dashboard
@@ -430,7 +430,7 @@ Non-negotiable engine behavior:
 
 - **Header strip** — engine status, pause / resume, "New item" button.
 - **Engine stats** — runs / hr with cap, deferred queue depth, MQTT connection + subscribed topic count, live WS status, awaiting-confirmation count.
-- **Pending confirmations** — visible whenever one or more `act` runs are parked. Each row shows the proposed `action_audit` (tool + rationale per step) and offers approve/deny buttons. Deep-links of the form `/autonomy?confirm={run_id}&token={token}` (what the confirmation notification points at) scroll the card into view and forward the URL token; query params are cleared after a response so a reload doesn't re-trigger the flow. Opened directly — no deep-link, so `token: null` in the body — the buttons still work, because the browser's same-origin `Origin` header is on the allowlist. Nothing else is.
+- **Pending confirmations** — visible whenever one or more `act` runs are parked. Each row shows the proposed `action_audit` (tool + rationale per step) and offers approve/deny buttons. Deep-links of the form `/autonomy?confirm={run_id}&token={token}` (what the confirmation notification points at) scroll the card into view and forward the URL token; query params are cleared after a response so a reload doesn't re-trigger the flow. Opened directly — no deep-link, so `token: null` in the body — the buttons still work, because the browser's same-origin `Origin` header is allowlisted (or matches the request's own `Host`). Nothing else is.
 - **Agenda items** — table with per-row Run / Edit / Delete actions, an inline enabled toggle, and trigger description.
 - **Live run feed** — WS-backed, last 50 runs.
 - **Reactive sources** — currently subscribed MQTT topics + configured webhook paths + runs-by-source counts over the last 24h.
@@ -461,7 +461,7 @@ Pure-logic suites live next to the modules they cover:
 - `test_mqtt_listener.py` — subscription diffing, reconnect backoff.
 - `test_autonomy_api.py` — CRUD round-trip, webhook fan-out, confirm endpoint.
 - `test_confirmation_flow.py` — `resume_confirmed_run` state machine: unknown run, wrong state, deny, bad token, single-use claim.
-- `test_confirm_origin_policy.py` — the two accepted proofs on `POST /confirm`: token from anywhere, token-less only from an allowlisted `Origin`.
+- `test_confirm_origin_policy.py` — the two accepted proofs on `POST /confirm`: token from anywhere, token-less only from an allowlisted or same-host `Origin`.
 - `test_confirm_act_gate.py` — the confirm-time act gate: a disabled tier or a paused engine blocks an approved plan and finalizes the run instead of leaving it parked.
 - `test_deferred_runs.py` — quiet-hours `defer` → sweep → fire.
 
@@ -516,4 +516,4 @@ Reactive-source hand checks once the flags are on:
 - **`act` item creates an error row immediately** — `AUTONOMY_ACT_ENABLED=false` short-circuits the handler. Flip to `true` and re-trigger.
 - **`act` plan executes nothing** — every step probably hashed to `skipped_not_allowed`. Check the item's `action_allow_list` includes the tools the planner picked.
 - **Approve link returns `409 act tier unavailable`** — the act gate refused the approval: either `AUTONOMY_ACT_ENABLED` is false or the engine is paused. The run is finalized as `error` / `confirmation_response='blocked'` with the reason in `error`; re-enable the tier (or `POST /api/autonomy/resume`) and re-trigger the item to get a fresh plan. The old link is spent.
-- **Approve link returns `403 confirmation token required`** — the request had no token and no allowlisted `Origin`. Use the link from the notification verbatim (it carries `&token=`); the token is not exposed by any read endpoint, so it cannot be recovered from a run row after the fact.
+- **Approve link returns `403 confirmation token required`** — the request had no token and no allowlisted or same-host `Origin`. Use the link from the notification verbatim (it carries `&token=`); the token is not exposed by any read endpoint, so it cannot be recovered from a run row after the fact.

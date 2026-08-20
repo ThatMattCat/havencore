@@ -122,7 +122,7 @@ export HF_HUB_TOKEN="your_token_here"
 
 # Pre-download models manually
 huggingface-cli login
-huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+huggingface-cli download Qwen/Qwen3.8-27B
 
 # Check token in container
 docker compose exec agent env | grep HF_HUB_TOKEN
@@ -139,7 +139,7 @@ Downloading... (very slow or hanging)
 export HF_ENDPOINT="https://hf-mirror.com"
 
 # Download with resume capability
-huggingface-cli download --resume-download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+huggingface-cli download --resume-download Qwen/Qwen3.8-27B
 
 # Check network connectivity
 curl -I https://huggingface.co
@@ -148,7 +148,7 @@ curl -I https://huggingface.co
 ### GPU and Model Loading Issues
 
 These are the most common first-run failures for the default
-GLM-4.5-Air-AWQ-FP16Mix stack (MoE, `-tp 4 --enable-expert-parallel` on
+Qwen3.8-27B stack (dense hybrid-attention, BF16, `-tp 4` on
 4× 24 GB cards). All require `nvidia-smi` to work on the host before
 anything else — if it doesn't, fix the driver/container-toolkit install
 first.
@@ -170,10 +170,10 @@ so every aux service shares with it. (`vllm-vision` is on the dedicated
 
 ```bash
 # 1. Lower vLLM's per-GPU allowance so aux services have more headroom:
-#    --gpu-memory-utilization 0.72   (default in compose is 0.77)
+#    --gpu-memory-utilization 0.72   (default in compose is 0.80)
 
 # 2. Shrink the KV cache window:
-#    --max-model-len 16384           (default in compose is 32768)
+#    --max-model-len 16384           (default in compose is 262144)
 
 # 3. Move aux services to GPUs that don't spike at the same time:
 #    - embeddings:    compose.yaml `CUDA_VISIBLE_DEVICES=2`
@@ -183,10 +183,10 @@ so every aux service shares with it. (`vllm-vision` is on the dedicated
 #    - STT:           .env `STT_DEVICE`
 #    STT/TTS run sequentially with the LLM turn, so co-pinning is OK.
 
-# 4. Swap to a smaller non-MoE model that fits on fewer GPUs, e.g.
+# 4. Swap to a smaller model that fits on fewer GPUs, e.g.
 #    Qwen2.5-72B-Instruct-AWQ (2× 24 GB via -tp 2) or Qwen2.5-14B-AWQ
-#    (single 24 GB card). Drop --tool-call-parser/--reasoning-parser glm45
-#    and --enable-expert-parallel when swapping away from GLM.
+#    (single 24 GB card). Drop --tool-call-parser/--reasoning-parser and
+#    --language-model-only when the replacement doesn't support them.
 
 # 5. Confirm nothing else is holding VRAM:
 nvidia-smi
@@ -471,9 +471,9 @@ nvidia-smi
 # Reduce GPU memory utilization
 # Edit compose.yaml:
 command: [
-  "--model", "QuantTrio/GLM-4.5-Air-AWQ-FP16Mix",
-  "--gpu-memory-utilization", "0.7",  # Reduced from 0.77
-  "--max-model-len", "16384"          # Reduced from 32768
+  "--model", "Qwen/Qwen3.8-27B",
+  "--gpu-memory-utilization", "0.7",  # Reduced from 0.80
+  "--max-model-len", "16384"          # Reduced from 262144
 ]
 
 # Check model exists
@@ -1027,7 +1027,7 @@ docker compose exec postgres psql -U havencore -d havencore -f /docker-entrypoin
 #### Model Recovery
 ```bash
 # Re-download models
-docker compose exec agent huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+docker compose exec agent huggingface-cli download Qwen/Qwen3.8-27B
 
 # Clear model cache and restart
 docker compose exec vllm rm -rf /root/.cache/huggingface/
