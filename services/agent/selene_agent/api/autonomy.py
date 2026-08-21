@@ -13,6 +13,7 @@ from selene_agent.autonomy import db as autonomy_db
 from selene_agent.autonomy import schedule as autonomy_schedule
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils.conversation_db import conversation_db
+from selene_agent.utils.origins import is_origin_allowed, is_same_host_origin
 
 logger = custom_logger.get_logger('loki')
 
@@ -178,7 +179,15 @@ async def create_item(body: AgendaCreate, req: Request):
 
 @router.patch("/autonomy/items/{item_id}")
 async def patch_item(item_id: str, body: AgendaPatch, req: Request):
-    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k == "enabled"}
+    # schedule_cron / trigger_spec are explicitly nullable: the edit form sends
+    # null to clear the trigger the user switched away from. Combined with
+    # exclude_unset, a null only arrives when the client meant it. Every other
+    # field keeps "None means untouched".
+    patch = {
+        k: v
+        for k, v in body.model_dump(exclude_unset=True).items()
+        if v is not None or k in ("enabled", "schedule_cron", "trigger_spec")
+    }
     if not patch:
         current = await autonomy_db.get_item(item_id)
         if current is None:
@@ -196,9 +205,15 @@ async def patch_item(item_id: str, body: AgendaPatch, req: Request):
             "schedule_cron": effective.get("schedule_cron"),
             "trigger_spec": effective.get("trigger_spec"),
         })
-        if patch.get("schedule_cron"):
-            patch["next_fire_at"] = autonomy_schedule.next_fire_at(
-                patch["schedule_cron"], after=datetime.now(timezone.utc)
+        if "schedule_cron" in patch:
+            # Clearing the cron must clear next_fire_at too — the engine
+            # dispatches on next_fire_at, so a stale one keeps firing.
+            patch["next_fire_at"] = (
+                autonomy_schedule.next_fire_at(
+                    patch["schedule_cron"], after=datetime.now(timezone.utc)
+                )
+                if patch["schedule_cron"]
+                else None
             )
     updated = await autonomy_db.update_item(item_id, patch)
     if updated is None:
@@ -225,27 +240,58 @@ class ConfirmBody(BaseModel):
 
 @router.get("/autonomy/runs/awaiting")
 async def runs_awaiting():
+    # The token is never serialized (autonomy_db._row_to_run gates it behind
+    # include_token, and this query doesn't even select the column).
     runs_ = await autonomy_db.list_awaiting_confirmation_runs()
-    # Strip the token so UI listings don't expose it.
-    for r in runs_:
-        r.pop("confirmation_token", None)
     return {"runs": runs_}
 
 
 @router.get("/autonomy/runs/{run_id}")
 async def get_run(run_id: str, include_messages: int = 0):
+    # include_token defaults to False — approvals must use the notification
+    # deep-link's token (or come from an allowlisted browser origin), so no
+    # read-only surface ever hands the token out.
     run = await autonomy_db.get_run(run_id, include_messages=bool(include_messages))
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
-    # Always hide the token — approvals must use the notification deep-link.
-    run.pop("confirmation_token", None)
     return {"run": run}
 
 
 @router.post("/autonomy/runs/{run_id}/confirm")
 async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
+    """Approve or deny a parked act run.
+
+    Two accepted proofs, no third: the confirmation token (from the
+    notification deep-link, which the companion/Signal path always carries), or
+    a browser ``Origin`` that is allowlisted *or equal to the request's own
+    Host* (the dashboard's Approve button, which has no token to present
+    because nothing publishes it any more — the same-host clause keeps it
+    working behind a TLS/hostname front with no AGENT_CORS_ORIGINS entry,
+    mirroring ``WebSocketOriginGuard``).
+
+    Note the absent-Origin rule is the **inverse** of ``WebSocketOriginGuard``'s:
+    there a missing Origin means "non-browser client" and is allowed, because
+    the worst case is a satellite opening a socket. Here the worst case is a
+    `curl` firing every actuator in an approved plan, so **no Origin means the
+    token is mandatory**. This is a POST, and browsers send Origin on every
+    non-GET request (including same-origin ones), so the dashboard always
+    qualifies without a client-side change.
+
+    Being authorized is not the same as being allowed: an approval that clears
+    both proofs is still refused with **409** if the act tier is switched off or
+    the engine is paused, and the run is finalized as an error rather than left
+    parked.
+    """
+    origin = req.headers.get("origin")
+    allow_tokenless = origin is not None and (
+        is_origin_allowed(origin)
+        or is_same_host_origin(origin, req.headers.get("host"))
+    )
     result = await _engine(req).resume_confirmed_run(
-        run_id, approved=body.approved, token=body.token
+        run_id,
+        approved=body.approved,
+        token=body.token,
+        allow_tokenless=allow_tokenless,
     )
     status_val = result.get("status")
     if status_val == "not_found":
@@ -257,6 +303,30 @@ async def confirm_run(run_id: str, body: ConfirmBody, req: Request):
         )
     if status_val == "invalid_token":
         raise HTTPException(status_code=403, detail="invalid token")
+    if status_val == "token_required":
+        logger.warning(
+            "[autonomy] token-less confirm rejected for run %s (origin=%r)",
+            run_id,
+            origin,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="confirmation token required (use the notification link)",
+        )
+    if status_val == "act_disabled":
+        # 409, not 403: the caller proved who they are, and this is not
+        # retryable — the engine already finalized the run as an error. Same
+        # class as 'invalid_state' above (server state forbids the
+        # transition), and it keeps 403 meaning "authorization failed".
+        logger.warning(
+            "[autonomy] approved confirm blocked for run %s: %s",
+            run_id,
+            result.get("reason"),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"act tier unavailable: {result.get('reason')} (run finalized as error)",
+        )
     return result
 
 

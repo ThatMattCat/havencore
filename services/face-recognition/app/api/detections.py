@@ -15,7 +15,6 @@ from typing import Optional
 
 import asyncpg
 import cv2
-import numpy as np
 from fastapi import APIRouter, HTTPException, Path as PathParam, Query
 from fastapi.responses import FileResponse
 
@@ -23,7 +22,6 @@ import config
 import pipeline
 from api.people import _persist_enrollment, _resolve_face_image_path
 from db import db
-from embedder import embedder
 from ha_snapshot import HASnapshotError
 from models import (
     BulkDeleteResult,
@@ -33,7 +31,6 @@ from models import (
     DetectionOut,
     PipelineResult,
 )
-from quality import score_face
 
 
 logger = logging.getLogger("face-recognition.api.detections")
@@ -182,8 +179,14 @@ async def confirm_detection(
             status_code=422, detail="snapshot could not be decoded for re-embedding",
         )
 
-    best_face, best_quality, faces_detected = await asyncio.to_thread(
-        _best_face_in_frame, img,
+    # FOV-aware re-detection. The saved snapshot is the full frame, so a
+    # panoramic camera's snapshot has to be tiled here exactly as the live
+    # pipeline tiled it — a single full-frame pass downscales a 7680x2160
+    # panorama ~6x at DET_SIZE and loses the face entirely (issue #55).
+    fov_type = await pipeline.resolve_fov_type(detection.get("camera"))
+    best = await asyncio.to_thread(pipeline.select_best_face, [img], fov_type)
+    best_face, best_quality, faces_detected = (
+        best.face, best.quality, best.faces_detected,
     )
 
     embedding_contributed = False
@@ -277,25 +280,6 @@ async def reject_detection(
         raise HTTPException(status_code=404, detail="detection not found")
     enriched = await db.get_detection(detection_id)
     return DetectionOut(**(enriched or row))
-
-
-def _best_face_in_frame(img: np.ndarray):
-    """Single-frame variant of pipeline._detect_and_score_sync.
-
-    Returns (best_face, best_quality, faces_detected). best_face is None
-    when no face cleared QUALITY_FLOOR.
-    """
-    faces = embedder.detect_and_embed(img)
-    best_face = None
-    best_quality = -1.0
-    for face in faces:
-        q = score_face(img, face)
-        if q < config.QUALITY_FLOOR:
-            continue
-        if q > best_quality:
-            best_quality = q
-            best_face = face
-    return best_face, best_quality, len(faces)
 
 
 def _resolve_snapshot_path(snapshot_path: str) -> Path:

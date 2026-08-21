@@ -22,9 +22,7 @@ import config
 import pipeline
 import retention
 from db import db
-from embedder import embedder
 from face_qdrant import vector_store
-from quality import score_face
 
 
 logger = logging.getLogger("face-recognition.api.admin")
@@ -326,7 +324,14 @@ async def _run_rescan(job_id: str) -> None:
                         img = await asyncio.to_thread(cv2.imread, str(abs_path))
                         if img is None:
                             raise ValueError("cv2.imread returned None")
-                        best, q = await asyncio.to_thread(_best_face_in_frame, img)
+                        # Snapshots are full frames; a panoramic camera's has
+                        # to be tiled here just like the live pipeline tiled
+                        # it, or the query embedding comes from an
+                        # undetectable/degraded face (issue #55).
+                        fov_type = await pipeline.resolve_fov_type(row.get("camera"))
+                        best, q = await asyncio.to_thread(
+                            _best_face_in_frame, img, fov_type,
+                        )
                     except Exception as e:
                         job["totals"]["errors"] += 1
                         job["errors"].append({
@@ -435,20 +440,13 @@ async def _run_rescan(job_id: str) -> None:
             job["elapsed_ms"] = int((job["finished_at"] - job["started_at"]) * 1000)
 
 
-def _best_face_in_frame(img):
-    """Single-frame detect+score (mirrors the helper in api/detections.py).
+def _best_face_in_frame(img, fov_type: Optional[str] = None):
+    """Single-frame FOV-aware detect+score.
 
-    Returns (best_face, quality) or (None, -1.0) if nothing clears the
-    QUALITY_FLOOR. Synchronous so the caller can offload it via asyncio.
+    Thin adapter over `pipeline.select_best_face` (the one place the
+    tile-or-not decision lives) that keeps this module's `(best, quality)`
+    return shape. `fov_type=None` means "standard" — used by the
+    rebuild-embeddings job, whose face_images rows carry no camera.
     """
-    faces = embedder.detect_and_embed(img)
-    best = None
-    best_q = -1.0
-    for f in faces:
-        q = score_face(img, f)
-        if q < config.QUALITY_FLOOR:
-            continue
-        if q > best_q:
-            best_q = q
-            best = f
-    return best, best_q
+    best = pipeline.select_best_face([img], fov_type)
+    return best.face, best.quality

@@ -18,9 +18,42 @@
 		{ label: 'Nightly at 3:00 AM', cron: '0 3 * * *' },
 	];
 
+	/**
+	 * Reverse-map a stored cron expression onto the "Every…" tab.
+	 * Returns null when the expression can't be represented there exactly —
+	 * the caller then falls back to advanced cron mode, which is lossless.
+	 */
+	function reverseMapEvery(expr, isOneShot) {
+		if (isOneShot) return null; // one-shot schedules have no recurring equivalent
+		const parts = expr.split(/\s+/);
+		if (parts.length !== 5) return null;
+		const [mm, hh, dom, mon, dow] = parts;
+		if (dom !== '*' || mon !== '*') return null;
+		if (!/^\d{1,2}$/.test(mm) || !/^\d{1,2}$/.test(hh)) return null;
+		if (Number(mm) > 59 || Number(hh) > 23) return null;
+		const time = `${hh.padStart(2, '0')}:${mm.padStart(2, '0')}`;
+		if (dow === '*') return { freq: 'daily', time };
+		if (dow === '1-5') return { freq: 'weekdays', time };
+		if (dow === '0,6' || dow === '6,0') return { freq: 'weekends', time };
+		if (/^[0-6]$/.test(dow)) return { freq: 'weekly', time, day: Number(dow) };
+		if (/^[0-6](,[0-6])*$/.test(dow))
+			return { freq: 'custom', time, days: [...new Set(dow.split(',').map(Number))].sort((a, b) => a - b) };
+		return null;
+	}
+
+	// Hydrate from the schedule we were handed. Without this the component
+	// always started on Easy/"In…", and the push-back $effect below immediately
+	// overwrote the bound cron with a synthesized now+30min one-shot — so
+	// editing any unrelated field of a saved reminder destroyed its schedule.
+	const initial = (() => {
+		const expr = (cron ?? '').trim();
+		if (!expr) return null; // creating a new item — keep the defaults
+		return { expr, mapped: reverseMapEvery(expr, oneShot) };
+	})();
+
 	// --- Mode + tab state ---
-	let mode = $state('easy'); // 'easy' | 'cron'
-	let tab = $state('in'); // 'in' | 'at' | 'every'
+	let mode = $state(initial && !initial.mapped ? 'cron' : 'easy'); // 'easy' | 'cron'
+	let tab = $state(initial?.mapped ? 'every' : 'in'); // 'in' | 'at' | 'every'
 
 	// --- "In…" tab ---
 	let inAmount = $state(30);
@@ -41,12 +74,12 @@
 	let atTime = $state(_defaultAtTime());
 
 	// --- "Every…" tab ---
-	let everyFreq = $state('daily'); // 'daily' | 'weekdays' | 'weekends' | 'weekly' | 'custom'
-	let everyTime = $state('08:00');
+	let everyFreq = $state(initial?.mapped?.freq ?? 'daily'); // 'daily' | 'weekdays' | 'weekends' | 'weekly' | 'custom'
+	let everyTime = $state(initial?.mapped?.time ?? '08:00');
 	// For weekly: single day index (0=Sun..6=Sat)
-	let everyWeeklyDay = $state(1); // Mon
+	let everyWeeklyDay = $state(initial?.mapped?.day ?? 1); // Mon
 	// For custom: array of day indices
-	let everyCustomDays = $state([1, 3, 5]); // Mon/Wed/Fri default
+	let everyCustomDays = $state(initial?.mapped?.days ?? [1, 3, 5]); // Mon/Wed/Fri default
 	const DAYS = [
 		{ idx: 0, short: 'Sun' },
 		{ idx: 1, short: 'Mon' },
@@ -59,7 +92,7 @@
 
 	// --- Cron mode (advanced passthrough) ---
 	let cronPreset = $state('');
-	let cronManual = $state(cron);
+	let cronManual = $state(initial?.expr ?? cron);
 	let cronManualOneShot = $state(oneShot);
 
 	// --- Cron synthesis helpers ---

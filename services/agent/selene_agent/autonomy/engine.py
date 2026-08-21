@@ -7,6 +7,7 @@ per-signature cooldowns, and (v3) reactive event dispatch + quiet hours.
 from __future__ import annotations
 
 import asyncio
+import hmac
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -199,6 +200,21 @@ class AutonomyEngine:
         self.paused = False
         logger.info("AutonomyEngine resumed")
 
+    def act_gate_reason(self) -> Optional[str]:
+        """Why an ``act`` plan must not actuate right now — ``None`` if it may.
+
+        Deliberately the *same* expression ``handlers/act.handle`` uses for the
+        kill switch (a live attribute read off the config module, not a value
+        captured at import), so the plan-time gate and the confirm-time gate
+        can never disagree — including under a test monkeypatch or any future
+        runtime override of the flag.
+        """
+        if not getattr(config, "AUTONOMY_ACT_ENABLED", False):
+            return "AUTONOMY_ACT_ENABLED is false"
+        if self.is_paused():
+            return "autonomy engine paused"
+        return None
+
     async def status(self) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
         runs_last_hour = await autonomy_db.count_runs_since(now - timedelta(hours=1))
@@ -250,11 +266,23 @@ class AutonomyEngine:
         except Exception as e:
             logger.error(f"[engine] deferred sweep failed: {e}")
             due_deferred = []
-        for run_row in due_deferred:
-            asyncio.create_task(self._dispatch_deferred(run_row))
+        if due_deferred:
+            # Sequentially, not one task each: the global rate gate counts only
+            # completed runs, so a concurrent release let every deferred run
+            # pass the check before any of them had finished.
+            asyncio.create_task(self._dispatch_deferred_batch(due_deferred))
 
         # Confirmation-timeout sweep (act-tier parked runs past their deadline).
         await self._sweep_confirmation_timeouts(self.last_dispatch_at)
+
+    async def _dispatch_deferred_batch(self, run_rows: List[Dict[str, Any]]) -> None:
+        """Release deferred runs one at a time so each re-checks the rate gate
+        against the ones already finished."""
+        for run_row in run_rows:
+            try:
+                await self._dispatch_deferred(run_row)
+            except Exception as e:
+                logger.error(f"[engine] deferred dispatch failed for {run_row.get('id')}: {e}")
 
     async def _dispatch_deferred(self, run_row: Dict[str, Any]) -> None:
         claimed = await autonomy_db.claim_scheduled_run(run_row["id"])
@@ -372,6 +400,12 @@ class AutonomyEngine:
                 policy = quiet_hours_mod.policy(quiet_spec)
                 if policy == "defer":
                     next_end = quiet_hours_mod.next_end_at(triggered_at, quiet_spec)
+                    # One pending deferral per item. A long quiet window
+                    # otherwise queued a row per suppressed fire and released
+                    # them all concurrently at quiet end.
+                    if await autonomy_db.coalesce_deferred_run(item_id):
+                        await self._advance(item, triggered_at)
+                        return {"status": "coalesced_into_pending_defer"}
                     await autonomy_db.insert_run({
                         **agenda_fields,
                         "status": "scheduled",
@@ -431,7 +465,8 @@ class AutonomyEngine:
                 provider_getter=self.provider_getter,
             )
 
-            # Act-tier parked run: persist + notify user, don't advance schedule.
+            # Act-tier parked run: persist + notify the user. (The schedule
+            # *is* advanced below — see the comment there.)
             if result.get("status") == "awaiting_confirmation":
                 run_id = await autonomy_db.insert_run({
                     **agenda_fields,
@@ -600,21 +635,65 @@ class AutonomyEngine:
         return channel if delivered else None
 
     async def resume_confirmed_run(
-        self, run_id: str, *, approved: bool, token: Optional[str] = None
+        self,
+        run_id: str,
+        *,
+        approved: bool,
+        token: Optional[str] = None,
+        allow_tokenless: bool = False,
     ) -> Dict[str, Any]:
         """Called by POST /api/autonomy/runs/{id}/confirm after the user
         decides. Validates state, runs or cancels, and updates the row.
+
+        Authorization is one of two proofs:
+
+        * **the token** — presented by the notification deep-link, which is the
+          only place it is ever published. Always sufficient, whatever the
+          caller's origin.
+        * **an allowlisted browser Origin** (``allow_tokenless=True``, decided
+          by the HTTP layer) — this is the dashboard's Approve button, which
+          has no token because no read-only surface hands it out any more.
+
+        A token that is *present but wrong* is rejected outright: a bad token is
+        an active red flag, never a fallback to the origin path. And a caller
+        with neither proof is rejected — that closes the hole where any client
+        that had merely learned a run_id (they are broadcast on the WS feed)
+        could approve a parked actuator plan.
+
+        Authorization is not the last word: an authorized approval still has to
+        clear ``act_gate_reason`` (the act kill switch and the engine's pause
+        state) before anything actuates, and is finalized as an error run —
+        status ``act_disabled`` — if it does not.
         """
-        run_row = await autonomy_db.get_run(run_id, include_messages=False)
+        # include_token=True: this is the one code path that validates the
+        # token, so it is the one code path allowed to read it back out.
+        run_row = await autonomy_db.get_run(
+            run_id, include_messages=False, include_token=True
+        )
         if run_row is None:
             return {"status": "not_found"}
         if run_row.get("status") != "awaiting_confirmation":
             return {"status": "invalid_state", "current": run_row.get("status")}
-        if token is not None:
-            import hmac
-            stored = run_row.get("confirmation_token") or ""
-            if not hmac.compare_digest(stored, token):
-                return {"status": "invalid_token"}
+        stored = run_row.get("confirmation_token") or ""
+        if token is None:
+            if not allow_tokenless:
+                return {"status": "token_required"}
+        elif not stored or not hmac.compare_digest(stored, token):
+            return {"status": "invalid_token"}
+
+        # Atomically claim the run before doing anything irreversible. The read
+        # above is advisory only: without this CAS, two concurrent confirms (a
+        # double-tapped Approve deep-link) both saw 'awaiting_confirmation' and
+        # both ran every pending actuator call, and a confirm arriving just
+        # after the timeout sweep executed actions it had already given up on.
+        # Token validation stays ahead of the claim so a bad token can't strand
+        # the run in 'confirming'.
+        if not await autonomy_db.claim_confirmation(run_id):
+            fresh = await autonomy_db.get_run(run_id, include_messages=False)
+            return {
+                "status": "invalid_state",
+                "current": (fresh or {}).get("status"),
+            }
 
         item_id = run_row.get("agenda_item_id")
         item = await autonomy_db.get_item(item_id) if item_id else None
@@ -638,9 +717,61 @@ class AutonomyEngine:
             })
             return {"status": "error", "error": "item_missing"}
 
-        exec_result = await act_handler.execute_approved(
-            run_row, item, self.mcp_manager
-        )
+        # Re-check the act kill switch and the pause state before actuating.
+        # ``handlers/act.handle`` gates *planning* on them, but a plan can sit
+        # in 'awaiting_confirmation' across the moment they flip: the flag is
+        # read from the environment at import, so turning it off means
+        # recreating the container — which the parked row (it lives in
+        # Postgres) survives, while a paused engine additionally stops running
+        # _sweep_confirmation_timeouts, so the deep-link never even expires.
+        # Without this check the approve link keeps firing actuators after the
+        # operator has shut the tier down.
+        #
+        # This sits *after* claim_confirmation on purpose. The claim is what
+        # makes the outcome exclusive and terminal, and it actuates nothing —
+        # so taking it first costs nothing, while gating ahead of it would mean
+        # finalizing a row we do not own, racing the timeout sweep and any
+        # concurrent confirm.
+        gate_reason = self.act_gate_reason()
+        if gate_reason is not None:
+            logger.warning(
+                f"[engine] approved run {run_id} blocked at confirm time: {gate_reason}"
+            )
+            now = datetime.now(timezone.utc)
+            audit = list(run_row.get("action_audit") or [])
+            for entry in audit:
+                if isinstance(entry, dict) and entry.get("outcome") == "pending":
+                    entry["outcome"] = "skipped_denied"
+            await autonomy_db.finalize_run(run_id, {
+                # Same status/error the plan-time gate produces, so a disabled
+                # tier looks identical whichever phase it trips in.
+                "status": "error",
+                "confirmation_response": "blocked",
+                "completed_at": now,
+                "summary": f"act blocked at confirm time: {gate_reason}",
+                "error": gate_reason,
+                "action_audit": audit,
+            })
+            await self._advance(item, now)
+            return {"status": "act_disabled", "reason": gate_reason}
+
+        try:
+            exec_result = await act_handler.execute_approved(
+                run_row, item, self.mcp_manager
+            )
+        except Exception as e:
+            # We hold the claim, and the timeout sweep only reclaims
+            # 'awaiting_confirmation' rows — so a raise here would strand the
+            # run in 'confirming' forever. Land it as an error instead.
+            logger.error(f"[engine] approved execution failed for run {run_id}: {e}")
+            await autonomy_db.finalize_run(run_id, {
+                "status": "error",
+                "confirmation_response": "approved",
+                "completed_at": datetime.now(timezone.utc),
+                "error": f"approved execution failed: {e}",
+            })
+            await self._advance(item, datetime.now(timezone.utc))
+            return {"status": "error", "error": str(e)}
         patch = {
             "status": exec_result.get("status", "ok"),
             "summary": exec_result.get("summary"),

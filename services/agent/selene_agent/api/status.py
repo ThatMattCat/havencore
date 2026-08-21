@@ -41,7 +41,12 @@ async def get_system_status(req: Request):
     # Proxy vLLM model info — the sync request runs in a thread so a slow/
     # unreachable vLLM can't block the event loop (and every concurrent turn).
     def _probe_llm():
-        resp = http_requests.get(f"{config.LLM_API_BASE.rstrip('/')}/models", timeout=3)
+        # vLLM enforces --api-key on /v1/*; harmless extra header if it doesn't.
+        resp = http_requests.get(
+            f"{config.LLM_API_BASE.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+            timeout=3,
+        )
         resp.raise_for_status()
         return resp.json()
 

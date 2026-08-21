@@ -300,7 +300,7 @@ Tools are provided by MCP (Model Context Protocol) servers, each running as a su
 | `github_list_dir` | List a directory in the local HavenCore source clone |
 | `github_pull_latest` | Refresh the container-managed local clone from `origin` |
 | `github_list_issues` | List GitHub Issues on the HavenCore repo |
-| `github_get_issue` | Fetch a single issue (untrusted text wrapped in `<UNTRUSTED_USER_TEXT>`) |
+| `github_get_issue` | Fetch a single issue (untrusted text enclosed in a per-response `UNTRUSTED_USER_TEXT_<id>` block) |
 | `github_create_issue` | File a new issue on the HavenCore repo |
 
 ## Configuration

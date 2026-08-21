@@ -556,6 +556,42 @@ async def insert_run(run: Dict[str, Any]) -> str:
     return run_id
 
 
+async def coalesce_deferred_run(agenda_item_id: str) -> bool:
+    """Fold another quiet-hours deferral into this item's pending placeholder.
+
+    Returns True when an existing ``scheduled`` row absorbed the fire (and its
+    ``metrics.coalesced`` counter was bumped so the suppression stays visible),
+    False when there is nothing to coalesce into and the caller should insert.
+
+    Without this, every suppressed fire inserted its own row — an overnight
+    quiet window produced hundreds, and they all dispatched at once at quiet
+    end.
+    """
+    if not agenda_item_id:
+        return False
+    pool = conversation_db.pool
+    if not pool:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE autonomy_runs
+               SET metrics = jsonb_set(
+                       COALESCE(metrics, '{}'::jsonb), '{coalesced}',
+                       to_jsonb(COALESCE((metrics->>'coalesced')::int, 1) + 1)
+                   )
+             WHERE id = (
+                   SELECT id FROM autonomy_runs
+                    WHERE agenda_item_id = $1 AND status = 'scheduled'
+                    ORDER BY scheduled_for ASC
+                    LIMIT 1
+                   )
+            """,
+            uuid.UUID(agenda_item_id),
+        )
+    return result.endswith(" 1")
+
+
 async def list_scheduled_runs_due(now_utc: datetime) -> List[Dict[str, Any]]:
     """Deferred runs whose ``scheduled_for`` has arrived, still ``scheduled``."""
     pool = conversation_db.pool
@@ -681,7 +717,12 @@ async def count_deferred_runs() -> int:
     return int(val or 0)
 
 
-async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dict[str, Any]]:
+async def get_run(
+    run_id: str, *, include_messages: bool = True, include_token: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Fetch one run. ``include_token=True`` is for the confirm path only —
+    see ``_row_to_run``; every API/WS caller must leave it off.
+    """
     uid = _as_uuid(run_id)
     if uid is None:
         return None
@@ -700,7 +741,11 @@ async def get_run(run_id: str, *, include_messages: bool = True) -> Optional[Dic
             """,
             uid,
         )
-    return _row_to_run(row, include_messages=include_messages) if row else None
+    return (
+        _row_to_run(row, include_messages=include_messages, include_token=include_token)
+        if row
+        else None
+    )
 
 
 async def count_runs_since(since: datetime) -> int:
@@ -748,7 +793,18 @@ async def last_run_for_signature(signature_hash: str, since: datetime) -> Option
     }
 
 
-def _row_to_run(row, include_messages: bool = False) -> Dict[str, Any]:
+def _row_to_run(
+    row, include_messages: bool = False, *, include_token: bool = False
+) -> Dict[str, Any]:
+    """Serialize an ``autonomy_runs`` row.
+
+    ``confirmation_token`` is a bearer secret — whoever holds it can approve a
+    parked act run (i.e. fire real actuators). It is therefore **opt-in**: only
+    callers that actually validate it (the engine's confirm path) pass
+    ``include_token=True``. Every client-facing surface — ``GET
+    /api/autonomy/runs``, ``/runs/awaiting``, ``/runs/{id}``, the
+    ``/ws/autonomy/runs`` feed — goes through the default and never sees it.
+    """
     keys = row.keys() if hasattr(row, "keys") else []
     out = {
         "id": str(row["id"]),
@@ -771,7 +827,7 @@ def _row_to_run(row, include_messages: bool = False) -> Dict[str, Any]:
         out["trigger_source"] = row["trigger_source"]
     if "trigger_event" in keys:
         out["trigger_event"] = _maybe_json(row["trigger_event"])
-    if "confirmation_token" in keys:
+    if include_token and "confirmation_token" in keys:
         out["confirmation_token"] = row["confirmation_token"]
     if "confirmation_prompt_id" in keys:
         out["confirmation_prompt_id"] = row["confirmation_prompt_id"]
@@ -817,12 +873,15 @@ async def list_runs(
     args.append(offset)
     off_placeholder = f"${len(args)}"
     async with pool.acquire() as conn:
+        # confirmation_token is deliberately NOT selected: every consumer of
+        # this listing is a client-facing surface, and no listing caller
+        # validates the token. Defence in depth on top of _row_to_run's gate.
         rows = await conn.fetch(
             f"""
             SELECT id, agenda_item_id, kind, triggered_at, completed_at,
                    status, summary, severity, signature_hash, notified_via,
                    messages, metrics, error, scheduled_for, trigger_source,
-                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   trigger_event, confirmation_prompt_id,
                    confirmation_response, action_audit
             FROM autonomy_runs
             {where}
@@ -840,12 +899,14 @@ async def list_awaiting_confirmation_runs() -> List[Dict[str, Any]]:
     if not pool:
         return []
     async with pool.acquire() as conn:
+        # No confirmation_token here either — this feeds the dashboard's
+        # "awaiting approval" banner, which approves by origin, not by token.
         rows = await conn.fetch(
             """
             SELECT id, agenda_item_id, kind, triggered_at, completed_at,
                    status, summary, severity, signature_hash, notified_via,
                    messages, metrics, error, scheduled_for, trigger_source,
-                   trigger_event, confirmation_token, confirmation_prompt_id,
+                   trigger_event, confirmation_prompt_id,
                    confirmation_response, action_audit
             FROM autonomy_runs
             WHERE status = 'awaiting_confirmation'
@@ -875,6 +936,29 @@ async def claim_confirmation_timeout(
             """,
             uuid.UUID(run_id),
             timeout_at,
+        )
+    return result.endswith(" 1")
+
+
+async def claim_confirmation(run_id: str) -> bool:
+    """Atomically transition a run from ``awaiting_confirmation`` to
+    ``confirming``, reserving it for exactly one confirm request.
+
+    Returns True for the caller that won. A False means someone else already
+    took it — a double-tapped Approve, or the confirmation-timeout sweep — and
+    the caller must not execute the actions.
+    """
+    pool = conversation_db.pool
+    if not pool:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE autonomy_runs
+               SET status = 'confirming'
+             WHERE id = $1 AND status = 'awaiting_confirmation'
+            """,
+            uuid.UUID(run_id),
         )
     return result.endswith(" 1")
 

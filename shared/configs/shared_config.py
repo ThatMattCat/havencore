@@ -24,10 +24,19 @@ VISION_SERVED_NAME = os.getenv('VISION_SERVED_NAME', 'gpt-4-vision')
 
 # Agent LLM provider — runtime-togglable via the System page; env is just the seed.
 LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'vllm')
+# Per-call completion budget for chat turns. Reasoning models (Qwen3.8 with
+# --reasoning-parser) spend their think block from this same budget before any
+# visible answer, so it must be well above the length of the answer alone —
+# 1024 let a meaty question exhaust the budget mid-think, yielding a response
+# with reasoning but null content.
+LLM_MAX_TOKENS = int(os.getenv('LLM_MAX_TOKENS', '4096'))
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-7')
 
-DEBUG = os.getenv('DEBUG_LOGGING', 0)
+# Parsed as a boolean, not truthiness: os.getenv returns a *string* when the var
+# is set, and "0"/"false"/"no" are all truthy, which would invert the operator's
+# intent (.env ships DEBUG_LOGGING=0 meaning "off").
+DEBUG = os.getenv('DEBUG_LOGGING', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 if DEBUG:
     LOG_LEVEL_APP = logging.DEBUG
 else:

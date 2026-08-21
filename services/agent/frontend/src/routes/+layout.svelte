@@ -33,6 +33,8 @@
 						class:active={page.url.pathname === item.href ||
 							(item.href !== '/' && page.url.pathname.startsWith(item.href))}
 					>
+						<!-- Safe: getIcon is a closed map of hardcoded SVG keyed by the
+						     static navItems list above — no external input reaches it. -->
 						<span class="nav-icon">{@html getIcon(item.icon)}</span>
 						<span>{item.label}</span>
 					</a>

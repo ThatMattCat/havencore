@@ -19,13 +19,71 @@ HavenCore configuration is managed through:
 # Required: Docker host IP address
 HOST_IP_ADDRESS="192.168.1.100"  # Find with: ip route get 1.1.1.1 | awk '{print $7}'
 
-# Required: API access key
-LLM_API_KEY="your_secret_key"  # Set to any value for API access
+# Required: API access key. Sent by the agent as a bearer token on every
+# vLLM call. vLLM only enforces it if --api-key is present in its compose
+# command (currently absent — see services/vllm/README.md#authentication).
+LLM_API_KEY="your_secret_key"
 
 # Debug and logging
 DEBUG_LOGGING=0  # 0 = INFO, 1 = DEBUG
 LOKI_URL="http://localhost:3100/loki/api/v1/push"  # Loki logging endpoint
+
+# Optional: browser origins allowed to call the agent (comma-separated).
+# Empty (default) => derived from HOST_IP_ADDRESS, see below.
+AGENT_CORS_ORIGINS=""
 ```
+
+#### Browser origin allowlist (`AGENT_CORS_ORIGINS`)
+
+`/api/*`, `/ws/*` and `/v1/*` are unauthenticated, so the browser's origin
+checks are the only thing stopping a web page a household member happens to
+open from calling `POST /api/chat` and driving the full tool-calling loop
+(lights, locks, Signal messages) — and reading the reply. The agent therefore
+enforces an origin allowlist in two places, because they are separate
+mechanisms:
+
+- **HTTP** — `CORSMiddleware` with explicit origins, methods and headers, and
+  `allow_credentials=false` (nothing here is cookie-authenticated).
+- **WebSockets** — CORS does not apply to WS handshakes at all, so `/ws/chat`,
+  `/ws/logs` and `/ws/autonomy/runs` additionally validate the `Origin` header
+  on the handshake and close mismatches with code `1008`.
+
+Leave `AGENT_CORS_ORIGINS` empty and the default set is derived from
+`HOST_IP_ADDRESS` — no `.env` edit needed for a stock install:
+
+| Origin | Why |
+|---|---|
+| `http://<HOST_IP_ADDRESS>:6002` | agent's published port (dashboard, `/api/*`, `/ws/*`, `/v1/*`) |
+| `http://<HOST_IP_ADDRESS>` | nginx on `:80`, which reverse-proxies `/`, `/api/`, `/ws/` and `/v1/...` to `agent:6002` |
+| `http://localhost:6002`, `http://localhost` | browsing from the Docker host itself |
+| `http://127.0.0.1:6002`, `http://127.0.0.1` | same, by IP |
+
+**Same-host auto-allow.** In addition to the allowlist, the WebSocket
+guard and the autonomy confirm gate accept any `Origin` whose host:port
+equals the request's own `Host` header — that page was served by this
+very deployment, so a TLS or hostname reverse-proxy front
+(`https://havencore.example.com`) works with **no** `AGENT_CORS_ORIGINS`
+entry. The match is port-exact on purpose: a page served by a sibling
+service on the same Docker host (ComfyUI on `:8188`, ntfy on `:8585`)
+does not inherit access; a portless `Host` (browsers omit default ports)
+matches origin ports 80/443 only. Proxies must forward the client's
+`Host` — the shipped `nginx.conf` does (`proxy_set_header Host $host`).
+
+Set `AGENT_CORS_ORIGINS` explicitly only for the genuinely cross-origin
+case — a page on one host calling an agent on a *different* host:
+
+```bash
+AGENT_CORS_ORIGINS="http://havencore.lan,https://havencore.example.com"
+```
+
+`AGENT_CORS_ORIGINS="*"` restores the old allow-everything behavior. Don't —
+it re-opens the drive-by vector described above.
+
+**Non-browser clients are unaffected.** A handshake or request with **no**
+`Origin` header is always allowed: browsers always send `Origin`, while the
+ESP32 satellite firmware, the Android companion app and CLI tools
+(`websocat`, `curl`, python scripts) never do. No client-side configuration
+changes when this allowlist changes.
 
 #### Agent Configuration
 ```bash
@@ -366,6 +424,13 @@ EMBEDDING_DIM=1024   # Match the model: bge-large-en-v1.5 = 1024, MiniLM-L6 = 38
 ### Agent runtime tuning
 
 ```bash
+# Per-turn completion budget for chat turns (max_tokens on each LLM call).
+# Reasoning models (Qwen3.8 via --reasoning-parser) spend their <think>
+# block from this same budget before any visible answer, so keep it well
+# above the length of the answer alone — the old hardcoded 1024 let a meaty
+# question exhaust the budget mid-think and yield no content at all.
+LLM_MAX_TOKENS=4096
+
 # Seconds of inactivity before the session pool summarizes the conversation
 # and resets it in place (same session_id, compact recap preserved as a
 # system message, last 2 user/assistant exchanges kept verbatim).
@@ -630,9 +695,11 @@ GITHUB_MAX_ISSUES_PER_HOUR=5
 ```
 
 Issue bodies and comments returned by `github_list_issues` /
-`github_get_issue` are wrapped in `<UNTRUSTED_USER_TEXT author="...">`
-markers — the system prompt tells the model to treat text inside those
-blocks as data rather than instructions. Do not strip the markers.
+`github_get_issue` are enclosed in per-call `<UNTRUSTED_USER_TEXT_<nonce>
+author="...">` markers (random nonce per call, so untrusted text cannot
+close the block early) — the system prompt tells the model to treat text
+inside those blocks as data rather than instructions. Do not strip the
+markers.
 
 `git` and `ripgrep` are installed into the agent image for this
 module's code-search path.
@@ -645,34 +712,34 @@ Per-server reference docs live under
 ### LLM Backend Configuration
 
 #### vLLM Configuration (Default)
-Defined in `compose.yaml` (GLM-4.5-Air-AWQ-FP16Mix, a MoE reasoning
-model served under the OpenAI-compat name `gpt-3.5-turbo` for client
-convenience):
+Defined in `compose.yaml` (Qwen3.8-27B, a dense hybrid-attention
+reasoning model run unquantized in BF16, served under the OpenAI-compat
+name `gpt-3.5-turbo` for client convenience):
 
 ```yaml
 command: >
-  --model QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+  --model Qwen/Qwen3.8-27B
   --served-model-name gpt-3.5-turbo
   --tensor-parallel-size 4
-  --enable-expert-parallel
-  --max-model-len 32768
+  --language-model-only
+  --max-model-len 262144
   --max-num-seqs 2
-  --gpu-memory-utilization 0.77
-  --tool-call-parser glm45
-  --reasoning-parser glm45
+  --gpu-memory-utilization 0.80
+  --tool-call-parser qwen3_coder
+  --reasoning-parser qwen3
   --enable-auto-tool-choice
-  --trust-remote-code
 ```
 
-`--reasoning-parser glm45` splits the model's `<think>…</think>`
-chain-of-thought into a separate `reasoning` field on the response,
+`--reasoning-parser qwen3` splits the model's `<think>…</think>`
+chain-of-thought into a separate reasoning field on the response,
 keeping `message.content` clean for voice satellites. The agent surfaces
 the CoT as a `REASONING` event on `/ws/chat` (dashboard-only on the
 wire) and also normalizes it onto the assistant message as
-`reasoning_content` so GLM-4.5-Air's chat template can render
-`<think>…</think>` for in-progress agentic tool-call iterations — see
+`reasoning_content` so the chat template can render `<think>…</think>`
+for in-progress agentic tool-call iterations — see
 [Agent → WebSocket event schema](api-reference.md#websockets) and
-[vLLM service docs](services/vllm/README.md) for the lifecycle.
+[vLLM service docs](services/vllm/README.md) for the lifecycle, model
+sizing notes, and the GLM-4.5-Air rollback pairing.
 
 **Key Parameters**:
 - `--model`: HuggingFace model path
@@ -945,7 +1012,7 @@ docker compose exec agent curl https://api.weatherapi.com
 echo $HF_HUB_TOKEN
 
 # Pre-download models
-huggingface-cli download QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+huggingface-cli download Qwen/Qwen3.8-27B
 
 # Check disk space
 df -h

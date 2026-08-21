@@ -21,6 +21,89 @@ from selene_agent.utils import config
 logger = custom_logger.get_logger('loki')
 
 
+# --- Transport-failure classification -------------------------------------
+#
+# A tool that ran and failed is NOT the same thing as a dead subprocess.
+# Tearing a connection down because one tool legitimately errored would take
+# every other tool on that server with it, so the classifier below is
+# deliberately narrow: only stream/pipe/process-level failures count.
+
+try:  # anyio ships with mcp; the guard keeps this module importable regardless
+    import anyio as _anyio
+
+    _TRANSPORT_EXC_TYPES: Tuple[type, ...] = (
+        _anyio.BrokenResourceError,
+        _anyio.ClosedResourceError,
+        _anyio.EndOfStream,
+    )
+except Exception:  # pragma: no cover - anyio is a hard dep of mcp
+    _TRANSPORT_EXC_TYPES = ()
+
+_TRANSPORT_EXC_TYPES = _TRANSPORT_EXC_TYPES + (
+    BrokenPipeError,
+    ConnectionError,  # covers ConnectionReset/Aborted/Refused
+    EOFError,
+    ProcessLookupError,
+)
+
+# Name-based fallback so a differently-imported anyio (or a future rename)
+# still classifies correctly.
+_TRANSPORT_EXC_NAMES = frozenset({
+    "BrokenResourceError",
+    "ClosedResourceError",
+    "EndOfStream",
+    "BrokenPipeError",
+    "ConnectionResetError",
+    "ProcessLookupError",
+    "IncompleteRead",
+})
+
+try:
+    from mcp.shared.exceptions import McpError as _McpError
+except Exception:  # pragma: no cover
+    _McpError = None  # type: ignore[assignment]
+
+
+def _iter_exception_chain(exc: BaseException, _depth: int = 0):
+    """Yield `exc` plus its explicit causes and any ExceptionGroup members.
+
+    MCP runs its session over anyio task groups, so a dead pipe often reaches
+    us wrapped in an ExceptionGroup or chained behind another exception.
+    """
+    if exc is None or _depth > 8:
+        return
+    yield exc
+    for member in getattr(exc, "exceptions", ()) or ():
+        yield from _iter_exception_chain(member, _depth + 1)
+    # Only `__cause__` (explicit `raise ... from ...`), never `__context__`:
+    # implicit context is set for *any* exception raised inside an except
+    # block, which would let an unrelated tool error inherit a transport
+    # verdict it did not earn.
+    cause = exc.__cause__
+    if cause is not None and cause is not exc:
+        yield from _iter_exception_chain(cause, _depth + 1)
+
+
+def is_transport_error(exc: BaseException) -> bool:
+    """True only when `exc` means the MCP stdio transport/subprocess is gone.
+
+    Explicitly False for `McpError`: that is a JSON-RPC error the server
+    *answered* with (or a client-side read timeout), which proves the
+    subprocess is alive. Ordinary tool exceptions fall through to False too —
+    only broken/closed streams, EOF and dead-process errors return True.
+    """
+    if _McpError is not None and isinstance(exc, _McpError):
+        return False
+    for item in _iter_exception_chain(exc):
+        if _McpError is not None and isinstance(item, _McpError):
+            continue
+        if isinstance(item, _TRANSPORT_EXC_TYPES):
+            return True
+        if type(item).__name__ in _TRANSPORT_EXC_NAMES:
+            return True
+    return False
+
+
 class ToolSource(Enum):
     """Enum to identify the source of a tool"""
     LEGACY = "legacy"
@@ -77,7 +160,11 @@ class MCPServerConnection:
         self.read_stream = None
         self.write_stream = None
         self._context_manager = None
-        
+        # Transport liveness. The ClientSession object stays truthy long after
+        # its subprocess dies, so health is tracked separately.
+        self._alive = True
+        self.failure_reason: Optional[str] = None
+
     async def connect(self):
         """Connect to the MCP server"""
         try:
@@ -117,9 +204,46 @@ class MCPServerConnection:
             except Exception as e:
                 logger.error(f"Error disconnecting from {self.server_name}: {e}")
     
+    def mark_dead(self, reason: str):
+        """Flag this connection's transport as gone. Idempotent."""
+        if self._alive:
+            self._alive = False
+            self.failure_reason = reason
+            logger.error(
+                f"MCP server {self.server_name} transport is dead: {reason}"
+            )
+
+    async def close_transport(self):
+        """Best-effort teardown of a dead transport, safe from any task.
+
+        Deliberately does NOT call `__aexit__` on the stdio/session context
+        managers: those were entered inside the per-server connect task, and
+        anyio refuses to exit a cancel scope from a different task (see issue
+        #68). Closing the memory streams is task-agnostic and is enough to let
+        the reader/writer tasks wind down; the contexts themselves are still
+        unwound by `MCPClientManager.cleanup()` at lifespan shutdown, exactly
+        as they are today.
+        """
+        self._alive = False
+        for stream in (self.write_stream, self.read_stream):
+            if stream is None:
+                continue
+            try:
+                await stream.aclose()
+            except Exception as e:
+                logger.debug(
+                    f"Error closing stream for {self.server_name}: {e}"
+                )
+
     def is_connected(self) -> bool:
-        """Check if connected"""
-        return self.client_session is not None
+        """Check if connected.
+
+        A non-None `client_session` is not proof of a live subprocess — it
+        stays truthy forever after `connect()`. Transport failures observed
+        during tool execution flip `_alive`, and that is reflected here so
+        `/mcp/status` stops reporting dead servers as connected.
+        """
+        return self.client_session is not None and self._alive
 
 
 class MCPClientManager:
@@ -132,7 +256,16 @@ class MCPClientManager:
         self.server_tools: Dict[str, List[str]] = {}  # server_name -> [tool_names]
         self.failed_servers: Dict[str, str] = {}  # server_name -> error message
         self._initialized = False
-        
+        # Bounded reconnect state for servers whose subprocess died mid-uptime.
+        self._reconnect_tasks: Dict[str, asyncio.Task] = {}
+        self._reconnect_attempts: Dict[str, int] = {}  # per-outage attempt count
+        # Connections replaced by a reconnect. Kept so `cleanup()` can still
+        # unwind their MCP contexts at shutdown (see close_transport docstring).
+        self._stale_connections: List[MCPServerConnection] = []
+        self.reconnect_max_attempts = config.MCP_RECONNECT_MAX_ATTEMPTS
+        self.reconnect_backoff_seconds = config.MCP_RECONNECT_BACKOFF_SECONDS
+        self.reconnect_timeout_seconds = config.MCP_RECONNECT_TIMEOUT_SECONDS
+
     def add_server(self, mcp_config: MCPServerConfig):
         """Add an MCP server configuration"""
         if mcp_config.enabled:
@@ -215,6 +348,94 @@ class MCPClientManager:
             logger.error(f"Error connecting to MCP server {server_name}: {e}")
             raise
     
+    def _schedule_reconnect(self, server_name: str):
+        """Kick a bounded background reconnect for a server that dropped.
+
+        At most one reconnect task per server, and at most
+        `reconnect_max_attempts` attempts per outage — a broken server module
+        must not turn every subsequent tool call into a respawn storm.
+        """
+        task = self._reconnect_tasks.get(server_name)
+        if task is not None and not task.done():
+            return  # already in flight
+        if self._reconnect_attempts.get(server_name, 0) >= self.reconnect_max_attempts:
+            logger.debug(
+                f"Not reconnecting to MCP server {server_name}: "
+                f"{self.reconnect_max_attempts} attempts already exhausted"
+            )
+            return
+        try:
+            self._reconnect_tasks[server_name] = asyncio.create_task(
+                self._reconnect_server(server_name),
+                name=f"mcp_reconnect_{server_name}",
+            )
+        except RuntimeError as e:  # no running loop
+            logger.error(
+                f"Could not schedule MCP reconnect for {server_name}: {e}"
+            )
+
+    async def _reconnect_server(self, server_name: str):
+        """Tear down a dead connection and re-run `_connect_to_server`.
+
+        Bounded: `reconnect_max_attempts` tries with exponential backoff, then
+        the server is recorded in `failed_servers` and left alone until the
+        next successful reconnect resets the budget.
+        """
+        server_config = self.servers.get(server_name)
+        if server_config is None:
+            logger.error(f"Cannot reconnect unknown MCP server: {server_name}")
+            return
+
+        # Retire the dead connection before respawning so tool calls fail fast
+        # while the reconnect is in flight.
+        old = self.connections.pop(server_name, None)
+        if old is not None:
+            await old.close_transport()
+            self._stale_connections.append(old)
+
+        while self._reconnect_attempts.get(server_name, 0) < self.reconnect_max_attempts:
+            attempt = self._reconnect_attempts.get(server_name, 0) + 1
+            self._reconnect_attempts[server_name] = attempt
+
+            if attempt > 1 and self.reconnect_backoff_seconds > 0:
+                delay = self.reconnect_backoff_seconds * (2 ** (attempt - 2))
+                logger.info(
+                    f"Waiting {delay:.1f}s before MCP reconnect attempt "
+                    f"{attempt} for {server_name}"
+                )
+                await asyncio.sleep(delay)
+
+            logger.info(
+                f"Reconnecting to MCP server {server_name} "
+                f"(attempt {attempt}/{self.reconnect_max_attempts})"
+            )
+            try:
+                await asyncio.wait_for(
+                    self._connect_to_server(server_name, server_config),
+                    timeout=self.reconnect_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"MCP reconnect attempt {attempt} for {server_name} failed: {e}"
+                )
+                continue
+
+            self._reconnect_attempts[server_name] = 0
+            self.failed_servers.pop(server_name, None)
+            logger.info(f"Reconnected to MCP server: {server_name}")
+            return
+
+        reason = (
+            f"Reconnect abandoned after {self.reconnect_max_attempts} attempts"
+        )
+        self.failed_servers[server_name] = reason
+        logger.error(
+            f"MCP server {server_name}: {reason}. Its tools stay unavailable "
+            "until the agent is restarted."
+        )
+
     async def _discover_server_tools(self, server_name: str, session: ClientSession):
         """Discover and register tools from an MCP server"""
         try:
@@ -280,13 +501,13 @@ class MCPClientManager:
         tool = self.mcp_tools[tool_name]
         server_name = tool.server_name
         
-        if server_name not in self.connections:
-            raise ValueError(f"MCP server '{server_name}' not connected")
-        
-        connection = self.connections[server_name]
-        if not connection.is_connected():
+        # Fail fast on a server we already know is down: calling into a dead
+        # pipe would otherwise burn the full MCP_TOOL_TIMEOUT_SECONDS per call.
+        connection = self.connections.get(server_name)
+        if connection is None or not connection.is_connected():
+            self._schedule_reconnect(server_name)
             raise ValueError(f"MCP server '{server_name}' is not connected")
-        
+
         client_session = connection.client_session
         
         timeout = config.MCP_TOOL_TIMEOUT_SECONDS
@@ -339,6 +560,8 @@ class MCPClientManager:
                 return str(result)
                 
         except asyncio.TimeoutError:
+            # A slow or wedged tool is not proof of a dead transport, so the
+            # connection is deliberately left alone here.
             error_msg = (
                 f"MCP tool '{tool_name}' on server '{server_name}' did not "
                 f"return within {timeout:.0f}s and was cancelled. The tool may be "
@@ -347,6 +570,21 @@ class MCPClientManager:
             logger.error(error_msg)
             return error_msg
         except Exception as e:
+            if is_transport_error(e):
+                detail = str(e) or type(e).__name__
+                connection.mark_dead(detail)
+                self._schedule_reconnect(server_name)
+                error_msg = (
+                    f"MCP server '{server_name}' connection lost while executing "
+                    f"'{tool_name}': {detail}. Reconnecting in the background; "
+                    "retry this tool shortly."
+                )
+                logger.error(error_msg)
+                logger.debug(traceback.format_exc())
+                return error_msg
+
+            # An ordinary tool failure: the server is still alive, so the
+            # connection (and every other tool on it) must survive.
             error_msg = f"Error executing MCP tool {tool_name}: {e}"
             logger.error(error_msg)
             logger.debug(traceback.format_exc())
@@ -367,13 +605,26 @@ class MCPClientManager:
     async def cleanup(self):
         """Clean up all MCP connections"""
         logger.info("Cleaning up MCP connections...")
-        
-        for server_name, connection in self.connections.items():
+
+        # Stop any in-flight reconnect before tearing connections down.
+        pending = [t for t in self._reconnect_tasks.values() if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._reconnect_tasks.clear()
+        self._reconnect_attempts.clear()
+
+        # Connections retired by a reconnect still hold un-exited MCP contexts.
+        for connection in list(self.connections.values()) + self._stale_connections:
             try:
                 await connection.disconnect()
             except Exception as e:
-                logger.error(f"Error closing MCP server {server_name}: {e}")
-        
+                logger.error(
+                    f"Error closing MCP server {connection.server_name}: {e}"
+                )
+
+        self._stale_connections.clear()
         self.connections.clear()
         self.mcp_tools.clear()
         self.server_tools.clear()
@@ -382,12 +633,25 @@ class MCPClientManager:
         logger.info("MCP cleanup complete")
     
     def get_server_status(self) -> Dict[str, Any]:
-        """Get status information about MCP servers"""
+        """Get status information about MCP servers.
+
+        `connected_servers` reflects real transport health, so a server whose
+        subprocess died drops out of it instead of being reported as healthy.
+        """
         return {
             "configured_servers": list(self.servers.keys()),
             "connected_servers": [
                 name for name, conn in self.connections.items()
                 if conn.is_connected()
+            ],
+            "disconnected_servers": {
+                name: (conn.failure_reason or "connection lost")
+                for name, conn in self.connections.items()
+                if not conn.is_connected()
+            },
+            "reconnecting_servers": [
+                name for name, task in self._reconnect_tasks.items()
+                if not task.done()
             ],
             "failed_servers": self.failed_servers,
             "total_mcp_tools": len(self.mcp_tools),

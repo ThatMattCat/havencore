@@ -59,6 +59,7 @@ async def test_resume_denied_finalizes_and_advances(monkeypatch):
     }
     monkeypatch.setattr(autonomy_db, "get_run", AsyncMock(return_value=run_row))
     monkeypatch.setattr(autonomy_db, "get_item", AsyncMock(return_value=item_row))
+    monkeypatch.setattr(autonomy_db, "claim_confirmation", AsyncMock(return_value=True))
     fin = AsyncMock()
     monkeypatch.setattr(autonomy_db, "finalize_run", fin)
     monkeypatch.setattr(engine, "_advance", AsyncMock())
@@ -112,6 +113,7 @@ async def test_resume_approved_executes_and_finalizes(monkeypatch):
     }
     monkeypatch.setattr(autonomy_db, "get_run", AsyncMock(return_value=run_row))
     monkeypatch.setattr(autonomy_db, "get_item", AsyncMock(return_value=item_row))
+    monkeypatch.setattr(autonomy_db, "claim_confirmation", AsyncMock(return_value=True))
     fin = AsyncMock()
     monkeypatch.setattr(autonomy_db, "finalize_run", fin)
     monkeypatch.setattr(engine, "_advance", AsyncMock())
@@ -140,3 +142,40 @@ async def test_timeout_sweep_claims_expired(monkeypatch):
     monkeypatch.setattr(autonomy_db, "claim_confirmation_timeout", claim)
     await engine._sweep_confirmation_timeouts(datetime.now(timezone.utc))
     assert claim.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_resume_losing_the_claim_executes_nothing(monkeypatch):
+    """Second tap of Approve (or an approve racing the timeout sweep).
+
+    The status read is advisory — it still says 'awaiting_confirmation' here.
+    Only the atomic claim decides, and losing it must skip every actuator call.
+    """
+    engine, mcp = _make_engine()
+    from selene_agent.autonomy import db as autonomy_db
+
+    run_row = {
+        "id": "r9",
+        "status": "awaiting_confirmation",
+        "agenda_item_id": "i9",
+        "confirmation_token": "tok",
+        "action_audit": [
+            {"tool": "ha_control_light", "args": {"state": "on"}, "outcome": "pending"}
+        ],
+    }
+    item_row = {
+        "id": "i9", "kind": "act",
+        "config": {"action_allow_list": ["ha_control_light"]},
+        "schedule_cron": None,
+    }
+    monkeypatch.setattr(autonomy_db, "get_run", AsyncMock(return_value=run_row))
+    monkeypatch.setattr(autonomy_db, "get_item", AsyncMock(return_value=item_row))
+    monkeypatch.setattr(autonomy_db, "claim_confirmation", AsyncMock(return_value=False))
+    fin = AsyncMock()
+    monkeypatch.setattr(autonomy_db, "finalize_run", fin)
+    monkeypatch.setattr(engine, "_advance", AsyncMock())
+
+    result = await engine.resume_confirmed_run("r9", approved=True, token="tok")
+    assert result["status"] == "invalid_state"
+    mcp.execute_tool.assert_not_awaited()
+    fin.assert_not_awaited()

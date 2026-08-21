@@ -11,6 +11,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from typing import Optional
 
 import asyncpg
 import cv2
@@ -19,6 +20,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Path as PathParam, Upl
 
 import config
 import ha_snapshot
+import pipeline
 from db import db
 from embedder import embedder
 from face_qdrant import vector_store
@@ -34,7 +36,6 @@ from models import (
     PersonOut,
     PersonUpdate,
 )
-from quality import score_face
 
 
 logger = logging.getLogger("face-recognition.api.people")
@@ -45,32 +46,17 @@ router = APIRouter(prefix="/api/people", tags=["people"])
 ENROLLMENT_DIR = Path(config.SNAPSHOT_DIR) / "enrollments"
 
 
-def _select_best_face_in_burst(frames: list[np.ndarray]):
-    """Single-pass best-quality face across a burst.
+def _select_best_face_in_burst(frames: list[np.ndarray], fov_type: Optional[str] = None):
+    """FOV-aware best-quality face across a burst.
 
-    Detect + score every face in every frame, drop anything below
-    QUALITY_FLOOR, return the single highest-quality face. Synchronous so
-    the caller can offload the whole thing to a thread (insightface inference
-    is CPU/CUDA-blocking from asyncio's perspective).
-
-    Mirrors `pipeline._detect_and_score_sync` but for the simpler enrollment
-    case — we want one face, not the top-K mean used in detection.
+    Thin adapter over `pipeline.select_best_face` (the one place the
+    tile-or-not decision lives) that keeps this module's
+    `(face, quality, frame_idx, faces_kept)` return shape. Synchronous so the
+    caller can offload the whole thing to a thread (insightface inference is
+    CPU/CUDA-blocking from asyncio's perspective).
     """
-    best_face = None
-    best_quality = -1.0
-    best_frame_idx = -1
-    faces_kept = 0
-    for idx, frame in enumerate(frames):
-        for face in embedder.detect_and_embed(frame):
-            q = score_face(frame, face)
-            if q < config.QUALITY_FLOOR:
-                continue
-            faces_kept += 1
-            if q > best_quality:
-                best_quality = q
-                best_face = face
-                best_frame_idx = idx
-    return best_face, best_quality, best_frame_idx, faces_kept
+    best = pipeline.select_best_face(frames, fov_type)
+    return best.face, best.quality, best.frame_idx, best.faces_kept
 
 
 async def _persist_enrollment(
@@ -266,8 +252,13 @@ async def enroll_from_camera(
     if not frames:
         raise HTTPException(status_code=502, detail="no frames captured from camera")
 
+    # Burst frames come straight off the camera, so a panoramic camera's
+    # frames need the same tiling the live pipeline applies — a single
+    # full-frame pass downscales a 7680x2160 panorama ~6x at DET_SIZE and
+    # finds nothing (issue #55).
+    fov_type = await pipeline.resolve_fov_type(payload.camera)
     best_face, best_quality, best_frame_idx, faces_kept = await asyncio.to_thread(
-        _select_best_face_in_burst, frames
+        _select_best_face_in_burst, frames, fov_type
     )
 
     if best_face is None:
@@ -308,16 +299,31 @@ async def delete_person(
     delete the person row, then unlink files, then drop Qdrant points by
     payload filter. Detection rows survive with person_id NULL'd
     (ON DELETE SET NULL on face_detections.person_id).
+
+    face_images.path is stored relative to SNAPSHOT_DIR, so every path has to
+    go through _resolve_face_image_path before it is unlinked — resolving
+    against the process CWD silently removes nothing and leaves the person's
+    biometric JPEGs on disk. images_removed counts real unlinks, not rows.
     """
     images = await db.delete_person(person_id)
     if images is None:
         raise HTTPException(status_code=404, detail="person not found")
 
+    images_removed = 0
     for img in images:
+        abs_path = _resolve_face_image_path(img["path"])
         try:
-            Path(img["path"]).unlink(missing_ok=True)
+            if abs_path.exists():
+                abs_path.unlink()
+                images_removed += 1
         except Exception as e:
-            logger.warning("Failed to unlink %s during person delete: %s", img["path"], e)
+            logger.warning("Failed to unlink %s during person delete: %s", abs_path, e)
+
+    if images_removed != len(images):
+        logger.warning(
+            "Person %s delete: %d/%d face image files removed from disk",
+            person_id, images_removed, len(images),
+        )
 
     try:
         vector_store.delete_by_person(str(person_id))
@@ -328,7 +334,7 @@ async def delete_person(
 
     return PersonDeleteResult(
         id=person_id,
-        images_removed=len(images),
+        images_removed=images_removed,
         qdrant_points_removed=len(images),
     )
 

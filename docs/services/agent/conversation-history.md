@@ -38,11 +38,19 @@ Because the id is externally stable, `get_conversation_history(session_id)` can 
 Assistant message dicts inside `conversation_data` may carry a
 `reasoning_content` field alongside the standard `role` / `content` /
 `tool_calls` keys. This is the chain-of-thought captured from
-reasoning-capable models (e.g. GLM-4.5-Air via vLLM's `--reasoning-parser
-glm45`); the chat template reads it to render `<think>…</think>` for
+reasoning-capable models (e.g. Qwen3.8 via vLLM's `--reasoning-parser
+qwen3`); the chat template reads it to render `<think>…</think>` for
 in-turn iterations and auto-zeroes it for completed prior turns. Treat it
 as opaque on the SQL side — see
 [vLLM service docs](../vllm/README.md) for the lifecycle.
+
+Stored histories can also carry shapes the current chat template /
+request schema rejects: mid-conversation `system` messages (retrieval
+blocks, summarize-reset recaps, MCP-failure notes) and explicit
+`"tool_calls": null` on assistant messages. These are stored as-is;
+`_messages_for_llm` normalizes them at send time (system-past-index-0
+re-tagged as `user`, None-valued keys stripped), so replayed cold-resume
+histories need no migration.
 
 The conversation histories are stored in the `conversation_histories` table with the following structure:
 
@@ -141,7 +149,7 @@ Deleting a flush only affects history. If the same session is currently live in 
 
 `/history`'s detail panel renders a stored flush's `messages`. When `metadata.rolling_summary` is set (any of the summarize-and-reset paths), the panel defaults to a **summary view** — a single rolling-summary card representing what the LLM saw on subsequent turns — and offers a "Show raw transcript" toggle to reveal the pre-reset message buffer for debugging. When `rolling_summary` is null (plain `lru_eviction` or `shutdown_flush`), no toggle appears and the panel renders the buffer directly as before.
 
-When an assistant message has `reasoning_content` and lives **after** the buffer's most recent `user` message, the raw view renders it as a collapsible "Reasoning" card above the assistant's content. This mirrors GLM-4.5-Air's `chat_template.jinja`: those are the assistant messages the model will see real `<think>…</think>` blocks for on the next turn, so the UI surfaces what the AI sees. Reasoning on assistants older than the last user message is hidden because the template auto-zeroes those to empty `<think></think>` regardless of what's stored. The same rule drives the resume → `/chat` path: `mapResumedMessages` synthesizes a `reasoning` event onto each in-window assistant message so `/chat`'s existing reasoning card kicks in.
+When an assistant message has `reasoning_content` and lives **after** the buffer's most recent `user` message, the raw view renders it as a collapsible "Reasoning" card above the assistant's content. This mirrors the chat model's template behavior: those are the assistant messages the model will see real `<think>…</think>` blocks for on the next turn, so the UI surfaces what the AI sees. Reasoning on assistants older than the last user message is hidden because the template auto-zeroes those to empty `<think></think>` regardless of what's stored. The same rule drives the resume → `/chat` path: `mapResumedMessages` synthesizes a `reasoning` event onto each in-window assistant message so `/chat`'s existing reasoning card kicks in.
 
 ## Implementation Details
 

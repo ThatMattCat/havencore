@@ -183,9 +183,13 @@ services:
       - ./shared:/app/shared:ro
     restart: unless-stopped
   vllm:
-    # Pinned to vLLM v0.19.0 — last version verified working on NVIDIA driver 580.x.
-    # Floating `:latest` has shipped builds requiring driver newer than our host.
-    image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
+    # Pinned to the `qwen38-cu129` special-release image (pushed 2026-08-12) —
+    # the dedicated vLLM build with Qwen3.8 hybrid-attention support. The cu129
+    # (CUDA 12.9) variant is deliberate: our host driver is 580.x, and the
+    # default/cu130 tags have shipped builds requiring a newer driver.
+    # Rollback digest (vLLM v0.19.0, known-good with GLM-4.5-Air):
+    #   vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
+    image: vllm/vllm-openai@sha256:3879c346b0866fe8e1894243bb4fcdfc38f8dfcdb8a710a3b1d456ce4e799999
     runtime: nvidia
     # profiles: ["vllm"]
     env_file:
@@ -196,35 +200,42 @@ services:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./services/vllm/app:/app
     ipc: host
-    # command: --model TechxGenus/Mistral-Large-Instruct-2411-AWQ --served-model-name gpt-3.5-turbo -tp 4 --max-model-len 16384 --port 8000 --enable-auto-tool-choice --tool-call-parser mistral --chat-template /app/mistral-tool-chat-template.jinja --gpu-memory-utilization .74
-      # --model Qwen/Qwen2.5-72B-Instruct-AWQ
-      # --served-model-name gpt-3.5-turbo
-      # --quantization awq_marlin
-      # --max-num-seqs 1
-      # --enforce-eager
-      # -tp 2
-      # --max-model-len 16384
-      # --port 8000
-      # --enable-auto-tool-choice
-      # --tool-call-parser hermes
-      # --gpu-memory-utilization .95
+    # Rollback command (pairs with the v0.19.0 rollback digest above):
+    #   --model QuantTrio/GLM-4.5-Air-AWQ-FP16Mix --served-model-name gpt-3.5-turbo
+    #   --tensor-parallel-size 4 --enable-expert-parallel --max-model-len 46080
+    #   --max-num-seqs 2 --gpu-memory-utilization 0.79 --tool-call-parser glm45
+    #   --reasoning-parser glm45 --enable-auto-tool-choice --trust-remote-code
+    #   --host 0.0.0.0 --port 8000
+    #
+    # Qwen3.8-27B notes:
+    # - Unquantized BF16 (~53 GB weights, ~13.3 GB/GPU at tp=4). FP8 checkpoint
+    #   exists but 3090s (SM86) have no native FP8; BF16 is the max-quality fit.
+    # - Dense hybrid-attention model (48/64 layers Gated DeltaNet linear attn,
+    #   16 full-attn @ 4 KV heads) — NOT MoE, so no --enable-expert-parallel.
+    #   KV cost is only ~64 KB/token, so the full native 262144 context fits:
+    #   ~16.8 GB KV for one max-length sequence (~4.2 GB/GPU at tp=4) on top of
+    #   ~13.3 GB/GPU weights, inside the 0.80 budget. Two sequences share the
+    #   pool — both at full context won't fit, which is fine for this household.
+    # - --language-model-only skips the vision tower (vllm-vision covers images).
+    # - Built-in MTP draft head available later via --speculative-config.
     command: >
-      --model QuantTrio/GLM-4.5-Air-AWQ-FP16Mix
+      --model Qwen/Qwen3.8-27B
       --served-model-name gpt-3.5-turbo
       --tensor-parallel-size 4
-      --enable-expert-parallel
-      --max-model-len 46080
+      --language-model-only
+      --max-model-len 262144
       --max-num-seqs 2
-      --gpu-memory-utilization 0.79
-      --tool-call-parser glm45
-      --reasoning-parser glm45
+      --gpu-memory-utilization 0.80
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
       --enable-auto-tool-choice
-      --trust-remote-code
       --host 0.0.0.0
       --port 8000
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      # /health works with or without --api-key auth, so re-enabling the
+      # flag later won't break the healthcheck (/v1/models would 401).
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 5s
       retries: 5

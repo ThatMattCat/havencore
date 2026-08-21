@@ -152,10 +152,16 @@ async def _maybe_contribute_embedding(
             )
             return False
         # Best-effort cleanup; orphans get caught by step-8 reconcile pass.
+        # face_images.path is relative to SNAPSHOT_DIR (pre-normalization rows
+        # may still be absolute), so resolve before unlinking — otherwise the
+        # unlink hits the process CWD and silently keeps the evicted JPEG.
+        evicted_path = Path(evicted["path"])
+        if not evicted_path.is_absolute():
+            evicted_path = SNAPSHOT_DIR / evicted_path
         try:
-            Path(evicted["path"]).unlink(missing_ok=True)
+            evicted_path.unlink(missing_ok=True)
         except Exception as e:
-            logger.warning("Failed to unlink evicted file %s: %s", evicted["path"], e)
+            logger.warning("Failed to unlink evicted file %s: %s", evicted_path, e)
         try:
             vector_store.delete_point(str(evicted["qdrant_point_id"]))
         except Exception as e:
@@ -307,6 +313,106 @@ def _detect_panoramic(frame: np.ndarray) -> list:
     return keep
 
 
+FOV_STANDARD = "standard"
+FOV_PANORAMIC = "panoramic_dual_lens"
+
+
+async def resolve_fov_type(camera: Optional[str]) -> str:
+    """Resolve a camera entity_id to its `cameras.fov_type`.
+
+    Every re-embed path (confirm, rescan, enroll-from-camera) has to make the
+    same tile-or-not decision the live pipeline made, and they all only have
+    the camera entity_id to go on.
+
+    Falls back to `'standard'` whenever the camera can't be resolved —
+    unregistered entity, a detection whose camera row was deleted, a NULL
+    camera, or a transient DB failure. That mirrors `process_event`'s own
+    fallback, so a re-embed reproduces the detection mode that produced the
+    row in the first place instead of silently switching strategies. DB
+    errors are swallowed rather than raised: a failed camera lookup must not
+    turn an operator's confirm into a 500.
+    """
+    if not camera:
+        return FOV_STANDARD
+    try:
+        row = await db.get_camera(camera)
+    except Exception as e:
+        logger.warning(
+            "fov lookup failed for camera=%s (%s); assuming %s",
+            camera, e, FOV_STANDARD,
+        )
+        return FOV_STANDARD
+    return (row or {}).get("fov_type") or FOV_STANDARD
+
+
+def detect_faces_for_fov(frame: np.ndarray, fov_type: Optional[str]) -> list:
+    """FOV-aware single-frame detection.
+
+    Panoramic frames are tiled (`_detect_panoramic`, bboxes translated back
+    to full-frame coords and seam-deduped); everything else takes the plain
+    single pass. The one place the tile-or-not branch lives.
+    """
+    if fov_type == FOV_PANORAMIC:
+        return _detect_panoramic(frame)
+    return list(embedder.detect_and_embed(frame))
+
+
+@dataclass
+class BestFace:
+    """Result of a FOV-aware best-face search over one or more frames.
+
+    `face is None` means nothing cleared QUALITY_FLOOR; `quality` stays -1.0
+    and `frame_idx` -1 in that case (the sentinels every existing call site
+    already expects).
+    """
+    face: Optional[object]
+    quality: float
+    frame_idx: int
+    faces_detected: int
+    faces_kept: int
+
+
+def select_best_face(
+    frames: list[np.ndarray], fov_type: Optional[str]
+) -> BestFace:
+    """Highest-quality face across `frames`, using FOV-aware detection.
+
+    Shared by the confirm, rescan/rebuild and enroll-from-camera re-embed
+    paths — a burst is just `frames` with more than one entry, and a single
+    saved snapshot is a one-element list. Quality scoring runs against the
+    full frame regardless of tiling, exactly as `_detect_and_score_sync`
+    does, so `quality.score_face`'s area weighting keeps the same
+    denominator the live pipeline used.
+
+    Synchronous so callers can offload it with `asyncio.to_thread`
+    (insightface inference is CPU/CUDA-blocking).
+    """
+    best_face = None
+    best_quality = -1.0
+    best_frame_idx = -1
+    faces_detected = 0
+    faces_kept = 0
+    for idx, frame in enumerate(frames):
+        faces = detect_faces_for_fov(frame, fov_type)
+        faces_detected += len(faces)
+        for face in faces:
+            q = score_face(frame, face)
+            if q < config.QUALITY_FLOOR:
+                continue
+            faces_kept += 1
+            if q > best_quality:
+                best_quality = q
+                best_face = face
+                best_frame_idx = idx
+    return BestFace(
+        face=best_face,
+        quality=best_quality,
+        frame_idx=best_frame_idx,
+        faces_detected=faces_detected,
+        faces_kept=faces_kept,
+    )
+
+
 def _detect_and_score_sync(
     frames: list[np.ndarray], fov_type: str
 ) -> list[_Candidate]:
@@ -324,10 +430,7 @@ def _detect_and_score_sync(
     """
     candidates: list[_Candidate] = []
     for idx, frame in enumerate(frames):
-        if fov_type == "panoramic_dual_lens":
-            faces = _detect_panoramic(frame)
-        else:
-            faces = embedder.detect_and_embed(frame)
+        faces = detect_faces_for_fov(frame, fov_type)
         for face in faces:
             q = score_face(frame, face)
             if q >= config.QUALITY_FLOOR:
