@@ -14,12 +14,17 @@ location are configured for exactly this shape.
 Auth: every mount requires its own static bearer token, read at startup
 from the env var named in ``MODULES`` (e.g. ``MCP_TOKEN_HOMEASSISTANT``).
 A missing token fails that module's mount — nothing is ever served
-unauthenticated. Wiring: ``streamable_http_app(token_verifier=...)``
-installs the SDK's ``RequireAuthMiddleware`` (401 when unauthenticated),
-and because that call adds the credential-parsing middleware only when a
-full OAuth ``AuthSettings`` is supplied, each sub-app is additionally
-wrapped in Starlette's ``AuthenticationMiddleware`` with the SDK's
-``BearerAuthBackend`` so ``scope["user"]`` is actually populated.
+unauthenticated. Wiring, per module shape: legacy shim modules pass
+``streamable_http_app(token_verifier=...)``, which installs the SDK's
+``RequireAuthMiddleware`` on the route (401 when unauthenticated);
+converted ``MCPServer`` modules can't take a bare verifier there (only
+full OAuth ``AuthSettings``), so the host wraps their sub-app in
+``RequireAuthMiddleware`` itself. Either way that middleware only checks
+``scope["user"]``, and because credential parsing is added by the SDK
+only when OAuth ``AuthSettings`` are supplied, every sub-app is
+additionally wrapped in Starlette's ``AuthenticationMiddleware`` with
+the SDK's ``BearerAuthBackend`` so ``scope["user"]`` is actually
+populated.
 
 Module init runs concurrently in the lifespan with per-module
 try/except: a module that fails to init (or lacks its token) is logged
@@ -46,7 +51,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
-from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
+from mcp.server import MCPServer
+from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.auth.provider import AccessToken
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -67,10 +73,20 @@ logger = custom_logger.get_logger('loki')
 
 @dataclass
 class LoadedModule:
-    """A module instance that survived init and is ready to mount."""
+    """A module instance that survived init and is ready to mount.
+
+    Two shapes, distinguished by ``mcp``:
+
+    - legacy shim modules: ``instance`` owns ``.server`` — the low-level mcp
+      ``Server`` (via ``modules/_mcp_compat.py``); ``mcp`` is None.
+    - converted modules (mcp 2.0 decorator API): ``mcp`` is the module's
+      configured ``MCPServer`` (``instance`` still carries the module object
+      for symmetry/cleanup).
+    """
     name: str
-    instance: Any  # owns ``.server`` — the low-level mcp Server
+    instance: Any
     cleanup: Optional[Callable[[], Awaitable[None]]] = None
+    mcp: Optional[MCPServer] = None
 
 
 async def _load_general_tools() -> LoadedModule:
@@ -139,7 +155,7 @@ async def _load_vision() -> LoadedModule:
 async def _load_reminder() -> LoadedModule:
     from selene_agent.modules.mcp_reminder_tools.mcp_server import ReminderToolsServer
     inst = await asyncio.to_thread(ReminderToolsServer)
-    return LoadedModule("reminder", inst)
+    return LoadedModule("reminder", inst, mcp=inst.mcp)
 
 
 async def _load_device_action() -> LoadedModule:
@@ -285,23 +301,44 @@ async def _lifespan(app: Starlette):
                 # streamable_http_path="/" because each sub-app is mounted at
                 # its full /mcp/<name> prefix. Stateful + SSE defaults, spelled
                 # out because the client side depends on them.
-                sub_app = loaded.instance.server.streamable_http_app(
-                    streamable_http_path="/",
-                    json_response=False,
-                    stateless_http=False,
-                    transport_security=security,
-                    token_verifier=verifier,
-                )
+                if loaded.mcp is not None:
+                    # Converted module (MCPServer decorator API). Its
+                    # streamable_http_app() can only thread a token verifier
+                    # through when full OAuth AuthSettings are configured, so
+                    # for our static-token setup the host applies the same two
+                    # SDK middlewares the low-level path gets: the sub-app is
+                    # wrapped in RequireAuthMiddleware here (401 when
+                    # unauthenticated), and both shapes get BearerAuthBackend
+                    # below so scope["user"] is populated.
+                    sub_app = loaded.mcp.streamable_http_app(
+                        streamable_http_path="/",
+                        json_response=False,
+                        stateless_http=False,
+                        transport_security=security,
+                    )
+                    session_manager = loaded.mcp.session_manager
+                    guarded = RequireAuthMiddleware(sub_app, required_scopes=[])
+                else:
+                    # Legacy shim module: the low-level streamable_http_app
+                    # accepts the verifier directly and installs
+                    # RequireAuthMiddleware on its route itself.
+                    sub_app = loaded.instance.server.streamable_http_app(
+                        streamable_http_path="/",
+                        json_response=False,
+                        stateless_http=False,
+                        transport_security=security,
+                        token_verifier=verifier,
+                    )
+                    session_manager = loaded.instance.server.session_manager
+                    guarded = sub_app
                 # Mounted sub-apps never run their own lifespan; run the
                 # session manager here (must happen on this task — its anyio
                 # cancel scope binds to the entering task).
-                await stack.enter_async_context(
-                    loaded.instance.server.session_manager.run()
-                )
+                await stack.enter_async_context(session_manager.run())
                 if loaded.cleanup is not None:
                     stack.push_async_callback(loaded.cleanup)
                 wrapped = AuthenticationMiddleware(
-                    sub_app, backend=BearerAuthBackend(verifier)
+                    guarded, backend=BearerAuthBackend(verifier)
                 )
                 path = f"/mcp/{name}"
                 app.router.routes.append(Mount(path, app=wrapped))
