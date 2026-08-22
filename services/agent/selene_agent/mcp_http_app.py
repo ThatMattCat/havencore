@@ -98,7 +98,7 @@ async def _load_general_tools() -> LoadedModule:
 async def _load_qdrant() -> LoadedModule:
     from selene_agent.modules.mcp_qdrant_tools.qdrant_mcp_server import QdrantMCPServer
     inst = await asyncio.to_thread(QdrantMCPServer)  # network in __init__
-    return LoadedModule("mcp_server_qdrant", inst)
+    return LoadedModule("mcp_server_qdrant", inst, mcp=inst.mcp)
 
 
 async def _load_homeassistant() -> LoadedModule:

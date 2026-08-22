@@ -1,27 +1,33 @@
 """
 Qdrant MCP Server - A simple MCP server for vector database operations
-Run with: python -m qdrant_mcp_server
+Run with: python -m selene_agent.modules.mcp_qdrant_tools
+
+MCP surface is the mcp 2.0 ``MCPServer`` decorator API: the tools are typed
+functions registered in ``QdrantMCPServer._build_mcp`` (see
+``mcp_reminder_tools/mcp_server.py`` for the pattern). The Qdrant/embeddings
+client layer and the module-level constants (``QDRANT_HOST``, ``QDRANT_PORT``,
+``COLLECTION_NAME`` — imported by l4_context / retrieval / api.memory /
+memory_review) are unchanged.
 """
 
 import os
 import json
 import uuid
 import asyncio
-import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Any
+from typing import Annotated, Any, Awaitable, Callable, Dict, List
 
 import requests
+from pydantic import Field
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, DatetimeRange,
     Filter, FieldCondition, MatchValue, PayloadSchemaType
 )
 
-from selene_agent.modules._mcp_compat import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import MCPServer
 
+from selene_agent.modules._mcp_params import NULL_OK
 from selene_agent.utils.logger import get_logger
 
 logger = get_logger('loki')
@@ -48,10 +54,9 @@ class QdrantMCPServer:
         
         # Initialize collection if it doesn't exist
         self._init_collection()
-        
+
         # Create MCP server
-        self.server = Server("qdrant-server")
-        self._setup_handlers()
+        self.mcp = self._build_mcp()
     
     def _init_collection(self):
         """Create collection if it doesn't exist"""
@@ -149,113 +154,103 @@ class QdrantMCPServer:
         except Exception as e:
             logger.warning(f"_record_accesses failed (non-fatal): {e}")
 
-    def _setup_handlers(self):
-        """Set up MCP server handlers"""
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            """List available tools"""
-            return [
-                Tool(
-                    name="create_memory",
-                    description="Store information in the vector database for future retrieval",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "text": {
-                                "type": "string",
-                                "description": "The content to store in the database"
-                            },
-                            "importance": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 5,
-                                "description": "Importance level (1=low, 5=critical)",
-                                "default": 3
-                            },
-                            "tags": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional tags for categorization",
-                                "default": []
-                            },
-                            "expires_in_days": {
-                                "type": "integer",
-                                "description": "Optional expiry time in days"
-                            }
-                        },
-                        "required": ["text"]
-                    }
-                ),
-                Tool(
-                    name="search_memories",
-                    description="Search information stored in the vector database using semantic similarity",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query to find relevant information"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 20,
-                                "description": "Maximum number of results to return",
-                                "default": 5
-                            },
-                            "days_back": {
-                                "type": "integer",
-                                "description": "Optional: only search data from the last N days"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                ),
-                Tool(
-                    name="delete_memory",
-                    description=(
-                        "Delete a stored memory by its id. Use this when the user asks "
-                        "you to forget, delete, remove, or correct a stored fact. First "
-                        "call `search_memories` to find the matching entry and read its "
-                        "`id`; then call this tool with that id. Deletion is permanent."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "memory_id": {
-                                "type": "string",
-                                "description": "The id of the memory to delete (from search_memories results)."
-                            }
-                        },
-                        "required": ["memory_id"]
-                    }
-                )
-            ]
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
-            """Handle tool calls"""
-            try:
-                if name == "create_memory":
-                    result = await self._create_memory(arguments)
-                elif name == "search_memories":
-                    result = await self._search_memories(arguments)
-                elif name == "delete_memory":
-                    result = await self._delete_memory(arguments)
-                else:
-                    result = {"error": f"Unknown tool: {name}"}
-                
-                return [TextContent(
-                    type="text",
-                    text=json.dumps(result, indent=2)
-                )]
-            except Exception as e:
-                logger.error(f"Error calling tool {name}: {e}")
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({"error": str(e)}, indent=2)
-                )]
+    def _build_mcp(self) -> MCPServer:
+        """Register the decorated tool surface.
+
+        structured_output=False on every tool: results stay a single
+        TextContent JSON string, byte-identical to the pre-MCPServer wire
+        format (no outputSchema in tools/list, no structuredContent).
+
+        Note the metadata order on range-constrained optionals: ``Field(ge=
+        ..., le=...)`` must come BEFORE ``NULL_OK``, or pydantic can no longer
+        map the constraints onto the core int schema and emits literal
+        ``"ge"``/``"le"`` keys instead of ``"minimum"``/``"maximum"``.
+        """
+        mcp = MCPServer("qdrant-server", version="1.0.0")
+
+        @mcp.tool(
+            name="create_memory",
+            description="Store information in the vector database for future retrieval",
+            structured_output=False,
+        )
+        async def create_memory(
+            text: Annotated[str, Field(description="The content to store in the database")],
+            importance: Annotated[int, Field(
+                description="Importance level (1=low, 5=critical)", ge=1, le=5,
+            ), NULL_OK] = 3,
+            tags: Annotated[list[str], NULL_OK, Field(
+                description="Optional tags for categorization",
+            )] = [],
+            expires_in_days: Annotated[int, NULL_OK, Field(
+                description="Optional expiry time in days",
+            )] = None,
+        ) -> str:
+            return await self._dispatch("create_memory", self._create_memory, {
+                "text": text,
+                "importance": importance,
+                "tags": tags,
+                "expires_in_days": expires_in_days,
+            })
+
+        @mcp.tool(
+            name="search_memories",
+            description="Search information stored in the vector database using semantic similarity",
+            structured_output=False,
+        )
+        async def search_memories(
+            query: Annotated[str, Field(description="Search query to find relevant information")],
+            limit: Annotated[int, Field(
+                description="Maximum number of results to return", ge=1, le=20,
+            ), NULL_OK] = 5,
+            days_back: Annotated[int, NULL_OK, Field(
+                description="Optional: only search data from the last N days",
+            )] = None,
+        ) -> str:
+            return await self._dispatch("search_memories", self._search_memories, {
+                "query": query,
+                "limit": limit,
+                "days_back": days_back,
+            })
+
+        @mcp.tool(
+            name="delete_memory",
+            description=(
+                "Delete a stored memory by its id. Use this when the user asks "
+                "you to forget, delete, remove, or correct a stored fact. First "
+                "call `search_memories` to find the matching entry and read its "
+                "`id`; then call this tool with that id. Deletion is permanent."
+            ),
+            structured_output=False,
+        )
+        async def delete_memory(
+            memory_id: Annotated[str, Field(
+                description="The id of the memory to delete (from search_memories results).",
+            )],
+        ) -> str:
+            return await self._dispatch("delete_memory", self._delete_memory, {
+                "memory_id": memory_id,
+            })
+
+        return mcp
+
+    async def _dispatch(
+        self,
+        name: str,
+        impl: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]],
+        args: Dict[str, Any],
+    ) -> str:
+        """Run one tool impl with the old call_tool handler's exact contract.
+
+        Indented-JSON text out; an unexpected exception becomes an
+        ``{"error": ...}`` payload in ordinary (non-``isError``) content, so
+        the agent-visible text stays identical to the hand-dispatch era.
+        """
+        try:
+            result = await impl(args)
+        except Exception as e:
+            logger.error(f"Error calling tool {name}: {e}")
+            result = {"error": str(e)}
+        return json.dumps(result, indent=2)
     
     async def _create_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Store data in the vector database"""
@@ -481,25 +476,17 @@ class QdrantMCPServer:
             return {"success": False, "error": str(e)}
 
 
-    async def run(self):
-        """Run the MCP server"""
-        options = self.server.create_initialization_options()
-        async with stdio_server() as (read_stream, write_stream):
-            await self.server.run(read_stream, write_stream, options, raise_exceptions=True)
-
-
-async def main():
-    """Main entry point"""
-    logger.info("Starting Qdrant MCP Server...")
-    server = QdrantMCPServer()
-    await server.run()
+def main():
+    """Stdio entry point (``python -m selene_agent.modules.mcp_qdrant_tools``)."""
+    logger.info("Starting Qdrant MCP Server (stdio)...")
+    QdrantMCPServer().mcp.run("stdio")
 
 
 if __name__ == "__main__":
     # Only run if executed directly, not when imported
     import sys
     try:
-        asyncio.run(main())
+        main()  # MCPServer.run("stdio") is synchronous (it owns the event loop)
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
         sys.exit(0)
