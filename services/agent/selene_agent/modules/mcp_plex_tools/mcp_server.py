@@ -3,18 +3,23 @@
 
 Exposes library search, recent/on-deck listings, client discovery, and
 cloud-relay playback on Plex clients (with optional HA wake+launch fallback).
+
+MCP surface is the mcp 2.0 ``MCPServer`` decorator API: the tools are typed
+functions registered in ``PlexMCPServer._build_mcp`` (see
+``mcp_reminder_tools/mcp_server.py`` for the pattern). The ``PlexAgent``
+client layer (blocking ``PlexServer`` behind thread offloads, MyPlex
+cloud-relay playback, HA wake+launch) and the synchronous ``initialize()``
+the HTTP host / stdio main call before serving are unchanged.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, Optional
 
-from mcp.server import NotificationOptions
-from selene_agent.modules._mcp_compat import Server
-from mcp.server.models import InitializationOptions
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool
-import mcp.types as types
+from pydantic import Field
 
+from mcp.server import MCPServer
+
+from selene_agent.modules._mcp_params import NULL_OK
 from selene_agent.utils import config as agent_config
 from selene_agent.utils.logger import get_logger
 
@@ -48,10 +53,9 @@ def _parse_ha_map(raw: str) -> Dict[str, Dict[str, Any]]:
 
 class PlexMCPServer:
     def __init__(self):
-        self.server: Server = Server("havencore-plex")
         self.agent: Optional[PlexAgent] = None
         self.init_error: Optional[str] = None
-        self._setup_handlers()
+        self.mcp = self._build_mcp()
 
     def initialize(self):
         if TEST_MODE:
@@ -75,85 +79,109 @@ class PlexMCPServer:
             self.init_error = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to init Plex agent: {e}")
 
-    def _setup_handlers(self):
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            return [
-                Tool(
-                    name="plex_search",
-                    description=(
-                        "Search the Plex library for movies, shows, episodes, or music. "
-                        "Returns up to `limit` items with rating_key (use with plex_play), title, year, type, and summary. "
-                        "Use this before plex_play to find the exact item to play."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search text — title, keywords, or partial match."},
-                            "media_type": {
-                                "type": "string",
-                                "description": "Optional filter: 'movie', 'show', 'episode', 'track', 'album', 'artist'.",
-                            },
-                            "limit": {"type": "integer", "description": "Max results (default 10).", "default": 10},
-                        },
-                        "required": ["query"],
-                    },
-                ),
-                Tool(
-                    name="plex_list_recent",
-                    description="List recently added media across Plex libraries. Use for 'what's new?' queries.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "media_type": {
-                                "type": "string",
-                                "description": "Optional: 'movie', 'show', or 'music'.",
-                            },
-                            "limit": {"type": "integer", "default": 10},
-                        },
-                    },
-                ),
-                Tool(
-                    name="plex_list_on_deck",
-                    description="List 'on deck' items — continue-watching queue across the Plex library.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "limit": {"type": "integer", "default": 10},
-                        },
-                    },
-                ),
-                Tool(
-                    name="plex_list_clients",
-                    description=(
-                        "List Plex player-capable devices the user can play media on. "
-                        "Use to discover valid `client_name` values for plex_play, or when the user asks where they can play something."
-                    ),
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-                Tool(
-                    name="plex_play",
-                    description=(
-                        "Play a specific Plex item on a specific client. "
-                        "Pass `rating_key` from a prior plex_search / plex_list_recent / plex_list_on_deck result, "
-                        "and `client_name` from plex_list_clients (or the user's spoken name — partial matches accepted). "
-                        "If a Home Assistant mapping is configured for the client, the TV is woken and the Plex app is launched first as needed."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "rating_key": {"type": "string", "description": "Plex rating_key of the item to play."},
-                            "client_name": {"type": "string", "description": "Plex client/device name — partial match is fine."},
-                        },
-                        "required": ["rating_key", "client_name"],
-                    },
-                ),
-            ]
+    def _build_mcp(self) -> MCPServer:
+        """Register the decorated tool surface.
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
-            result = await self._dispatch(name, arguments or {})
-            return [types.TextContent(type="text", text=json.dumps(result, default=str))]
+        structured_output=False on every tool: results stay a single
+        TextContent JSON string, byte-identical to the pre-MCPServer wire
+        format (no outputSchema in tools/list, no structuredContent).
+        """
+        mcp = MCPServer("havencore-plex", version="1.0.0")
+
+        @mcp.tool(
+            name="plex_search",
+            description=(
+                "Search the Plex library for movies, shows, episodes, or music. "
+                "Returns up to `limit` items with rating_key (use with plex_play), title, year, type, and summary. "
+                "Use this before plex_play to find the exact item to play."
+            ),
+            structured_output=False,
+        )
+        async def plex_search(
+            query: Annotated[str, Field(
+                description="Search text — title, keywords, or partial match.",
+            )],
+            media_type: Annotated[str, NULL_OK, Field(
+                description="Optional filter: 'movie', 'show', 'episode', 'track', 'album', 'artist'.",
+            )] = None,
+            limit: Annotated[int, NULL_OK, Field(
+                description="Max results (default 10).",
+            )] = 10,
+        ) -> str:
+            return await self._call("plex_search", {
+                "query": query,
+                "media_type": media_type,
+                "limit": limit,
+            })
+
+        @mcp.tool(
+            name="plex_list_recent",
+            description="List recently added media across Plex libraries. Use for 'what's new?' queries.",
+            structured_output=False,
+        )
+        async def plex_list_recent(
+            media_type: Annotated[str, NULL_OK, Field(
+                description="Optional: 'movie', 'show', or 'music'.",
+            )] = None,
+            limit: Annotated[int, NULL_OK] = 10,
+        ) -> str:
+            return await self._call("plex_list_recent", {
+                "media_type": media_type,
+                "limit": limit,
+            })
+
+        @mcp.tool(
+            name="plex_list_on_deck",
+            description="List 'on deck' items — continue-watching queue across the Plex library.",
+            structured_output=False,
+        )
+        async def plex_list_on_deck(
+            limit: Annotated[int, NULL_OK] = 10,
+        ) -> str:
+            return await self._call("plex_list_on_deck", {"limit": limit})
+
+        @mcp.tool(
+            name="plex_list_clients",
+            description=(
+                "List Plex player-capable devices the user can play media on. "
+                "Use to discover valid `client_name` values for plex_play, or when the user asks where they can play something."
+            ),
+            structured_output=False,
+        )
+        async def plex_list_clients() -> str:
+            return await self._call("plex_list_clients", {})
+
+        @mcp.tool(
+            name="plex_play",
+            description=(
+                "Play a specific Plex item on a specific client. "
+                "Pass `rating_key` from a prior plex_search / plex_list_recent / plex_list_on_deck result, "
+                "and `client_name` from plex_list_clients (or the user's spoken name — partial matches accepted). "
+                "If a Home Assistant mapping is configured for the client, the TV is woken and the Plex app is launched first as needed."
+            ),
+            structured_output=False,
+        )
+        async def plex_play(
+            rating_key: Annotated[str, Field(
+                description="Plex rating_key of the item to play.",
+            )],
+            client_name: Annotated[str, Field(
+                description="Plex client/device name — partial match is fine.",
+            )],
+        ) -> str:
+            return await self._call("plex_play", {
+                "rating_key": rating_key,
+                "client_name": client_name,
+            })
+
+        return mcp
+
+    async def _call(self, name: str, args: Dict[str, Any]) -> str:
+        """Run one tool with the old call_tool handler's exact contract:
+        the dispatched result (success or error dict) as one compact-JSON
+        text block in ordinary (non-``isError``) content."""
+        result = await self._dispatch(name, args)
+        return json.dumps(result, default=str)
 
     async def _dispatch(self, name: str, args: Dict[str, Any]) -> Any:
         if self.agent is None:
@@ -190,20 +218,12 @@ class PlexMCPServer:
         return {"error": f"unknown tool {name!r}"}
 
 
-async def main():
+def main():
+    """Stdio entry point (``python -m selene_agent.modules.mcp_plex_tools``)."""
     server_instance = PlexMCPServer()
     server_instance.initialize()
+    server_instance.mcp.run("stdio")
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server_instance.server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="havencore-plex",
-                server_version="0.1.0",
-                capabilities=server_instance.server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+
+if __name__ == "__main__":
+    main()

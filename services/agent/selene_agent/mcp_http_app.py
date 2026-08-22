@@ -118,7 +118,7 @@ async def _load_plex() -> LoadedModule:
     from selene_agent.modules.mcp_plex_tools.mcp_server import PlexMCPServer
     inst = await asyncio.to_thread(PlexMCPServer)
     await asyncio.to_thread(inst.initialize)  # synchronous Plex/HA client setup
-    return LoadedModule("plex", inst)
+    return LoadedModule("plex", inst, mcp=inst.mcp)
 
 
 async def _load_music_assistant() -> LoadedModule:
