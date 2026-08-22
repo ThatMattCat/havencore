@@ -45,6 +45,7 @@ testpaths = ["tests"]
 
 [project.scripts]
 agent = "selene_agent.selene_agent:main"
+mcp-tools = "selene_agent.mcp_http_app:main"
 
 [tool.setuptools.packages.find]
 include = ["selene_agent*"]

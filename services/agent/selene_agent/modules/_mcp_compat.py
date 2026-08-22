@@ -11,8 +11,9 @@ handler exception into ``CallToolResult(is_error=True)`` with
 over stdio.
 
 TEMPORARY bridge for the SDK migration: delete this module when the tool
-modules are rewritten onto the ``mcp.server.MCPServer`` decorator API in
-the Streamable HTTP phase. New code must not import it.
+modules are rewritten onto the ``mcp.server.MCPServer`` decorator API in a
+later migration phase (the Streamable HTTP host serves the modules through
+this same shim). New code must not import it.
 """
 from __future__ import annotations
 
