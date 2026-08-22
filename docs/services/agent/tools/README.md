@@ -1,6 +1,6 @@
 # Agent Tools (MCP Servers)
 
-The agent's tool-calling surface is split across several Model Context Protocol (MCP) servers, each packaged as a Python module under `services/agent/selene_agent/modules/`. Every MCP server runs as a subprocess of the agent, advertises its tools over stdio, and the agent's `mcp_client_manager` wires them into the LLM's function-calling interface via the `UnifiedTool` abstraction.
+The agent's tool-calling surface is split across several Model Context Protocol (MCP) servers, each packaged as a Python module under `services/agent/selene_agent/modules/`. Every MCP server is served by the `mcp-tools` compose service over MCP Streamable HTTP (one mount per module at `/mcp/<name>`, per-mount bearer tokens), and the agent's `mcp_client_manager` connects as an HTTP client and wires the tools into the LLM's function-calling interface via the `UnifiedTool` abstraction.
 
 ## MCP servers
 

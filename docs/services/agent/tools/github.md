@@ -12,7 +12,7 @@ directly.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_github_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_github_tools` (wraps `github_mcp_server.py`) |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-github-tools` |
 | Backend | Local git clone at `GITHUB_CLONE_PATH` + `api.github.com` REST |
 | Tool count | 7 |

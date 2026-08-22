@@ -11,7 +11,7 @@ Assistant push / speaker TTS.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_reminder_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_reminder_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-reminder-tools` |
 | Backend | Local autonomy REST API at `http://localhost:6002/api/autonomy/items` |
 | Storage | Reuses the existing `agenda_items` table (`kind='reminder'`) |

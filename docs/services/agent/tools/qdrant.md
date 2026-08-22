@@ -10,7 +10,7 @@ to give the agent a persistent memory layer.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_qdrant_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_qdrant_tools` (wraps `qdrant_mcp_server.py`) |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `qdrant-server` |
 | Vector backend | Qdrant, default collection `user_data`, cosine distance |
 | Embeddings backend | `embeddings` service (HuggingFace text-embeddings-inference) serving `BAAI/bge-large-en-v1.5` (1024-dim) |

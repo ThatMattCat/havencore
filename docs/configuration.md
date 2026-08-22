@@ -642,8 +642,11 @@ Notes:
 
 The agent's tool surface is delivered by MCP servers bundled in the agent
 image (Home Assistant, Plex, Music Assistant, general, Qdrant, MQTT,
-GitHub, face recognition, reminder). They are spawned as subprocesses
-and advertise tools over stdio — no separate container.
+GitHub, face recognition, reminder). They are served by the
+`mcp-tools` compose service over MCP Streamable HTTP — one mount per
+module at `/mcp/<name>`, each requiring its own bearer token from the
+matching `MCP_TOKEN_*` env var. The agent connects as an HTTP client;
+legacy stdio entries (`{"name", "command", "args"}`) are still understood.
 
 ```bash
 # Master switch for the MCP client manager
@@ -652,19 +655,11 @@ MCP_ENABLED=true
 # Whether MCP-registered tools win over any same-named legacy registration
 MCP_PREFER_OVER_LEGACY=true
 
-# JSON array of MCP server definitions to spawn
+# JSON array of MCP server definitions to connect to (see .env.example for
+# the full 11-entry list; token_env names the env var holding the bearer token)
 MCP_SERVERS='[
-  {"name": "homeassistant",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"],    "enabled": true},
-  {"name": "plex",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_plex_tools"],             "enabled": true},
-  {"name": "music_assistant",  "command": "python", "args": ["-m", "selene_agent.modules.mcp_music_assistant_tools"],  "enabled": true},
-  {"name": "general",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],          "enabled": true},
-  {"name": "qdrant",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],           "enabled": true},
-  {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true},
-  {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true},
-  {"name": "face",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_face_tools"],             "enabled": true},
-  {"name": "vision",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_vision_tools"],           "enabled": true},
-  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true},
-  {"name": "device_action",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_device_action_tools"],    "enabled": true}
+  {"name": "homeassistant", "url": "http://mcp-tools:6010/mcp/homeassistant", "token_env": "MCP_TOKEN_HOMEASSISTANT", "enabled": true},
+  {"name": "reminder",      "url": "http://mcp-tools:6010/mcp/reminder",      "token_env": "MCP_TOKEN_REMINDER",      "enabled": true}
 ]'
 ```
 

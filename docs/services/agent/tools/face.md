@@ -10,7 +10,7 @@ function-calling tools.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_face_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_face_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-face-tools` |
 | Backing service | [face-recognition (port 6006)](../../face-recognition/README.md) |
 | Tool count | 5 |

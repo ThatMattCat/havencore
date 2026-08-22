@@ -24,9 +24,9 @@ tools live here:
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_device_action_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_device_action_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-device-action-tools` |
-| Backend | None for `set_alarm` — handler returns a status string. Camera tools route through the in-process companion-upload registry (see [Camera tools](#camera-tools)); the MCP handlers for those are benign-error fallbacks since the upload future + blob store live in the agent process and are unreachable from this stdio subprocess. |
+| Backend | None for `set_alarm` — handler returns a status string. Camera tools route through the in-process companion-upload registry (see [Camera tools](#camera-tools)); the MCP handlers for those are benign-error fallbacks since the upload future + blob store live in the agent process and are unreachable from the mcp-tools server process. |
 | Tool count | 5 |
 | Wire-protocol allowlist | `selene_agent.orchestrator.DEVICE_ACTION_TOOLS` (a `frozenset`) |
 | Pre-execute allowlist | `selene_agent.orchestrator.PRE_EXECUTE_DEVICE_ACTION_TOOLS` — subset whose `device_action` frame ships *before* the tool body runs |
@@ -172,7 +172,7 @@ orchestrator (await returns)
 
 ### Why the upload future lives in the agent process, not this MCP module
 
-MCP servers run as stdio subprocesses spawned by `MCPClientManager`
+MCP servers run in the separate `mcp-tools` service, reached by `MCPClientManager` over Streamable HTTP
 (see [development.md](development.md)). A `dict[str, asyncio.Future]`
 inside this module would be unreachable from the agent's
 `/api/companion/upload` HTTP handler. The orchestrator therefore
@@ -198,7 +198,7 @@ the prompt it should send to the vision pipeline:
 Prompts are duplicated from
 `mcp_vision_tools.server.DEFAULT_IDENTIFY_PROMPT` /
 `DEFAULT_OCR_PROMPT` rather than imported because importing that
-module would side-effect a stdio MCP server. Keep the two copies in
+module would side-effect an MCP server process. Keep the two copies in
 sync if you tune either prompt.
 
 The chain calls `selene_agent.api.vision._call_vision()` directly —

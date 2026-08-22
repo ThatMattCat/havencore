@@ -414,7 +414,7 @@ server {
 ### MCP Server Development
 
 HavenCore's in-tree MCP servers are Python modules under
-`services/agent/selene_agent/modules/`. Each exposes a stdio server and is
+`services/agent/selene_agent/modules/`. Each exposes an MCP server (served over Streamable HTTP by the `mcp-tools` service) and is
 spawned by the agent's `MCPClientManager` per the `MCP_SERVERS` JSON in
 `.env`. See [Tool Development](services/agent/tools/development.md) for
 the full authoring guide and

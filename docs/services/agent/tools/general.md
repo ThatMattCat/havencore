@@ -11,7 +11,7 @@ that aren't specific to any other subsystem.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_general_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_general_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-general-tools` |
 | Tool count | Up to 7 (some tools are conditional on credentials) |
 

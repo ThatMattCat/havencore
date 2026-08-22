@@ -12,13 +12,13 @@ TV playback specifics live in [Media Control](../../../integrations/media-contro
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_homeassistant_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_homeassistant_tools` |
-| Transport | MCP stdio (spawned by the agent's `MCPClientManager`) |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; the agent's `MCPClientManager` connects as a client) |
 | Server name | `havencore-homeassistant` |
 | HA REST client | `aiohttp`-based `HomeAssistantClient`; also owns the short-lived WS client used for registry lookups |
 | Media controller | REST-only `ha_media_controller.MediaController` (transport / volume / power on any `media_player` entity) |
 | Tool count | 20 |
 
-The module registers a single MCP stdio server. On startup it constructs a
+The module registers a single MCP server. On startup it constructs a
 `HomeAssistantClient` (REST + on-demand WS) and a REST `MediaController`.
 If initialization fails the server still starts and every tool returns
 `"Home Assistant unavailable: <reason>"` so the agent can surface the error

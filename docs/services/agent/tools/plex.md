@@ -15,7 +15,7 @@ itself.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_plex_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_plex_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-plex` |
 | Plex client library | `plexapi` (sync — calls are offloaded via `asyncio.to_thread`) |
 | HA client | Minimal aiohttp REST (`_HAServiceClient` in `plex_client.py`) — used only for wake/launch |
@@ -83,7 +83,7 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   as the server.
 - **`plexapi` is synchronous.** All library / account calls are wrapped in
   `asyncio.to_thread` (`_do_search`, `_do_list_recent`, etc.) so the
-  stdio event loop stays responsive.
+  server's event loop stays responsive.
 - **`PlexServer` + `MyPlexAccount` are lazy-initialized and cached.** The
   first tool call pays the auth round-trip; subsequent calls reuse the
   connection.

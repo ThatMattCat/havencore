@@ -14,7 +14,7 @@ labor vs. Plex and HA) lives in
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_music_assistant_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_music_assistant_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-music-assistant` |
 | MA client library | `music-assistant-client` (async WebSocket — the same client the HA MA integration uses) |
 | HA client | None — MA talks directly to its own providers; transport control lives on `ha_control_media_player` |

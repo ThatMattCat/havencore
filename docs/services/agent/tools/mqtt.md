@@ -10,7 +10,7 @@ over REST and waits for the resulting image URLs on an MQTT topic.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_mqtt_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_mqtt_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-general-tools` (named before the module was split out) |
 | MQTT client | `paho-mqtt` with threaded loop |
 | Tool count | 1 (conditional on MQTT connectivity) |

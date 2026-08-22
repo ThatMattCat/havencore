@@ -4,14 +4,16 @@ This guide covers creating tools and integrations for HavenCore. Every agent too
 
 ## Overview
 
-All of the agent's tools are provided by MCP servers: separate processes that advertise their tools over stdio and are wired into the LLM's function-calling interface via the `UnifiedTool` abstraction. To add a tool, add (or copy) an in-tree MCP module — see [Adding an MCP tool to HavenCore (in-tree)](#adding-an-mcp-tool-to-havencore-in-tree) below.
+All of the agent's tools are provided by MCP servers: modules hosted by the `mcp-tools` service over MCP Streamable HTTP (each module still runs standalone over stdio for testing) and wired into the LLM's function-calling interface via the `UnifiedTool` abstraction. To add a tool, add (or copy) an in-tree MCP module — see [Adding an MCP tool to HavenCore (in-tree)](#adding-an-mcp-tool-to-havencore-in-tree) below.
 
 ## Adding an MCP tool to HavenCore (in-tree)
 
 The fastest path to a new tool is to copy one of the existing in-tree MCP
 modules under `services/agent/selene_agent/modules/` and register it in
-`.env`. The agent spawns each module as a subprocess at startup and discovers
-its tools over stdio — no agent code changes needed.
+`.env` plus the `mcp-tools` host app's module registry
+(`selene_agent/mcp_http_app.py`). The mcp-tools service mounts the module at
+`/mcp/<name>` and the agent discovers its tools over Streamable HTTP at
+startup — no agent code changes needed.
 
 Every in-tree module has the same three-file layout. The server file is named `mcp_server.py` by convention in the template modules, but it can have any name as long as `__main__.py` imports its `main()` — several in-tree modules use a different name (e.g. `face_mcp_server.py`, `github_mcp_server.py`, `qdrant_mcp_server.py`, `server.py`):
 
