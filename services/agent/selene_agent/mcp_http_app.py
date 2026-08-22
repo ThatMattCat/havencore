@@ -161,7 +161,7 @@ async def _load_reminder() -> LoadedModule:
 async def _load_device_action() -> LoadedModule:
     from selene_agent.modules.mcp_device_action_tools.mcp_server import DeviceActionToolsServer
     inst = await asyncio.to_thread(DeviceActionToolsServer)
-    return LoadedModule("device_action", inst)
+    return LoadedModule("device_action", inst, mcp=inst.mcp)
 
 
 # (name, token env var, loader) — order mirrors MCP_SERVERS for readability.
