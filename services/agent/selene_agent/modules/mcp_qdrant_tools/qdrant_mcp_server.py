@@ -18,7 +18,7 @@ from qdrant_client.models import (
     Filter, FieldCondition, MatchValue, PayloadSchemaType
 )
 
-from mcp.server import Server
+from selene_agent.modules._mcp_compat import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 

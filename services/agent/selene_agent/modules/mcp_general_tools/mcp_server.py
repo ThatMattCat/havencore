@@ -17,7 +17,8 @@ import pytz
 
 import base64
 
-from mcp.server import Server, NotificationOptions
+from mcp.server import NotificationOptions
+from selene_agent.modules._mcp_compat import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 from mcp.types import Tool, TextContent, CallToolResult
@@ -197,7 +198,7 @@ class GeneralToolsServer:
             return tools
         
         @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.BaseModel]:
+        async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextContent]:
             """Execute a tool"""
             logger.info(f"Tool called: {name} with args: {arguments}")
             

@@ -30,10 +30,10 @@ TOOL = "ha_turn_on"
 
 
 class FakeResult:
-    """Stand-in for CallToolResult."""
+    """Stand-in for CallToolResult (SDK 2.x snake_case field access)."""
 
     def __init__(self, text: str, is_error: bool = False):
-        self.isError = is_error
+        self.is_error = is_error
         self.content = [type("TextContent", (), {"text": text})()]
 
 
@@ -112,12 +112,10 @@ def test_classifier_separates_transport_from_tool_errors():
     assert mcm.is_transport_error(RuntimeError("tool blew up")) is False
     assert mcm.is_transport_error(KeyError("missing")) is False
     assert mcm.is_transport_error(asyncio.TimeoutError()) is False
-    # An McpError means the server answered us — it is demonstrably alive.
-    if mcm._McpError is not None:
-        from mcp.types import ErrorData
-
+    # An MCPError means the server answered us — it is demonstrably alive.
+    if mcm._MCPError is not None:
         assert mcm.is_transport_error(
-            mcm._McpError(ErrorData(code=-32602, message="Unknown tool"))
+            mcm._MCPError(-32602, "Unknown tool")
         ) is False
 
 

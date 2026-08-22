@@ -58,10 +58,10 @@ _TRANSPORT_EXC_NAMES = frozenset({
     "IncompleteRead",
 })
 
-try:
-    from mcp.shared.exceptions import McpError as _McpError
+try:  # SDK 2.x name (1.x called it McpError)
+    from mcp.shared.exceptions import MCPError as _MCPError
 except Exception:  # pragma: no cover
-    _McpError = None  # type: ignore[assignment]
+    _MCPError = None  # type: ignore[assignment]
 
 
 def _iter_exception_chain(exc: BaseException, _depth: int = 0):
@@ -87,15 +87,15 @@ def _iter_exception_chain(exc: BaseException, _depth: int = 0):
 def is_transport_error(exc: BaseException) -> bool:
     """True only when `exc` means the MCP stdio transport/subprocess is gone.
 
-    Explicitly False for `McpError`: that is a JSON-RPC error the server
+    Explicitly False for `MCPError`: that is a JSON-RPC error the server
     *answered* with (or a client-side read timeout), which proves the
     subprocess is alive. Ordinary tool exceptions fall through to False too —
     only broken/closed streams, EOF and dead-process errors return True.
     """
-    if _McpError is not None and isinstance(exc, _McpError):
+    if _MCPError is not None and isinstance(exc, _MCPError):
         return False
     for item in _iter_exception_chain(exc):
-        if _McpError is not None and isinstance(item, _McpError):
+        if _MCPError is not None and isinstance(item, _MCPError):
             continue
         if isinstance(item, _TRANSPORT_EXC_TYPES):
             return True
@@ -471,14 +471,15 @@ class MCPClientManager:
             "required": []
         }
         
-        if mcp_tool.inputSchema:
+        # SDK 2.x exposes the wire's `inputSchema` as snake_case `input_schema`.
+        if mcp_tool.input_schema:
             # MCP uses JSON Schema, which is compatible with OpenAI format
-            if isinstance(mcp_tool.inputSchema, dict):
-                parameters = mcp_tool.inputSchema
+            if isinstance(mcp_tool.input_schema, dict):
+                parameters = mcp_tool.input_schema
             else:
                 # If it's a string, try to parse it
                 try:
-                    parameters = json.loads(mcp_tool.inputSchema)
+                    parameters = json.loads(mcp_tool.input_schema)
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.warning(
                         f"Could not parse input schema for tool {mcp_tool.name}: {e}"
@@ -521,8 +522,9 @@ class MCPClientManager:
                 timeout=timeout,
             )
 
-            # Handle the result based on its type (CallToolResult)
-            if hasattr(result, 'isError') and result.isError:
+            # Handle the result based on its type (CallToolResult).
+            # SDK 2.x exposes the wire's `isError` as snake_case `is_error`.
+            if getattr(result, 'is_error', False):
                 # Error case - extract text from content
                 error_parts = []
                 if hasattr(result, 'content') and isinstance(result.content, list):
@@ -545,9 +547,9 @@ class MCPClientManager:
                         if hasattr(item, 'text'):
                             # TextContent
                             content_parts.append(item.text)
-                        elif hasattr(item, 'data') and hasattr(item, 'mimeType'):
+                        elif hasattr(item, 'data') and hasattr(item, 'mime_type'):
                             # ImageContent
-                            content_parts.append(f"[Image: {item.mimeType}]")
+                            content_parts.append(f"[Image: {item.mime_type}]")
                         elif hasattr(item, 'resource'):
                             # EmbeddedResource
                             content_parts.append(f"[Resource: {item.resource}]")

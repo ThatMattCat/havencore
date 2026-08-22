@@ -22,7 +22,8 @@ import asyncio
 import json
 from typing import Any, Dict, List
 
-from mcp.server import Server, NotificationOptions
+from mcp.server import NotificationOptions
+from selene_agent.modules._mcp_compat import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -167,7 +168,7 @@ class DeviceActionToolsServer:
             return tools
 
         @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.BaseModel]:
+        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
             logger.info(f"Device-action tool called: {name}")
             try:
                 if name == "set_alarm":

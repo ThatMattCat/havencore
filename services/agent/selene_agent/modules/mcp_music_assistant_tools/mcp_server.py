@@ -10,7 +10,8 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
-from mcp.server import NotificationOptions, Server
+from mcp.server import NotificationOptions
+from selene_agent.modules._mcp_compat import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool

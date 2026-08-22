@@ -15,7 +15,8 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
-from mcp.server import Server, NotificationOptions
+from mcp.server import NotificationOptions
+from selene_agent.modules._mcp_compat import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -195,7 +196,7 @@ class ReminderToolsServer:
             return tools
 
         @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.BaseModel]:
+        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
             logger.info(f"Reminder tool called: {name}")
             try:
                 if name == "schedule_reminder":

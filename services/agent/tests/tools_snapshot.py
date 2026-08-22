@@ -46,13 +46,17 @@ DEFAULT_OUT_DIR = "/app/tests/fixtures/tool_schemas"
 
 
 def _normalize(tools) -> list:
-    """Reduce a list_tools response to a stable, diffable structure."""
+    """Reduce a list_tools response to a stable, diffable structure.
+
+    The JSON key stays wire-format ``inputSchema`` so snapshots diff cleanly
+    across SDK versions; mcp 2.x exposes the field as ``input_schema``.
+    """
     out = []
     for tool in tools:
         out.append({
             "name": tool.name,
             "description": tool.description,
-            "inputSchema": tool.inputSchema,
+            "inputSchema": tool.input_schema,
         })
     out.sort(key=lambda t: t["name"])
     return out
