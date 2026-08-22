@@ -45,10 +45,14 @@ if __name__ == "__main__":
 Minimal working server — one tool, no external deps:
 
 ```python
-from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.models import InitializationOptions
 from mcp.types import Tool, TextContent
+
+# mcp SDK 2.x dropped the low-level Server's @list_tools()/@call_tool()
+# decorators; this shim restores the v1 decorator surface until the
+# modules are rewritten onto the MCPServer decorator API.
+from selene_agent.modules._mcp_compat import Server
 
 server = Server("havencore-hello")
 
@@ -681,9 +685,6 @@ Swap the module for any of the others:
 | github | `selene_agent.modules.mcp_github_tools` |
 | reminder | `selene_agent.modules.mcp_reminder_tools` |
 | device_action | `selene_agent.modules.mcp_device_action_tools` |
-
-(The `mcp_server_fetch` entry in `.env` is the upstream `mcp-server-fetch`
-package, not a local module.)
 
 #### Exercising a specific tool
 
