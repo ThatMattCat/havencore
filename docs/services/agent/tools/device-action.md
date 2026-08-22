@@ -24,7 +24,7 @@ tools live here:
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_device_action_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_device_action_tools` |
-| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/device_action` (bearer token from `MCP_TOKEN_DEVICE_ACTION`) |
 | Server name | `havencore-device-action-tools` |
 | Backend | None for `set_alarm` — handler returns a status string. Camera tools route through the in-process companion-upload registry (see [Camera tools](#camera-tools)); the MCP handlers for those are benign-error fallbacks since the upload future + blob store live in the agent process and are unreachable from the mcp-tools server process. |
 | Tool count | 5 |
@@ -279,8 +279,9 @@ only) so the LLM's tool-call latency stays low.
 Use this variant when the new tool needs a fresh photo from the
 user's phone (and optionally a vision-pipeline pass on the result):
 
-1. **MCP server.** Declare the `Tool(...)` and route it in
-   `call_tool` to `companion_camera_fallback(name)`.
+1. **MCP server.** Register an `@mcp.tool(...)`-decorated function on
+   the module's `MCPServer` that delegates to
+   `companion_camera_fallback(name)`.
 2. **Allowlists.** Add the tool name to all three of
    `DEVICE_ACTION_TOOLS`, `PRE_EXECUTE_DEVICE_ACTION_TOOLS`, and
    `COMPANION_UPLOAD_TOOLS`.
@@ -303,19 +304,21 @@ user's phone (and optionally a vision-pipeline pass on the result):
 
 ## Configuration
 
-The MCP server is spawned via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_DEVICE_ACTION` must also be set, or `mcp-tools` won't mount
+the module):
 
 ```json
 {
   "name": "device_action",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_device_action_tools"],
+  "url": "http://mcp-tools:6010/mcp/device_action",
+  "token_env": "MCP_TOKEN_DEVICE_ACTION",
   "enabled": true
 }
 ```
 
 `MCPClientManager` discovers all five tools automatically on the next
-agent start.
+`mcp-tools` + agent start.
 
 The camera tools additionally read these env vars (see
 [configuration.md](../../../configuration.md#companion-app-camera-tools)
@@ -359,9 +362,9 @@ for the full reference):
   module-level `contextvars.ContextVar` around `_execute_tool_call`
   for the duration of each tool invocation. In-process helpers can
   read it to correlate without threading the id through every layer.
-  Out-of-process MCP subprocess handlers cannot read it — they would
-  receive the id via tool arguments instead. Today only the camera
-  path uses this hook.
+  Handlers in the separate `mcp-tools` process cannot read it — they
+  would receive the id via tool arguments instead. Today only the
+  camera path uses this hook.
 - **No retry semantics.** The agent fires `set_alarm`'s event once
   and forgets. If the device is offline or the user is on a
   different satellite, the alarm is not scheduled — the assistant's

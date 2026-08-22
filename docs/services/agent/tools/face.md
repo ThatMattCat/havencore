@@ -10,7 +10,7 @@ function-calling tools.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_face_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_face_tools` |
-| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/face` (bearer token from `MCP_TOKEN_FACE`) |
 | Server name | `havencore-face-tools` |
 | Backing service | [face-recognition (port 6006)](../../face-recognition/README.md) |
 | Tool count | 5 |
@@ -63,20 +63,22 @@ against entity_ids like `camera.front_duo_3_fluent`.
 | `FACE_REC_URL_DOWNLOAD_TIMEOUT_SEC` | `15` | Timeout (seconds) for downloading an enrollment image from an `http(s)://` URL. |
 | `FACE_REC_URL_DOWNLOAD_MAX_BYTES` | `10485760` | Max bytes for a URL enrollment download (10 MB) — the source of the 10 MB cap noted below. |
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`:
 
 ```json
 {
   "name": "face",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_face_tools"],
+  "url": "http://mcp-tools:6010/mcp/face",
+  "token_env": "MCP_TOKEN_FACE",
   "enabled": true
 }
 ```
 
-If you're updating an existing deployment, merge this entry into your
-`.env` `MCP_SERVERS` JSON and bounce the agent
-(`docker compose down agent && up -d agent`).
+`MCP_TOKEN_FACE` must also be set — `mcp-tools` refuses to mount a module
+whose token env var is missing. If you're updating an existing deployment,
+merge this entry into your `.env` `MCP_SERVERS` JSON and bounce both
+services (`docker compose down mcp-tools agent && docker compose up -d
+mcp-tools agent`).
 
 ## Internals worth knowing
 

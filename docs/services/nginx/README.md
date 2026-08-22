@@ -64,6 +64,12 @@ hostname on each request (cached for the resolver's `valid=` window).
 This is applied to every agent location: `/v1/chat/completions`,
 `/api/`, `/ws/`, and the SPA catch-all `/`.
 
+The `/mcp/` location uses the same lazy-DNS pattern to reach the
+[`mcp-tools` service](../mcp-tools/README.md) (`mcp-tools:6010`), with
+`proxy_buffering off`, `gzip off`, and hour-long read/send timeouts —
+MCP Streamable HTTP responses are long-lived SSE streams that buffering
+would stall.
+
 ## TLS termination (`selene.renman.wtf`)
 
 nginx terminates TLS itself on port 443 — there is no separate proxy in

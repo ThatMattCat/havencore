@@ -11,7 +11,7 @@ This guide covers development setup, contributing to HavenCore, and extending th
 - **Docker**: Version 20.10+ with Docker Compose V2
 - **Git**: For version control
 - **Python**: 3.8+ for local development and testing
-- **Node.js**: 16+ (optional, for MCP server development)
+- **Node.js**: 16+ (optional, for SvelteKit dashboard development)
 
 #### Development Tools (Recommended)
 - **IDE**: VS Code with Docker and Python extensions
@@ -414,8 +414,9 @@ server {
 ### MCP Server Development
 
 HavenCore's in-tree MCP servers are Python modules under
-`services/agent/selene_agent/modules/`. Each exposes an MCP server (served over Streamable HTTP by the `mcp-tools` service) and is
-spawned by the agent's `MCPClientManager` per the `MCP_SERVERS` JSON in
+`services/agent/selene_agent/modules/`, served over MCP Streamable HTTP
+by the [`mcp-tools` service](services/mcp-tools/README.md); the agent's
+`MCPClientManager` connects to each mount per the `MCP_SERVERS` JSON in
 `.env`. See [Tool Development](services/agent/tools/development.md) for
 the full authoring guide and
 [Agent tools overview](services/agent/tools/README.md) for examples of
@@ -443,7 +444,9 @@ def test_example():
 Run the agent's pytest suite inside the agent container so imports and env resolve correctly (the suite is `pytest-asyncio` with `asyncio_mode=auto`):
 
 ```bash
-docker compose exec -T agent pytest
+# pytest is not baked into the image — install the dev deps first
+docker compose exec -T agent pip install -q pytest pytest-asyncio
+docker compose exec -T -w /app agent python -m pytest
 ```
 
 ### Integration Testing

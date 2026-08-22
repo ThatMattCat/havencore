@@ -1,6 +1,6 @@
 # Agent Tools (MCP Servers)
 
-The agent's tool-calling surface is split across several Model Context Protocol (MCP) servers, each packaged as a Python module under `services/agent/selene_agent/modules/`. Every MCP server is served by the `mcp-tools` compose service over MCP Streamable HTTP (one mount per module at `/mcp/<name>`, per-mount bearer tokens), and the agent's `mcp_client_manager` connects as an HTTP client and wires the tools into the LLM's function-calling interface via the `UnifiedTool` abstraction.
+The agent's tool-calling surface is split across 11 Model Context Protocol (MCP) servers — 69 tools with all credentials configured — each packaged as a Python module under `services/agent/selene_agent/modules/`. Every MCP server is served by the [`mcp-tools` compose service](../../mcp-tools/README.md) over MCP Streamable HTTP (one mount per module at `/mcp/<name>`, per-mount bearer tokens), and the agent's `mcp_client_manager` connects as an HTTP client and wires the tools into the LLM's function-calling interface via the `UnifiedTool` abstraction.
 
 ## MCP servers
 
@@ -9,7 +9,7 @@ The agent's tool-calling surface is split across several Model Context Protocol 
 | Home Assistant | `mcp_homeassistant_tools` | 20 — REST/WS control, registry, presence, timer/template/history/calendar (read + create), media transport | [home-assistant.md](home-assistant.md) |
 | Plex | `mcp_plex_tools` | 5 — library search + cloud-relay playback | [plex.md](plex.md) |
 | Music Assistant | `mcp_music_assistant_tools` | 7 — audio search, player enumeration, queue-aware playback / announcement / transport on speakers + Chromecasts | [music-assistant.md](music-assistant.md) |
-| General Tools | `mcp_general_tools` | Up to 7 (credential-gated) — weather, Brave, Wolfram, Wikipedia, ComfyUI, Signal messaging, multimodal vision | [general.md](general.md) |
+| General Tools | `mcp_general_tools` | Up to 8 (credential-gated) — weather, Brave, Wolfram, Wikipedia, webpage fetch, ComfyUI, Signal messaging, multimodal vision | [general.md](general.md) |
 | Qdrant | `mcp_qdrant_tools` | 3 — semantic memory store/search/delete on Qdrant + bge embeddings | [qdrant.md](qdrant.md) |
 | MQTT / Cameras | `mcp_mqtt_tools` | 1 — camera snapshot trigger via HA + MQTT round-trip | [mqtt.md](mqtt.md) |
 | GitHub | `mcp_github_tools` | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues | [github.md](github.md) |

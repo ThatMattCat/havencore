@@ -190,6 +190,7 @@ For detailed configuration options, see:
 HavenCore consists of these core services:
 - **nginx**: API gateway and load balancer
 - **agent**: Main AI logic and tool calling
+- **mcp-tools**: MCP tool host — serves the agent's tool modules over Streamable HTTP
 - **speech-to-text**: Audio transcription service
 - **text-to-speech**: Audio generation service
 - **postgres**: Database for conversation storage

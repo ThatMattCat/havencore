@@ -54,12 +54,12 @@ HavenCore is built as a distributed microservices architecture using Docker cont
 **Key Components**:
 - **Session Orchestrator Pool**: per-session `AgentOrchestrator` instances keyed by `session_id`, with per-session locks, a 30s background sweep that summarizes-and-resets sessions on either idle window or token-budget overrun (the budget tracks the active provider's `max_model_len`), LRU cap (64 sessions) with oversized-buffer summarization on eviction, cold-resume from the history DB, and shutdown flush. `/api/chat` and `/ws/chat` route through the pool; `/v1/chat/completions` bypasses it with an ephemeral orchestrator for stateless OpenAI-compat calls.
 - **Orchestrator**: Event-based agent loop with per-turn metrics
-- **MCP Client Manager**: Tool discovery and lifecycle across MCP servers
+- **MCP Client Manager**: Tool discovery and lifecycle across MCP servers (Streamable HTTP sessions to the `mcp-tools` service)
 - **Conversation Database**: PostgreSQL session and history management — rows keyed by externally-stable `session_id` (dashboard tab UUID, Selene-puck mac-hash) so a single logical device accumulates turns across restarts
 - **Metrics Database**: `turn_metrics` table with LLM/tool/total timings
 - **Service Proxies**: `/api/{tts,stt,vision,comfy}/*` forward to sibling containers for the playground UIs
 
-**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; MCP subprocesses for tools. Port 6006 hosts the [face-recognition service](services/face-recognition/README.md).
+**Architecture Pattern**: Single-port async FastAPI (uvicorn) serving static SPA + REST + WebSocket + OpenAI-compatible endpoints; tools are executed by the separate [`mcp-tools` service](services/mcp-tools/README.md) over MCP Streamable HTTP. Port 6006 hosts the [face-recognition service](services/face-recognition/README.md).
 
 ### 3. Speech-to-Text Service (Port 6001)
 **Purpose**: Audio Transcription and Processing
@@ -170,11 +170,11 @@ Client Response ← Response ← Service Result
 
 ### 3. Tool Execution Flow
 ```
-User Query → Agent → Tool Registry → Tool Implementation
-     ↓         ↓          ↓               ↓
-  Intent     Tool       Legacy/MCP      External API
-Recognition  Selection   Routing        (HA/Search/etc)
-     ↓         ↓          ↓               ↓
+User Query → Agent → MCP Client Manager → mcp-tools Module
+     ↓         ↓          ↓                    ↓
+  Intent     Tool     Streamable HTTP      External API
+Recognition  Selection  (bearer auth)      (HA/Search/etc)
+     ↓         ↓          ↓                    ↓
   Response ← Result ← Tool Response ← API Response
 ```
 
@@ -193,10 +193,10 @@ Recognition  Selection   Routing        (HA/Search/etc)
 - **Knowledge**: Wikipedia and other knowledge sources
 
 ### MCP (Model Context Protocol) Support
-- **Unified Tool Registry**: Manages both legacy and MCP tools
-- **Dynamic Tool Loading**: Runtime tool registration and discovery
-- **Conflict Resolution**: Preference-based tool selection
-- **Extensibility**: Plugin-like architecture for new capabilities
+- **`mcp-tools` service**: one Starlette app serving all 11 bundled tool modules over MCP Streamable HTTP (port 6010), one mount per module at `/mcp/<name>` with a per-mount static bearer token (`MCP_TOKEN_*`)
+- **HTTP client**: the agent's `MCPClientManager` connects to each mount per the `MCP_SERVERS` JSON, discovers tools at startup, and converts them to OpenAI function-calling format via the `UnifiedTool` abstraction
+- **Self-healing**: transport failures trigger a bounded background reconnect; after an `mcp-tools` restart, sessions heal lazily on the next tool call
+- **External clients**: the nginx gateway proxies `/mcp/`, so any external MCP client can consume the mounts with the module's bearer token
 
 ## Deployment Architecture
 
@@ -206,6 +206,7 @@ services:
   - nginx (reverse proxy, TLS termination)
   - certbot (Let's Encrypt renewal sidecar)
   - agent (core logic)
+  - mcp-tools (MCP tool host — Streamable HTTP)
   - speech-to-text (STT)
   - text-to-speech (TTS)
   - postgres (database)

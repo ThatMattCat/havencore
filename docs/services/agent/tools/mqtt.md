@@ -10,10 +10,10 @@ over REST and waits for the resulting image URLs on an MQTT topic.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_mqtt_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_mqtt_tools` |
-| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
-| Server name | `havencore-general-tools` (named before the module was split out) |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/mqtt` (bearer token from `MCP_TOKEN_MQTT`) |
+| Server name | `havencore-mqtt-tools` (renamed in the SDK 2.0 rewrite — previously a copy/paste `havencore-general-tools`) |
 | MQTT client | `paho-mqtt` with threaded loop |
-| Tool count | 1 (conditional on MQTT connectivity) |
+| Tool count | 1 |
 
 The module doubles as a generic MQTT wiring point, but today it ships
 with a single `HACamSnapper` integration that coordinates HA and MQTT to
@@ -26,9 +26,11 @@ tools can be added alongside it.
 |------|---------|
 | `get_camera_snapshots()` | Calls the HA script `script.capture_all_cameras` via REST. That script is expected to capture frames from each camera and publish a JSON payload of URLs to the `home/cameras/snapshots` topic. The tool blocks (up to 10 s) waiting for that MQTT message and returns the URL list. |
 
-The tool is only registered when the MQTT client is connected at
-list-tools time — if the broker is unreachable, the tool silently
-disappears from the agent's tool surface.
+The tool is always registered. If the broker connection is down at call
+time the tool returns `{"success": false, "error": "MQTT not connected…"}`
+instead of silently disappearing from the agent's tool surface (a
+server-side fallback introduced in the SDK 2.0 rewrite; the tool list is
+static now).
 
 ## Required HA side
 
@@ -63,13 +65,15 @@ currently not surfaced — a placeholder for a future cleanup workflow).
 Env vars are read directly via `os.getenv()` in `mcp_server.py` — not via
 `selene_agent.utils.config`.
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_MQTT` must also be set, or `mcp-tools` won't mount the
+module):
 
 ```json
 {
   "name": "mqtt",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],
+  "url": "http://mcp-tools:6010/mcp/mqtt",
+  "token_env": "MCP_TOKEN_MQTT",
   "enabled": true
 }
 ```
@@ -78,10 +82,11 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 
 - **MQTT connection is eager.** `HACamSnapper.__init__` calls
   `mqtt_client.connect(...)` synchronously when `MQTTServer` is
-  constructed at server startup (in `main()`). If the broker isn't up
-  yet, the constructor fails and the server won't start cleanly. Compose
-  dependencies are the mitigation — the `mosquitto` service should start
-  before the agent.
+  constructed — in the `mcp-tools` startup loader, or in `main()` for a
+  stdio run. If the broker isn't up yet, the constructor fails and
+  `mcp-tools` skips the mount (the module shows under `failed` in its
+  `/health` response). Compose dependencies are the mitigation — the
+  `mosquitto` service should start before `mcp-tools`.
 - **`loop_start()` runs in a worker thread.** The paho client uses its
   own thread for MQTT I/O; the MCP server uses asyncio for tool dispatch.
   Cross-thread signaling happens via an `asyncio.Future`
@@ -109,21 +114,23 @@ cameras?" query.
 
 ## Troubleshooting
 
-### Tool is missing from the tool list
+### Tool returns "MQTT not connected", or is missing from the tool list
 
-`self.snapshotter.mqtt_client.is_connected()` returned false at
-`list_tools()` time. Either:
+The broker was unreachable — at call time (tool present, error result)
+or already at `mcp-tools` startup (module init failed, mount skipped, so
+the tool never appears). Either way:
 
 - Mosquitto isn't running — `docker compose ps mosquitto`.
 - The broker hostname / port are wrong — check `MQTT_BROKER` /
   `MQTT_PORT`.
-- The agent container can't reach the broker — check Docker networks.
+- The `mcp-tools` container can't reach the broker — check Docker
+  networks.
 
-A module restart is needed after the broker recovers: the MQTT client
-doesn't reconnect on its own in this implementation.
+A restart is needed after the broker recovers: the MQTT client doesn't
+reconnect on its own in this implementation.
 
 ```bash
-docker compose restart agent
+docker compose restart mcp-tools
 ```
 
 ### Timeout with empty `partial_urls`

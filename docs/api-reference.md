@@ -1,9 +1,10 @@
 # API Reference
 
-HavenCore exposes two surfaces:
+HavenCore exposes three surfaces:
 
 1. **OpenAI-compatible APIs** — `/v1/chat/completions`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`. These ride through the Nginx gateway at `http://localhost` and are used by the voice pipeline (edge devices, external integrations).
 2. **Agent dashboard APIs** — `/api/*` and `/ws/*`, served by the agent on port 6002 (also available through Nginx). Used by the SvelteKit dashboard at `http://localhost:6002/` for chat, metrics, service playgrounds, Home Assistant state, and live logs.
+3. **MCP tool mounts** — `/mcp/<name>`, MCP Streamable HTTP endpoints served by the `mcp-tools` service (port 6010 on the host IP; also proxied by the gateway). Consumed by the agent's own MCP client and by external MCP clients holding a mount's bearer token. See [MCP tool mounts (Streamable HTTP)](#mcp-tool-mounts-streamable-http).
 
 ## Authentication
 
@@ -15,6 +16,8 @@ curl -H "Authorization: Bearer your_secret_key" http://localhost/v1/models
 ```
 
 The `/api/*` dashboard endpoints are unauthenticated — the dashboard is intended for a private/home network. Do not expose port 6002 to the public internet without adding your own auth in front of it.
+
+The `/mcp/<name>` tool mounts are the one authenticated surface: every request must carry `Authorization: Bearer <token>` matching that module's `MCP_TOKEN_<NAME>` env var, and a wrong or missing token gets a 401. See [MCP tool mounts (Streamable HTTP)](#mcp-tool-mounts-streamable-http).
 
 Because there is no auth gate, the agent does enforce a **browser origin allowlist** so a random web page on a machine that can reach the LAN cannot drive the API cross-origin. `/api/*` and `/v1/*` run behind a non-wildcard `CORSMiddleware`, and `/ws/*` handshakes (which CORS does not cover) validate the `Origin` header and close mismatches with code `1008`. Requests and handshakes with **no** `Origin` header — the satellite firmware, the companion app, `curl` — are always allowed, and so is an `Origin` equal to the request's own `Host` (same-host auto-allow: the page was served by this deployment, which covers TLS/hostname reverse-proxy fronts with zero config). Configure the allowlist for genuinely cross-host pages with `AGENT_CORS_ORIGINS`; see [configuration.md](configuration.md#browser-origin-allowlist-agent_cors_origins).
 
@@ -150,8 +153,9 @@ doc with the full tool list, arguments, config, and troubleshooting.
   Chromecasts, and Google Homes. See
   [MCP Music Assistant](services/agent/tools/music-assistant.md).
 - **General Tools** — `get_weather_forecast`, `brave_search`,
-  `search_wikipedia`, `wolfram_alpha`, `generate_image`, `send_signal_message`,
-  `query_multimodal_api`. See [MCP General](services/agent/tools/general.md).
+  `fetch_webpage`, `search_wikipedia`, `wolfram_alpha`, `generate_image`,
+  `send_signal_message`, `query_multimodal_api`.
+  See [MCP General](services/agent/tools/general.md).
 - **Qdrant** — semantic memory (`create_memory`, `search_memories`,
   `delete_memory`). See
   [MCP Qdrant](services/agent/tools/qdrant.md).
@@ -392,20 +396,20 @@ build-host scp/rsync recommendation are documented in
 #### GET /mcp/status
 Get status of MCP (Model Context Protocol) connections.
 
-**Endpoint**: `GET http://localhost:6002/api/mcp/status` (the bare `/mcp/status` is a legacy alias for the same handler)
+**Endpoint**: `GET http://localhost:6002/api/mcp/status` (the bare `/mcp/status` is a legacy alias for the same handler — on port 6002 only, since the gateway routes `/mcp/` to the `mcp-tools` service)
 
 #### Response
 ```json
 {
-  "configured_servers": ["homeassistant", "general", "qdrant"],
-  "connected_servers": ["homeassistant", "general", "qdrant"],
+  "configured_servers": ["general_tools", "mcp_server_qdrant", "homeassistant", "..."],
+  "connected_servers": ["general_tools", "mcp_server_qdrant", "homeassistant", "..."],
   "disconnected_servers": {},
   "reconnecting_servers": [],
   "failed_servers": {},
-  "total_mcp_tools": 68,
+  "total_mcp_tools": 69,
   "tools_by_server": {
     "homeassistant": 20,
-    "general": 7
+    "general_tools": 8
   }
 }
 ```
@@ -417,6 +421,51 @@ reconnect runs — `reconnecting_servers` lists the in-flight attempts. After
 `MCP_RECONNECT_MAX_ATTEMPTS` failed tries the server moves to `failed_servers`;
 a later tool call can re-arm one fresh reconnect cycle once
 `MCP_RECONNECT_REARM_COOLDOWN_SECONDS` has elapsed.
+
+### MCP tool mounts (Streamable HTTP)
+
+The [`mcp-tools` service](services/mcp-tools/README.md) serves the
+agent's 11 tool modules as MCP Streamable HTTP endpoints, one mount per
+module:
+
+```
+/mcp/general_tools    /mcp/mcp_server_qdrant   /mcp/homeassistant
+/mcp/mqtt             /mcp/plex                /mcp/music_assistant
+/mcp/github           /mcp/face                /mcp/vision
+/mcp/reminder         /mcp/device_action
+```
+
+Two ways in:
+
+- **Through the gateway** — `http://<host>/mcp/<name>` (nginx proxies
+  `/mcp/` with buffering off and long read timeouts for the SSE
+  streams).
+- **Direct** — `http://<HOST_IP_ADDRESS>:6010/mcp/<name>` (the port is
+  published on the host IP only).
+
+**Auth**: every mount requires `Authorization: Bearer <token>`, the
+value of that module's `MCP_TOKEN_<NAME>` env var. Wrong or missing →
+401. This is the only authenticated surface HavenCore exposes.
+
+**Protocol**: standard MCP Streamable HTTP — JSON-RPC over POST with
+`Accept: application/json, text/event-stream`, responses delivered as
+SSE events, stateful sessions keyed by the `Mcp-Session-Id` response
+header (echo it on subsequent requests). A `421` means the Host/Origin
+failed the DNS-rebinding allowlist — add the hostname to
+`MCP_HTTP_ALLOWED_HOSTS`.
+
+**External MCP clients** (custom connectors, IDE integrations): point
+the client's connector at the mount URL and supply the module's bearer
+token — no other configuration is needed. Example for a connector UI:
+URL `https://<host>/mcp/homeassistant`, auth "Bearer token" with the
+value of `MCP_TOKEN_HOMEASSISTANT`.
+
+`GET http://<HOST_IP_ADDRESS>:6010/health` (direct port only, no auth)
+reports which modules mounted and which failed:
+
+```json
+{"status": "ok", "mounted": ["face", "general_tools", "..."], "failed": {}}
+```
 
 ## Agent Dashboard APIs
 

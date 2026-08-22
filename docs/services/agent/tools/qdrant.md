@@ -10,7 +10,7 @@ to give the agent a persistent memory layer.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_qdrant_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_qdrant_tools` (wraps `qdrant_mcp_server.py`) |
-| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/mcp_server_qdrant` (bearer token from `MCP_TOKEN_QDRANT`) |
 | Server name | `qdrant-server` |
 | Vector backend | Qdrant, default collection `user_data`, cosine distance |
 | Embeddings backend | `embeddings` service (HuggingFace text-embeddings-inference) serving `BAAI/bge-large-en-v1.5` (1024-dim) |
@@ -92,13 +92,16 @@ absorption change.
 | `EMBEDDING_DIM` | `1024` | Vector dimension — must match the embedding model. `bge-large-en-v1.5` is 1024. |
 | `QDRANT_COLLECTION` | `user_data` | Target collection name. The server creates it on startup if missing. |
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_QDRANT` must also be set, or `mcp-tools` won't mount the
+module). The historical server name `mcp_server_qdrant` is kept as the
+entry/mount name:
 
 ```json
 {
-  "name": "qdrant",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],
+  "name": "mcp_server_qdrant",
+  "url": "http://mcp-tools:6010/mcp/mcp_server_qdrant",
+  "token_env": "MCP_TOKEN_QDRANT",
   "enabled": true
 }
 ```
@@ -159,12 +162,12 @@ expected to judge relevance itself rather than trusting the top-k blindly.
 
 ### Tools error with a connection refused
 
-`QDRANT_HOST` / `QDRANT_PORT` unreachable from the agent container, or
-the Qdrant service hasn't finished starting. Check:
+`QDRANT_HOST` / `QDRANT_PORT` unreachable from the `mcp-tools` container,
+or the Qdrant service hasn't finished starting. Check:
 
 ```bash
 docker compose ps qdrant
-docker compose exec agent curl -I http://qdrant:6333/healthz
+docker compose exec mcp-tools curl -I http://qdrant:6333/healthz
 ```
 
 ### `create_memory` fails with `Failed to get embedding`
@@ -206,7 +209,7 @@ Qdrant:
 curl -X DELETE http://localhost:6333/collections/user_data
 ```
 
-(Then restart the agent — the server will recreate it with the new
+(Then restart `mcp-tools` — the server will recreate it with the new
 dimension.)
 
 ## Related files

@@ -11,12 +11,12 @@ that aren't specific to any other subsystem.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_general_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_general_tools` |
-| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/general_tools` (bearer token from `MCP_TOKEN_GENERAL_TOOLS`) |
 | Server name | `havencore-general-tools` |
 | Tool count | Up to 8 (some tools are conditional on credentials) |
 
-Tool registration is **conditional on credentials**. The server enumerates
-tools at `list_tools()` time and only includes the ones whose env vars are
+Tool registration is **conditional on credentials**. The server registers
+tools when it is constructed and only includes the ones whose env vars are
 set. This is by design — missing credentials silently drop the tool
 instead of registering one that always errors.
 
@@ -58,13 +58,15 @@ network); see
 [Configuration](../../../configuration.md) and the
 [vllm-vision service doc](../../vllm-vision/README.md).
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_GENERAL_TOOLS` must also be set, or `mcp-tools` won't mount
+the module):
 
 ```json
 {
   "name": "general_tools",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_general_tools"],
+  "url": "http://mcp-tools:6010/mcp/general_tools",
+  "token_env": "MCP_TOKEN_GENERAL_TOOLS",
   "enabled": true
 }
 ```
@@ -105,7 +107,7 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 ### A tool you expect isn't listed
 
 The server only registers tools whose env vars are populated. Check
-`/api/tools` on the agent or call `/mcp/status` to see what came through.
+`/api/tools` or `/api/mcp/status` on the agent to see what came through.
 Common misses:
 
 - `wolfram_alpha` → `WOLFRAM_ALPHA_API_KEY` unset.
@@ -114,12 +116,12 @@ Common misses:
 
 ### `generate_image` returns a ComfyUI connection error
 
-The `text-to-image` service isn't reachable from inside the agent
-container. Verify with:
+The `text-to-image` service isn't reachable from inside the `mcp-tools`
+container (where the tool runs). Verify with:
 
 ```bash
 docker compose ps text-to-image
-docker compose exec agent curl -I http://text-to-image:8188
+docker compose exec mcp-tools curl -I http://text-to-image:8188
 ```
 
 ### `query_multimodal_api` returns a 5xx or `Vision API error`
@@ -193,8 +195,9 @@ curl -fsSL 'http://127.0.0.1:8080/v1/qrcodelink?device_name=HavenCore' \
 #    Settings → Linked Devices → Link New Device → scan the QR.
 
 # 4. Set SIGNAL_PHONE_NUMBER in .env to the phone number on your Signal
-#    account (E.164, e.g. +15551234567), restart the agent.
-docker compose up -d agent
+#    account (E.164, e.g. +15551234567), then recreate mcp-tools (which
+#    registers the tool) and the agent (which re-discovers the tool list).
+docker compose up -d mcp-tools agent
 ```
 
 Leaving `SIGNAL_DEFAULT_RECIPIENT` empty sends messages to your own number

@@ -12,7 +12,7 @@ TV playback specifics live in [Media Control](../../../integrations/media-contro
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_homeassistant_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_homeassistant_tools` |
-| Transport | MCP Streamable HTTP (served by the `mcp-tools` service; the agent's `MCPClientManager` connects as a client) |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/homeassistant` (bearer token from `MCP_TOKEN_HOMEASSISTANT`); the agent's `MCPClientManager` connects as a client |
 | Server name | `havencore-homeassistant` |
 | HA REST client | `aiohttp`-based `HomeAssistantClient`; also owns the short-lived WS client used for registry lookups |
 | Media controller | REST-only `ha_media_controller.MediaController` (transport / volume / power on any `media_player` entity) |
@@ -123,13 +123,15 @@ Derived automatically (no env var):
 - **WebSocket URL**: `ws://<host>/api/websocket` (or `wss://` when `HAOS_URL`
   is `https`). See `HA_WS_URL` in `selene_agent/utils/config.py`.
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_HOMEASSISTANT` must also be set, or `mcp-tools` won't mount
+the module):
 
 ```json
 {
   "name": "homeassistant",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"],
+  "url": "http://mcp-tools:6010/mcp/homeassistant",
+  "token_env": "MCP_TOKEN_HOMEASSISTANT",
   "enabled": true
 }
 ```
@@ -201,13 +203,13 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 
 ### Every HA tool returns "Home Assistant unavailable: …"
 
-Initialization failed. Check `docker compose logs agent` for the
+Initialization failed. Check `docker compose logs mcp-tools` for the
 `Failed to initialize HA clients` line. Common causes:
 
 - Bad `HAOS_URL` (wrong host / port / scheme). Must be reachable **from
-  inside the agent container**, not just the host.
+  inside the `mcp-tools` container**, not just the host.
 - `HAOS_TOKEN` missing or revoked.
-- Network boundary (the agent container can't reach the HA VLAN).
+- Network boundary (the `mcp-tools` container can't reach the HA VLAN).
 
 ### A tool returns `FAILED: <kind> '...' does not exist in Home Assistant`
 
@@ -237,12 +239,13 @@ corresponding REST / WS request. Common causes:
 ### `ha_list_areas` / `ha_list_entities` (area path) return `{"error": "WS registry … call failed"}`
 
 The WebSocket call to HA failed. Typical causes: HA is down, `HAOS_URL`
-isn't reachable from the agent container, or `HAOS_TOKEN` is wrong (the
-auth handshake will raise `HA WS auth failed: …`). Check `docker compose
-logs agent` for the specific error and restart after fixing HA:
+isn't reachable from the `mcp-tools` container, or `HAOS_TOKEN` is wrong
+(the auth handshake will raise `HA WS auth failed: …`). Check `docker
+compose logs mcp-tools` for the specific error and restart after fixing
+HA:
 
 ```bash
-docker compose restart agent
+docker compose restart mcp-tools
 ```
 
 ### `ha_evaluate_template` returns the literal template string

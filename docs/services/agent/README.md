@@ -78,7 +78,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/v1/chat/completions` | POST | OpenAI-compatible chat — **stateless**: each request builds an ephemeral orchestrator; no pool, no history persistence, no metrics. The caller owns its own history. |
 | `/v1/models` | GET | Lists the agent as an available model |
 | `/health` | GET | Service health check |
-| `/mcp/status` | GET | MCP connection status |
+| `/api/mcp/status` | GET | MCP connection status (bare `/mcp/status` is a legacy alias on port 6002 only — through the nginx gateway, `/mcp/` routes to the `mcp-tools` service instead) |
 
 See [API Reference](../../api-reference.md) for full request/response schemas.
 
@@ -102,9 +102,9 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 | Home Assistant | 20 — domain state / service calls, opinionated light & climate control, scenes, scripts, automations, notifications, areas, presence, timers, Jinja templates, history, calendar (read + create), media transport | [tools/home-assistant.md](tools/home-assistant.md) |
 | Plex | 5 — `plex_search`, `plex_list_recent`, `plex_list_on_deck`, `plex_list_clients`, `plex_play` | [tools/plex.md](tools/plex.md) |
 | Music Assistant | 7 — audio-only playback router for speakers, Chromecasts, and Google Homes (search / players / queue / play / announcement / transport). | [tools/music-assistant.md](tools/music-assistant.md) |
-| General Tools | Up to 7 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `search_wikipedia` | [tools/general.md](tools/general.md) |
+| General Tools | Up to 8 (credential-gated) — `generate_image`, `send_signal_message`, `query_multimodal_api`, `wolfram_alpha`, `get_weather_forecast`, `brave_search`, `fetch_webpage`, `search_wikipedia` | [tools/general.md](tools/general.md) |
 | Qdrant | 3 — `create_memory`, `search_memories`, `delete_memory` | [tools/qdrant.md](tools/qdrant.md) |
-| MQTT / Cameras | 1 (when MQTT is connected) — `get_camera_snapshots` | [tools/mqtt.md](tools/mqtt.md) |
+| MQTT / Cameras | 1 — `get_camera_snapshots` (returns an error result, rather than disappearing, while the broker is unreachable) | [tools/mqtt.md](tools/mqtt.md) |
 | GitHub | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues (untrusted issue text is enclosed in per-response `UNTRUSTED_USER_TEXT_<id>` blocks) | [tools/github.md](tools/github.md) |
 | Device Actions | 5 — `set_alarm` on the user's phone (intent-fire); `take_photo` / `identify_object_in_photo` / `read_text_from_image` / `who_is_in_view` round-trip a JPEG through `/api/companion/upload`. The vision-chained variants forward the captured `image_url` to the vision pipeline; `who_is_in_view` POSTs the JPEG to face-recognition's `/api/identify` for identity matching against the enrolled gallery | [tools/device-action.md](tools/device-action.md) |
 | Vision | 5 — `describe_image`, `describe_camera_snapshot`, `identify_object`, `read_text_in_image`, `compare_snapshots` (proxied to `vllm-vision`) | [tools/vision.md](tools/vision.md) |
@@ -126,7 +126,7 @@ docker compose exec agent python
 curl http://localhost:6002/api/tools
 
 # Check MCP status
-curl http://localhost:6002/mcp/status
+curl http://localhost:6002/api/mcp/status
 ```
 
 ## LLM provider toggle
