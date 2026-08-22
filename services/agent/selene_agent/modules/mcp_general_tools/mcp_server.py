@@ -5,25 +5,22 @@ Provides general tools like weather and web search via MCP
 """
 
 import os
-import sys
 import json
 import asyncio
 import aiohttp
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Awaitable, Callable, Dict, List, Optional, Union
 import requests
 from datetime import datetime
 import pytz
 
 import base64
 
-from mcp.server import NotificationOptions
-from selene_agent.modules._mcp_compat import Server
-from mcp.server.stdio import stdio_server
-import mcp.types as types
-from mcp.types import Tool, TextContent, CallToolResult
-from mcp.server.models import InitializationOptions
+from pydantic import Field
 
+from mcp.server import MCPServer
+
+from selene_agent.modules._mcp_params import NULL_OK
 from .comfyui_tools import SimpleComfyUI
 from .wiki_tools import query_wikipedia
 from selene_agent.utils.logger import get_logger
@@ -46,212 +43,182 @@ SIGNAL_DEFAULT_RECIPIENT = (os.environ.get('SIGNAL_DEFAULT_RECIPIENT', '').strip
 SIGNAL_MAX_ATTACHMENT_BYTES = 95 * 1024 * 1024  # Signal's practical upload cap is ~100 MB
 
 class GeneralToolsServer:
-    """MCP server providing general utility tools"""
-    
+    """MCP server providing general utility tools.
+
+    ``self.mcp`` is the configured mcp 2.0 ``MCPServer``; the decorated
+    closures in ``_build_mcp`` are the MCP surface and delegate to the
+    existing async impl methods (unchanged from the hand-dispatch era).
+    Registration is env-gated exactly like the old list_tools handler:
+    tools whose backing API key/number is unset are never registered.
+    """
+
     def __init__(self):
-        self.server = Server("havencore-general-tools")
-        self.setup_handlers()
-        
-    def setup_handlers(self):
-        """Setup MCP protocol handlers"""
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            """List available tools"""
-            tools = []
+        self.mcp = self._build_mcp()
 
-            tools.append(Tool(
-                name="generate_image",
-                description="Generate an image from a text prompt and return the filepath and URL link to the image.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "prompt": {
-                            "type": "string",
-                            "description": "The text prompt to generate an image from, written as tags. eg: mountain, snow, realistic"
-                        }
-                    },
-                    "required": ["prompt"]
-                }
-            ))
+    def _build_mcp(self) -> MCPServer:
+        """Register the decorated tool surface.
 
-            if SIGNAL_PHONE_NUMBER and SIGNAL_DEFAULT_RECIPIENT:
-                tools.append(Tool(
-                    name="send_signal_message",
-                    description="Send a Signal message (text, optionally with images or short videos) to the homeowner.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "message": {
-                                "type": "string",
-                                "description": "Message text. Plain text only."
-                            },
-                            "attachments": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "description": "URL (auto-downloaded) or local file path of an image or short video to attach."
-                                }
-                            }
-                        },
-                        "required": ["message"]
-                    }
-                ))
+        structured_output=False on every tool: results stay a single
+        TextContent string, byte-identical to the pre-MCPServer wire format
+        (no outputSchema in tools/list, no structuredContent).
+        """
+        mcp = MCPServer("havencore-general-tools", version="1.0.0")
 
-            tools.append(Tool(
-                name="query_multimodal_api",
-                description="Send an image (and optional text prompt) to the vision LLM for analysis. Use for camera snapshots, photos, screenshots, etc.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "The text prompt describing what to analyze in the image (e.g. 'describe what you see', 'is anyone in this image?')."
-                        },
-                        "image_url": {
-                            "type": "string",
-                            "description": "HTTP(S) URL to an image. Common formats supported (PNG, JPEG, WebP). The vision service fetches the URL itself."
-                        }
-                    },
-                    "required": ["image_url"],
-                    "additionalProperties": False
-                }
-            ))
-
-            if WOLFRAM_ALPHA_API_KEY:
-                tools.append(Tool(
-                    name="wolfram_alpha",
-                    description="Query Wolfram Alpha for answers to factual questions",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Question to ask Wolfram Alpha"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                ))
-
-            if WEATHER_API_KEY:
-                tools.append(Tool(
-                    name="get_weather_forecast",
-                    description="Get weather forecast and astronomy data for a location",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "location": {
-                                "type": "string",
-                                "description": "City name, ZIP code, or coordinates"
-                            },
-                            "date": {
-                                "type": "string",
-                                "description": "Date in YYYY-MM-DD format (optional)"
-                            }
-                        },
-                        "required": ["location"]
-                    }
-                ))
-            
-            if BRAVE_API_KEY:
-                tools.append(Tool(
-                    name="brave_search",
-                    description="Retrieve a list of relevant websites using Brave Search API",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query"
-                            },
-                            "count": {
-                                "type": "integer",
-                                "description": "Number of results (default: 4)",
-                                "default": 4
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                ))
-            
-            tools.append(Tool(
-                name="search_wikipedia",
-                description="Search Wikipedia for information about a topic and return a summary.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "search_string": {
-                            "type": "string",
-                            "description": "Search query"
-                        },
-                        "sentences": {
-                            "type": "integer",
-                            "description": "Number of sentences to return"
-                        }
-                    },
-                    "required": ["search_string"]
-                }
-            ))
-            
-            logger.info(f"Listing {len(tools)} tools")
-            return tools
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextContent]:
-            """Execute a tool"""
-            logger.info(f"Tool called: {name} with args: {arguments}")
-            
-            try:
-                if name == "wolfram_alpha":
-                    result = await self.wolfram_alpha(arguments.get("query"))
-                    return [types.TextContent(type="text", text=result)]
-                
-                elif name == "generate_image":
-                    async with SimpleComfyUI("text-to-image:8188") as comfy:
-                        result = await comfy.text_to_image(
-                            prompt=arguments.get("prompt"),
-                            workflow_name="default"
-                        )
-                        return [types.TextContent(type="text", text=json.dumps(result))]
-                elif name == "send_signal_message":
-                    result = await self.send_signal_message(
-                        message=arguments.get("message"),
-                        attachments=arguments.get("attachments")
+        @mcp.tool(
+            name="generate_image",
+            description="Generate an image from a text prompt and return the filepath and URL link to the image.",
+            structured_output=False,
+        )
+        async def generate_image(
+            prompt: Annotated[str, Field(description=(
+                "The text prompt to generate an image from, written as tags. "
+                "eg: mountain, snow, realistic"
+            ))],
+        ) -> str:
+            async def run() -> str:
+                async with SimpleComfyUI("text-to-image:8188") as comfy:
+                    result = await comfy.text_to_image(
+                        prompt=prompt,
+                        workflow_name="default"
                     )
-                    return [types.TextContent(type="text", text=result)]
+                    return json.dumps(result)
+            return await self._call("generate_image", {"prompt": prompt}, run)
 
-                elif name == "query_multimodal_api":
-                    result = await self.query_multimodal_ai(
-                        text=arguments.get("text"),
-                        image_url=arguments.get("image_url"),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        if SIGNAL_PHONE_NUMBER and SIGNAL_DEFAULT_RECIPIENT:
+            @mcp.tool(
+                name="send_signal_message",
+                description="Send a Signal message (text, optionally with images or short videos) to the homeowner.",
+                structured_output=False,
+            )
+            async def send_signal_message(
+                message: Annotated[str, Field(description="Message text. Plain text only.")],
+                attachments: Annotated[List[Annotated[str, Field(description=(
+                    "URL (auto-downloaded) or local file path of an image or "
+                    "short video to attach."
+                ))]], NULL_OK] = None,
+            ) -> str:
+                return await self._call(
+                    "send_signal_message",
+                    {"message": message, "attachments": attachments},
+                    lambda: self.send_signal_message(
+                        message=message,
+                        attachments=attachments,
+                    ),
+                )
 
-                elif name == "get_weather_forecast":
-                    result = await self.get_weather_forecast(
-                        arguments.get("location"),
-                        arguments.get("date")
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="query_multimodal_api",
+            description="Send an image (and optional text prompt) to the vision LLM for analysis. Use for camera snapshots, photos, screenshots, etc.",
+            structured_output=False,
+        )
+        async def query_multimodal_api(
+            image_url: Annotated[str, Field(description=(
+                "HTTP(S) URL to an image. Common formats supported (PNG, JPEG, "
+                "WebP). The vision service fetches the URL itself."
+            ))],
+            text: Annotated[str, NULL_OK, Field(description=(
+                "The text prompt describing what to analyze in the image (e.g. "
+                "'describe what you see', 'is anyone in this image?')."
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "query_multimodal_api",
+                {"text": text, "image_url": image_url},
+                lambda: self.query_multimodal_ai(text=text, image_url=image_url),
+            )
 
-                elif name == "brave_search":
-                    result = await self.brave_search(
-                        arguments.get("query"),
-                        arguments.get("count", 4)
-                    )
-                    return [types.TextContent(type="text", text=result)]
-    
-                elif name == "search_wikipedia":
-                    result = await query_wikipedia(arguments.get("search_string"), arguments.get("sentences", 7))
-                    return [types.TextContent(type="text", text=result)]
+        # The baseline schema forbids extra args on this tool. pydantic's
+        # generated argument model *ignores* extras rather than forbidding
+        # them, so pin the advertised schema back to the baseline shape (the
+        # old hand-written inputSchema carried it; advisory either way — the
+        # low-level server never validated arguments against it).
+        mcp._tool_manager.get_tool("query_multimodal_api").parameters["additionalProperties"] = False
 
-                else:
-                    return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
-                    
-            except Exception as e:
-                logger.error(f"Error executing tool {name}: {e}")
-                return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+        if WOLFRAM_ALPHA_API_KEY:
+            @mcp.tool(
+                name="wolfram_alpha",
+                description="Query Wolfram Alpha for answers to factual questions",
+                structured_output=False,
+            )
+            async def wolfram_alpha(
+                query: Annotated[str, Field(description="Question to ask Wolfram Alpha")],
+            ) -> str:
+                return await self._call(
+                    "wolfram_alpha",
+                    {"query": query},
+                    lambda: self.wolfram_alpha(query),
+                )
+
+        if WEATHER_API_KEY:
+            @mcp.tool(
+                name="get_weather_forecast",
+                description="Get weather forecast and astronomy data for a location",
+                structured_output=False,
+            )
+            async def get_weather_forecast(
+                location: Annotated[str, Field(description="City name, ZIP code, or coordinates")],
+                date: Annotated[str, NULL_OK, Field(description="Date in YYYY-MM-DD format (optional)")] = None,
+            ) -> str:
+                return await self._call(
+                    "get_weather_forecast",
+                    {"location": location, "date": date},
+                    lambda: self.get_weather_forecast(location, date),
+                )
+
+        if BRAVE_API_KEY:
+            @mcp.tool(
+                name="brave_search",
+                description="Retrieve a list of relevant websites using Brave Search API",
+                structured_output=False,
+            )
+            async def brave_search(
+                query: Annotated[str, Field(description="Search query")],
+                count: Annotated[int, NULL_OK, Field(description="Number of results (default: 4)")] = 4,
+            ) -> str:
+                return await self._call(
+                    "brave_search",
+                    {"query": query, "count": count},
+                    lambda: self.brave_search(query, count if count is not None else 4),
+                )
+
+        @mcp.tool(
+            name="search_wikipedia",
+            description="Search Wikipedia for information about a topic and return a summary.",
+            structured_output=False,
+        )
+        async def search_wikipedia(
+            search_string: Annotated[str, Field(description="Search query")],
+            sentences: Annotated[int, NULL_OK, Field(description="Number of sentences to return")] = None,
+        ) -> str:
+            return await self._call(
+                "search_wikipedia",
+                {"search_string": search_string, "sentences": sentences},
+                lambda: query_wikipedia(
+                    search_string, sentences if sentences is not None else 7
+                ),
+            )
+
+        logger.info(f"Registered {len(mcp._tool_manager.list_tools())} tools")
+        return mcp
+
+    async def _call(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        thunk: Callable[[], Awaitable[str]],
+    ) -> str:
+        """Run one tool body with the old call_tool handler's exact contract.
+
+        Same entry log line, plain-text result, and any exception becomes an
+        ``Error: ...`` text payload in ordinary (non-``isError``) content, so
+        the agent-visible text stays identical to the hand-dispatch era.
+        """
+        logger.info(f"Tool called: {name} with args: {args}")
+        try:
+            return await thunk()
+        except Exception as e:
+            logger.error(f"Error executing tool {name}: {e}")
+            return f"Error: {str(e)}"
 
     async def send_signal_message(
         self,
@@ -510,26 +477,6 @@ Astronomy:
         except Exception as e:
             return f"Error searching: {str(e)}"
     
-    async def run(self):
-        """Run the MCP server"""
-        logger.info("Starting HavenCore General Tools MCP Server...")
-        
-        # Run the stdio server
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("Server running on stdio")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                initialization_options=InitializationOptions(
-                    server_name="HavenCore General Tools MCP Server",
-                    server_version="1.0.0",
-                    capabilities=self.server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
-                    )
-                )
-            )
-
     async def wolfram_alpha(
         self,
         query: str,
@@ -596,11 +543,11 @@ Astronomy:
                     raise ValueError(f"Unexpected response structure: {e}") from e
 
 
-async def main():
-    """Main entry point"""
-    server = GeneralToolsServer()
-    await server.run()
+def main():
+    """Stdio entry point (``python -m selene_agent.modules.mcp_general_tools``)."""
+    logger.info("Starting HavenCore General Tools MCP Server...")
+    GeneralToolsServer().mcp.run("stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

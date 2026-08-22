@@ -92,7 +92,7 @@ class LoadedModule:
 async def _load_general_tools() -> LoadedModule:
     from selene_agent.modules.mcp_general_tools.mcp_server import GeneralToolsServer
     inst = await asyncio.to_thread(GeneralToolsServer)
-    return LoadedModule("general_tools", inst)
+    return LoadedModule("general_tools", inst, mcp=inst.mcp)
 
 
 async def _load_qdrant() -> LoadedModule:
