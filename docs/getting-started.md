@@ -79,6 +79,13 @@ STT_DEVICE="0"       # GPU for speech-to-text
 
 ### 4. Start the System
 
+> **TLS note**: nginx terminates TLS on 443 and will not start until its
+> certificate exists. Either run the one-off certbot issuance first (see
+> the [nginx service doc](services/nginx/README.md)) or, if you don't
+> want TLS, comment out the `listen 443 ssl` / `http2` / `ssl_*` lines
+> in `services/nginx/nginx.conf` and the `"443:443"` port in
+> `compose.yaml`.
+
 ```bash
 # Validate configuration
 docker compose config --quiet

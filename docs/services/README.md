@@ -6,7 +6,8 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 
 | Service | Ports | Purpose | Technology |
 |---------|-------|---------|------------|
-| [Nginx Gateway](nginx/README.md) | 80 | API gateway / reverse proxy | Nginx Alpine |
+| [Nginx Gateway](nginx/README.md) | 80, 443 | API gateway / reverse proxy / TLS termination | Nginx Alpine |
+| [Certbot](nginx/README.md#tls-termination-selenerenmanwtf) | — | Let's Encrypt cert issuance/renewal (Cloudflare DNS-01) for the gateway | certbot/dns-cloudflare |
 | [Agent Service](agent/README.md) | 6002 | AI logic, tool calling, SvelteKit dashboard | Python, FastAPI, SvelteKit |
 | [Speech-to-Text](speech-to-text/README.md) | 6001 | Audio transcription | Python, Faster Whisper, CUDA |
 | [Text-to-Speech](text-to-speech/README.md) | 6005 | Speech synthesis — selectable engine: Kokoro (default, fast) or Chatterbox-Turbo (cloning + streaming) | Python, Kokoro / Chatterbox-TTS, CUDA |

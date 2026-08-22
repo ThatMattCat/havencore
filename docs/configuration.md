@@ -831,9 +831,13 @@ upstream stt_backend {
 }
 ```
 
+TLS termination for `selene.renman.wtf` is built in — the cert lives in
+`./volumes/letsencrypt/` and is issued/renewed by the `certbot` compose
+service (Cloudflare DNS-01, token in `volumes/letsencrypt/cloudflare.ini`).
+See the [nginx service doc](services/nginx/README.md) for the full setup.
+
 **Customization Options**:
 - Load balancing algorithms
-- SSL/TLS termination
 - Rate limiting rules
 - CORS policies
 
@@ -913,7 +917,8 @@ networks:
 #### Port Mapping
 ```yaml
 ports:
-  - "80:80"          # Nginx gateway
+  - "80:80"          # Nginx gateway (plain HTTP, LAN)
+  - "443:443"        # Nginx gateway (TLS, selene.renman.wtf)
   - "6002:6002"      # Agent web interface
   - "8000:8000"      # LLM API (optional external access)
 ```
