@@ -137,7 +137,7 @@ async def _load_github() -> LoadedModule:
     from selene_agent.modules.mcp_github_tools.github_mcp_server import GitHubMCPServer
     # __init__ can block for minutes on the clone/fetch — keep it off the loop.
     inst = await asyncio.to_thread(GitHubMCPServer)
-    return LoadedModule("github", inst)
+    return LoadedModule("github", inst, mcp=inst.mcp)
 
 
 async def _load_face() -> LoadedModule:
