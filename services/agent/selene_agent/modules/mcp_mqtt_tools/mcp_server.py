@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
 Simple MCP Server for HavenCore
-Provides general tools like weather and web search via MCP
+Provides MQTT camera-snapshot tools via MCP.
+
+MCP surface is the mcp 2.0 ``MCPServer`` decorator API: the tool is a typed
+function registered in ``MQTTServer._build_mcp`` (see
+``mcp_reminder_tools/mcp_server.py`` for the pattern). ``HACamSnapper`` — the
+paho-MQTT + Home Assistant client layer — is unchanged, and is also imported
+lazily by ``mcp_vision_tools`` (keep the import path stable).
 """
 
 import os
 import json
 import asyncio
 from asyncio import Future
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Optional
 import paho.mqtt.client as mqtt
 
-from mcp.server import NotificationOptions
-from selene_agent.modules._mcp_compat import Server
-from mcp.server.stdio import stdio_server
-import mcp.types as types
-from mcp.types import Tool, TextContent, CallToolResult
-from mcp.server.models import InitializationOptions
+from mcp.server import MCPServer
 
 from selene_agent.utils.logger import get_logger
 
@@ -176,82 +176,68 @@ class HACamSnapper:
 
 
 class MQTTServer:
-    """MCP server providing MQTT camera-snapshot tools"""
-    
+    """MCP server providing MQTT camera-snapshot tools.
+
+    ``self.mcp`` is the configured ``MCPServer``; the decorated closure in
+    ``_build_mcp`` is the MCP surface and delegates to ``HACamSnapper``.
+    """
+
     def __init__(self):
-        self.server = Server("havencore-mqtt-tools")
         self.snapshotter = HACamSnapper(
             ha_url=HAOS_URL,
             ha_token=HAOS_TOKEN,
             mqtt_broker=MQTT_BROKER,
             mqtt_port=MQTT_PORT
-        )   
-        self.setup_handlers()
-        
-    def setup_handlers(self):
-        """Setup MCP protocol handlers"""
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            """List available tools"""
-            tools = []
+        )
+        self.mcp = self._build_mcp()
 
-            if self.snapshotter.mqtt_client.is_connected():
-                tools.append(Tool(
-                    name="get_camera_snapshots",
-                    description="Capture a snapshot from all cameras and return a text description of the images",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                ))
-            
-            logger.info(f"Listing {len(tools)} tools")
-            return tools
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextContent]:
-            """Execute a tool"""
-            logger.info(f"Tool called: {name} with args: {arguments if arguments else '{}'}")
-            
-            try:
-                if name == "get_camera_snapshots":
-                    result = await self.snapshotter.get_camera_snapshots()
-                    result = json.dumps(result, indent=2)
-                    return [types.TextContent(type="text", text=result)]
-                else:
-                    return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
-                    
-            except Exception as e:
-                logger.error(f"Error executing tool {name}: {e}")
-                return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    async def run(self):
-        """Run the MCP server"""
-        logger.info("Starting HavenCore MQTT Tools MCP Server...")
-        
-        # Run the stdio server
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("Server running on stdio")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                initialization_options=InitializationOptions(
-                    server_name="HavenCore MQTT Tools MCP Server",
-                    server_version="1.0.0",
-                    capabilities=self.server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
-                    )
-                )
-            )
+    def _build_mcp(self) -> MCPServer:
+        mcp = MCPServer("havencore-mqtt-tools", version="1.0.0")
 
-async def main():
-    """Main entry point"""
-    server = MQTTServer()
-    await server.run()
+        # structured_output=False: the result stays a single TextContent JSON
+        # string (no outputSchema, no structuredContent) — the pre-MCPServer
+        # wire format.
+
+        @mcp.tool(
+            name="get_camera_snapshots",
+            description="Capture a snapshot from all cameras and return a text description of the images",
+            structured_output=False,
+        )
+        async def get_camera_snapshots() -> str:
+            return await self._dispatch("get_camera_snapshots")
+
+        return mcp
+
+    async def _dispatch(self, name: str) -> str:
+        """Run the snapshot tool with the old call_tool handler's contract.
+
+        Success is the impl dict as indented JSON; an unexpected exception
+        becomes ``Error: <e>`` text in ordinary (non-``isError``) content —
+        identical to the hand-dispatch era. The tool used to disappear from
+        tools/list while MQTT was down; the decorator surface is static, so a
+        broker outage is now reported as an ordinary error result instead
+        (server-side fallback over a dynamic tool list).
+        """
+        logger.info(f"Tool called: {name} with args: {{}}")
+        try:
+            if not self.snapshotter.mqtt_client.is_connected():
+                result = {
+                    "success": False,
+                    "error": "MQTT not connected; camera snapshots are unavailable right now",
+                }
+            else:
+                result = await self.snapshotter.get_camera_snapshots()
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.error(f"Error executing tool {name}: {e}")
+            return f"Error: {str(e)}"
+
+
+def main():
+    """Stdio entry point (``python -m selene_agent.modules.mcp_mqtt_tools``)."""
+    logger.info("Starting HavenCore MQTT Tools MCP Server (stdio)...")
+    MQTTServer().mcp.run("stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

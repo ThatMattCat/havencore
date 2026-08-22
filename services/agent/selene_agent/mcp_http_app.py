@@ -111,7 +111,7 @@ async def _load_homeassistant() -> LoadedModule:
 async def _load_mqtt() -> LoadedModule:
     from selene_agent.modules.mcp_mqtt_tools.mcp_server import MQTTServer
     inst = await asyncio.to_thread(MQTTServer)  # MQTT connect in __init__
-    return LoadedModule("mqtt", inst)
+    return LoadedModule("mqtt", inst, mcp=inst.mcp)
 
 
 async def _load_plex() -> LoadedModule:
