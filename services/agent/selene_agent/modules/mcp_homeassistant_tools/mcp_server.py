@@ -5,21 +5,19 @@ Provides unified Home Assistant tools via MCP including device control, media ma
 """
 
 import json
-import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Annotated, Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple, Union
 from urllib.parse import quote
 
 import aiohttp
+import anyio
+from pydantic import Field
 
-from mcp.server import NotificationOptions
-from selene_agent.modules._mcp_compat import Server
-from mcp.server.stdio import stdio_server
-import mcp.types as types
-from mcp.types import Tool
-from mcp.server.models import InitializationOptions
+from mcp.server import MCPServer
+
+from selene_agent.modules._mcp_params import NULL_OK
 from . import ha_media_controller
 
 from selene_agent.utils.logger import get_logger
@@ -232,16 +230,22 @@ class HomeAssistantClient:
         return f"Service {domain}.{service} executed{suffix}"
 
 class HomeAssistantMCPServer:
-    """MCP server providing comprehensive Home Assistant tools"""
-    
+    """MCP server providing comprehensive Home Assistant tools.
+
+    ``self.mcp`` is the configured mcp 2.0 ``MCPServer``; the decorated
+    closures in ``_build_mcp`` are the MCP surface and delegate to the
+    existing impl methods (unchanged from the hand-dispatch era) through
+    ``_call``, which replicates the old call_tool handler's logging, init
+    guard, and error contract.
+    """
+
     def __init__(self):
-        self.server = Server("havencore-homeassistant")
         self.ha_client: Optional[HomeAssistantClient] = None
         self.media_controller: Optional[ha_media_controller.MediaController] = None
         self.init_error: Optional[str] = None
         self._registry_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
         self._registry_cache_ttl = 60.0
-        self.setup_handlers()
+        self.mcp = self._build_mcp()
 
     async def initialize_clients(self):
         """Initialize Home Assistant clients. Records init_error on failure."""
@@ -255,742 +259,678 @@ class HomeAssistantMCPServer:
             self.init_error = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to initialize HA clients: {e}")
         
-    def setup_handlers(self):
-        """Setup MCP protocol handlers"""
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            """List available Home Assistant tools"""
-            tools = []
-            
-            # Basic Home Assistant API Tools
-            tools.extend([
-                Tool(
-                    name="ha_list_entities",
-                    description=(
-                        "List Home Assistant entities, optionally filtered by domain and/or area. "
-                        "At least one of `domain` or `area` must be provided. "
-                        "\n\n"
-                        "- `domain` alone → all entities in that domain with state + curated "
-                        "attributes (e.g. domain='light' → every light and its "
-                        "brightness / rgb_color / color_temp_kelvin / color_mode). Returned as "
-                        "{entity_id: {state, attributes}}. If the domain has no entities "
-                        "(e.g. 'notify', 'tts', 'script' — these expose services, not entities), "
-                        "the response includes a `hint` field pointing you at ha_list_services.\n"
-                        "- `area` alone → entities assigned to the area, grouped by domain, as "
-                        "bare entity_id strings (cheap directory lookup). Set "
-                        "include_state=true to attach state + curated attributes.\n"
-                        "- `domain` + `area` → entities of that domain within the area (grouped "
-                        "shape, still cheap; include_state=true to attach state).\n"
-                        "\n"
-                        "Area accepts an area_id or case-insensitive area name / alias "
-                        "(e.g. 'kitchen' or 'Kitchen'). Attributes are curated per domain "
-                        "(lights: brightness / rgb_color / hs_color / color_temp_kelvin / "
-                        "color_mode; climate: current_temperature / temperature / hvac_action; "
-                        "covers: current_position; media_player: source / volume_level / "
-                        "media_title; etc.) and round-trip back into the matching ha_control_* tool."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "domain": {
-                                "type": "string",
-                                "description": "Domain filter, e.g. 'light', 'switch', 'climate', 'media_player', 'sensor', 'cover'."
-                            },
-                            "area": {
-                                "type": "string",
-                                "description": "Area filter — area_id or case-insensitive area name / alias (e.g. 'kitchen')."
-                            },
-                            "include_state": {
-                                "type": "boolean",
-                                "description": "Attach state + curated attributes to each entity. Default: true for domain-only queries, false when an area filter is used (area listings can be large)."
-                            }
-                        }
-                    }
+    def _build_mcp(self) -> MCPServer:
+        """Register the decorated tool surface.
+
+        structured_output=False on every tool: results stay a single
+        TextContent string, byte-identical to the pre-MCPServer wire format
+        (no outputSchema in tools/list, no structuredContent).
+
+        A few schemas the decorator API cannot express are pinned back to the
+        baseline shape on ``mcp._tool_manager`` right after registration — see
+        the block at the end of this method.
+        """
+        mcp = MCPServer("havencore-homeassistant", version="1.0.0")
+
+        # --- Basic Home Assistant API Tools ---------------------------------
+
+        @mcp.tool(
+            name="ha_list_entities",
+            description=(
+                "List Home Assistant entities, optionally filtered by domain and/or area. "
+                "At least one of `domain` or `area` must be provided. "
+                "\n\n"
+                "- `domain` alone → all entities in that domain with state + curated "
+                "attributes (e.g. domain='light' → every light and its "
+                "brightness / rgb_color / color_temp_kelvin / color_mode). Returned as "
+                "{entity_id: {state, attributes}}. If the domain has no entities "
+                "(e.g. 'notify', 'tts', 'script' — these expose services, not entities), "
+                "the response includes a `hint` field pointing you at ha_list_services.\n"
+                "- `area` alone → entities assigned to the area, grouped by domain, as "
+                "bare entity_id strings (cheap directory lookup). Set "
+                "include_state=true to attach state + curated attributes.\n"
+                "- `domain` + `area` → entities of that domain within the area (grouped "
+                "shape, still cheap; include_state=true to attach state).\n"
+                "\n"
+                "Area accepts an area_id or case-insensitive area name / alias "
+                "(e.g. 'kitchen' or 'Kitchen'). Attributes are curated per domain "
+                "(lights: brightness / rgb_color / hs_color / color_temp_kelvin / "
+                "color_mode; climate: current_temperature / temperature / hvac_action; "
+                "covers: current_position; media_player: source / volume_level / "
+                "media_title; etc.) and round-trip back into the matching ha_control_* tool."
+            ),
+            structured_output=False,
+        )
+        async def ha_list_entities(
+            domain: Annotated[str, NULL_OK, Field(description=(
+                "Domain filter, e.g. 'light', 'switch', 'climate', 'media_player', 'sensor', 'cover'."
+            ))] = None,
+            area: Annotated[str, NULL_OK, Field(description=(
+                "Area filter — area_id or case-insensitive area name / alias (e.g. 'kitchen')."
+            ))] = None,
+            include_state: Annotated[bool, NULL_OK, Field(description=(
+                "Attach state + curated attributes to each entity. Default: true for "
+                "domain-only queries, false when an area filter is used (area listings can be large)."
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "ha_list_entities",
+                {"domain": domain, "area": area, "include_state": include_state},
+                lambda: self._list_entities(domain, area, include_state),
+            )
+
+        @mcp.tool(
+            name="ha_get_state",
+            description=(
+                "Cheap single-entity state read. Returns "
+                "{entity_id, state, attributes, last_changed, last_updated} for "
+                "one entity in one round-trip. Use this for trivial reads — "
+                "\"is the porch light on\", \"what's the thermostat set to\", "
+                "\"what was that door's last state change?\" — instead of "
+                "ha_list_entities (which returns the whole domain) or "
+                "ha_evaluate_template (which is the escape hatch for compound "
+                "logic). Attributes are curated per domain, same shape as "
+                "ha_list_entities, so the value round-trips into ha_control_*."
+            ),
+            structured_output=False,
+        )
+        async def ha_get_state(
+            entity_id: Annotated[str, Field(description=(
+                "Entity ID to read (e.g. 'light.porch', 'climate.living_room')."
+            ))],
+        ) -> str:
+            async def run() -> str:
+                return json.dumps(await self._get_state(entity_id), indent=2)
+            return await self._call("ha_get_state", {"entity_id": entity_id}, run)
+
+        @mcp.tool(
+            name="ha_list_services",
+            description=(
+                "List callable services (actions) for a Home Assistant domain. Returns "
+                "a JSON object mapping service_name → description. Use this for domains "
+                "that expose actions rather than entity state:\n"
+                "- 'notify' → every notification target is a separate service (e.g. "
+                "notify.mobile_app_matt, notify.family_group). ha_list_entities returns "
+                "nothing for 'notify'; this tool is how you discover who you can notify.\n"
+                "- 'tts' → tts.speak, tts.cloud_say, etc.\n"
+                "- 'script' → each script is its own service.\n"
+                "- 'light' / 'switch' / 'climate' / etc. → turn_on, turn_off, set_*, "
+                "toggle, and any custom services.\n"
+                "\n"
+                "Pair the service name with ha_execute_service to invoke it (e.g. "
+                "service='turn_on', entity_id='light.kitchen')."
+            ),
+            structured_output=False,
+        )
+        async def ha_list_services(
+            domain: Annotated[str, Field(description=(
+                "Domain name (e.g. 'notify', 'tts', 'script', 'light', 'climate')."
+            ))],
+        ) -> str:
+            return await self._call(
+                "ha_list_services",
+                {"domain": domain},
+                lambda: self._list_services(domain),
+            )
+
+        @mcp.tool(
+            name="ha_execute_service",
+            description=(
+                "Execute a Home Assistant service on an entity. "
+                "Use service_data to pass service parameters such as brightness, color, "
+                "temperature, volume, etc. Example: service='turn_on' with "
+                "service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity. "
+                "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
+            ),
+            structured_output=False,
+        )
+        async def ha_execute_service(
+            entity_id: Annotated[str, Field(description=(
+                "The entity ID to execute the service on (e.g., 'light.living_room')"
+            ))],
+            service: Annotated[str, Field(description=(
+                "The service name to execute (e.g., 'turn_on', 'turn_off', 'toggle', 'set_temperature')"
+            ))],
+            service_data: Annotated[Dict[str, Any], NULL_OK, Field(description=(
+                "Optional service-specific parameters as a JSON object. "
+                "Common examples: {'brightness_pct': 50}, {'color_name': 'red'}, "
+                "{'temperature': 72, 'hvac_mode': 'heat'}, {'volume_level': 0.5}."
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "ha_execute_service",
+                {"entity_id": entity_id, "service": service, "service_data": service_data},
+                lambda: self._execute_service(entity_id, service, service_data or {}),
+            )
+
+        # --- Device & Automation Control Tools ------------------------------
+
+        @mcp.tool(
+            name="ha_control_light",
+            description=(
+                "Turn a light on/off/toggle with optional brightness and color. "
+                "Color can be specified as rgb_color, hs_color, hex_color, "
+                "color_temp_kelvin, or color_name — specify at most ONE of these. "
+                "The rgb_color / hs_color / color_temp_kelvin values returned by "
+                "ha_list_entities and ha_get_entity_history can be passed "
+                "back here unchanged to reproduce a prior color. turn_off and toggle "
+                "ignore brightness/color. "
+                "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
+            ),
+            structured_output=False,
+        )
+        async def ha_control_light(
+            entity_id: Annotated[str, Field(description=(
+                "Light entity ID (e.g. 'light.living_room_lamp')"
+            ))],
+            state: Annotated[Literal["on", "off", "toggle"], Field(description="Desired state")],
+            brightness_pct: Annotated[int, Field(
+                ge=0, le=100, description="Brightness percentage 0-100 (on only)",
+            ), NULL_OK] = None,
+            color_name: Annotated[str, NULL_OK, Field(description=(
+                "CSS color name, e.g. 'red', 'warm_white' (on only)"
+            ))] = None,
+            color_temp_kelvin: Annotated[int, NULL_OK, Field(description=(
+                "Color temperature in Kelvin, e.g. 2700-6500 (on only)"
+            ))] = None,
+            rgb_color: Annotated[List[Annotated[int, Field(ge=0, le=255)]], Field(
+                min_length=3, max_length=3, description=(
+                    "Color as [R,G,B] integers 0-255 (on only). Matches the rgb_color "
+                    "shape returned by ha_list_entities."
                 ),
-                Tool(
-                    name="ha_get_state",
-                    description=(
-                        "Cheap single-entity state read. Returns "
-                        "{entity_id, state, attributes, last_changed, last_updated} for "
-                        "one entity in one round-trip. Use this for trivial reads — "
-                        "\"is the porch light on\", \"what's the thermostat set to\", "
-                        "\"what was that door's last state change?\" — instead of "
-                        "ha_list_entities (which returns the whole domain) or "
-                        "ha_evaluate_template (which is the escape hatch for compound "
-                        "logic). Attributes are curated per domain, same shape as "
-                        "ha_list_entities, so the value round-trips into ha_control_*."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Entity ID to read (e.g. 'light.porch', 'climate.living_room')."
-                            }
-                        },
-                        "required": ["entity_id"]
-                    }
+            ), NULL_OK] = None,
+            hs_color: Annotated[List[float], Field(
+                min_length=2, max_length=2, description=(
+                    "Color as [hue 0-360, saturation 0-100] (on only). Matches the "
+                    "hs_color shape returned by ha_list_entities."
                 ),
-                Tool(
-                    name="ha_list_services",
-                    description=(
-                        "List callable services (actions) for a Home Assistant domain. Returns "
-                        "a JSON object mapping service_name → description. Use this for domains "
-                        "that expose actions rather than entity state:\n"
-                        "- 'notify' → every notification target is a separate service (e.g. "
-                        "notify.mobile_app_matt, notify.family_group). ha_list_entities returns "
-                        "nothing for 'notify'; this tool is how you discover who you can notify.\n"
-                        "- 'tts' → tts.speak, tts.cloud_say, etc.\n"
-                        "- 'script' → each script is its own service.\n"
-                        "- 'light' / 'switch' / 'climate' / etc. → turn_on, turn_off, set_*, "
-                        "toggle, and any custom services.\n"
-                        "\n"
-                        "Pair the service name with ha_execute_service to invoke it (e.g. "
-                        "service='turn_on', entity_id='light.kitchen')."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "domain": {
-                                "type": "string",
-                                "description": "Domain name (e.g. 'notify', 'tts', 'script', 'light', 'climate')."
-                            }
-                        },
-                        "required": ["domain"]
-                    }
+            ), NULL_OK] = None,
+            hex_color: Annotated[str, NULL_OK, Field(description=(
+                "Color as a hex string like '#FF8040' or 'FF8040' (on only). "
+                "Converted to rgb_color before calling HA."
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "ha_control_light",
+                {"entity_id": entity_id, "state": state, "brightness_pct": brightness_pct,
+                 "color_name": color_name, "color_temp_kelvin": color_temp_kelvin,
+                 "rgb_color": rgb_color, "hs_color": hs_color, "hex_color": hex_color},
+                lambda: self._control_light(
+                    entity_id, state, brightness_pct, color_name,
+                    color_temp_kelvin, rgb_color, hs_color, hex_color,
                 ),
-                Tool(
-                    name="ha_execute_service",
-                    description=(
-                        "Execute a Home Assistant service on an entity. "
-                        "Use service_data to pass service parameters such as brightness, color, "
-                        "temperature, volume, etc. Example: service='turn_on' with "
-                        "service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity. "
-                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "The entity ID to execute the service on (e.g., 'light.living_room')"
-                            },
-                            "service": {
-                                "type": "string",
-                                "description": "The service name to execute (e.g., 'turn_on', 'turn_off', 'toggle', 'set_temperature')"
-                            },
-                            "service_data": {
-                                "type": "object",
-                                "description": (
-                                    "Optional service-specific parameters as a JSON object. "
-                                    "Common examples: {'brightness_pct': 50}, {'color_name': 'red'}, "
-                                    "{'temperature': 72, 'hvac_mode': 'heat'}, {'volume_level': 0.5}."
-                                ),
-                                "additionalProperties": True
-                            }
-                        },
-                        "required": ["entity_id", "service"]
-                    }
-                )
-            ])
-            
-            # Device & Automation Control Tools
-            tools.extend([
-                Tool(
-                    name="ha_control_light",
-                    description=(
-                        "Turn a light on/off/toggle with optional brightness and color. "
-                        "Color can be specified as rgb_color, hs_color, hex_color, "
-                        "color_temp_kelvin, or color_name — specify at most ONE of these. "
-                        "The rgb_color / hs_color / color_temp_kelvin values returned by "
-                        "ha_list_entities and ha_get_entity_history can be passed "
-                        "back here unchanged to reproduce a prior color. turn_off and toggle "
-                        "ignore brightness/color. "
-                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Light entity ID (e.g. 'light.living_room_lamp')"
-                            },
-                            "state": {
-                                "type": "string",
-                                "enum": ["on", "off", "toggle"],
-                                "description": "Desired state"
-                            },
-                            "brightness_pct": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "maximum": 100,
-                                "description": "Brightness percentage 0-100 (on only)"
-                            },
-                            "color_name": {
-                                "type": "string",
-                                "description": "CSS color name, e.g. 'red', 'warm_white' (on only)"
-                            },
-                            "color_temp_kelvin": {
-                                "type": "integer",
-                                "description": "Color temperature in Kelvin, e.g. 2700-6500 (on only)"
-                            },
-                            "rgb_color": {
-                                "type": "array",
-                                "items": {"type": "integer", "minimum": 0, "maximum": 255},
-                                "minItems": 3,
-                                "maxItems": 3,
-                                "description": "Color as [R,G,B] integers 0-255 (on only). Matches the rgb_color shape returned by ha_list_entities."
-                            },
-                            "hs_color": {
-                                "type": "array",
-                                "items": {"type": "number"},
-                                "minItems": 2,
-                                "maxItems": 2,
-                                "description": "Color as [hue 0-360, saturation 0-100] (on only). Matches the hs_color shape returned by ha_list_entities."
-                            },
-                            "hex_color": {
-                                "type": "string",
-                                "description": "Color as a hex string like '#FF8040' or 'FF8040' (on only). Converted to rgb_color before calling HA."
-                            }
-                        },
-                        "required": ["entity_id", "state"]
-                    }
-                ),
-                Tool(
-                    name="ha_control_climate",
-                    description=(
-                        "Control a climate entity (thermostat). Supply any combination of "
-                        "temperature, hvac_mode, and fan_mode — each issued as a separate "
-                        "HA service call. "
-                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Climate entity ID (e.g. 'climate.living_room')"
-                            },
-                            "temperature": {
-                                "type": "number",
-                                "description": "Target temperature (unit matches the entity's configured unit)"
-                            },
-                            "hvac_mode": {
-                                "type": "string",
-                                "enum": ["off", "heat", "cool", "auto", "heat_cool", "dry", "fan_only"],
-                                "description": "HVAC mode"
-                            },
-                            "fan_mode": {
-                                "type": "string",
-                                "description": "Fan mode (entity-specific, e.g. 'auto', 'low', 'high')"
-                            }
-                        },
-                        "required": ["entity_id"]
-                    }
-                ),
-                Tool(
-                    name="ha_activate_scene",
-                    description="Activate a Home Assistant scene (scene.turn_on).",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "scene_entity": {
-                                "type": "string",
-                                "description": "Scene entity ID (e.g. 'scene.movie_night')"
-                            }
-                        },
-                        "required": ["scene_entity"]
-                    }
-                ),
-                Tool(
-                    name="ha_trigger_script",
-                    description=(
-                        "Run a Home Assistant script (script.turn_on). Optional 'variables' "
-                        "object is passed as script variables."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "script_entity": {
-                                "type": "string",
-                                "description": "Script entity ID (e.g. 'script.bedtime')"
-                            },
-                            "variables": {
-                                "type": "object",
-                                "description": "Optional script variables",
-                                "additionalProperties": True
-                            }
-                        },
-                        "required": ["script_entity"]
-                    }
-                ),
-                Tool(
-                    name="ha_trigger_automation",
-                    description=(
-                        "Manually trigger a Home Assistant automation (automation.trigger). "
-                        "Use ha_toggle_automation to enable/disable instead."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "automation_entity": {
-                                "type": "string",
-                                "description": "Automation entity ID (e.g. 'automation.goodnight')"
-                            }
-                        },
-                        "required": ["automation_entity"]
-                    }
-                ),
-                Tool(
-                    name="ha_toggle_automation",
-                    description=(
-                        "Enable or disable a Home Assistant automation (automation.turn_on/turn_off). "
-                        "This controls whether the automation runs on its triggers; it does NOT "
-                        "manually fire the automation — use ha_trigger_automation for that."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Automation entity ID"
-                            },
-                            "enabled": {
-                                "type": "boolean",
-                                "description": "true = turn_on (enable), false = turn_off (disable)"
-                            }
-                        },
-                        "required": ["entity_id", "enabled"]
-                    }
-                ),
-                Tool(
-                    name="ha_send_notification",
-                    description=(
-                        "Send a notification through a Home Assistant notify.* service. "
-                        "Call ha_list_services with domain='notify' to discover the "
-                        "available service names on this HA instance."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "service": {
-                                "type": "string",
-                                "description": "notify service name, e.g. 'mobile_app_pixel_7' (without the 'notify.' prefix)"
-                            },
-                            "message": {
-                                "type": "string",
-                                "description": "Notification body"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Optional notification title"
-                            },
-                            "target": {
-                                "type": ["string", "array"],
-                                "items": {"type": "string"},
-                                "description": "Optional target(s) — string or array, service-dependent"
-                            }
-                        },
-                        "required": ["service", "message"]
-                    }
-                ),
-                Tool(
-                    name="ha_list_areas",
-                    description=(
-                        "List Home Assistant areas (rooms / zones). Useful before calling "
-                        "ha_list_entities with an `area` filter when the user names a room."
-                    ),
-                    inputSchema={"type": "object", "properties": {}}
-                ),
-                Tool(
-                    name="ha_get_presence",
-                    description=(
-                        "Summarize presence: state of all person.* and device_tracker.* entities. "
-                        "Typical states: 'home', 'not_home', or a zone name."
-                    ),
-                    inputSchema={"type": "object", "properties": {}}
-                ),
-                Tool(
-                    name="ha_set_timer",
-                    description=(
-                        "Start a Home Assistant timer helper (timer.start). Requires a timer.* "
-                        "entity configured in Home Assistant — discover available timers via "
-                        "ha_list_entities with domain='timer'. Duration uses HH:MM:SS "
-                        "format (e.g. '0:05:00' = 5 minutes); omit to use the timer's configured "
-                        "default duration."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Timer entity ID (e.g. 'timer.kitchen')"
-                            },
-                            "duration": {
-                                "type": "string",
-                                "description": "Duration in HH:MM:SS (e.g. '0:10:00' for 10 minutes). Optional."
-                            }
-                        },
-                        "required": ["entity_id"]
-                    }
-                ),
-                Tool(
-                    name="ha_cancel_timer",
-                    description="Cancel a running Home Assistant timer (timer.cancel).",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Timer entity ID to cancel"
-                            }
-                        },
-                        "required": ["entity_id"]
-                    }
-                ),
-                Tool(
-                    name="ha_evaluate_template",
-                    description=(
-                        "Evaluate a Home Assistant Jinja2 template server-side and return the "
-                        "rendered text. Escape hatch for compound questions like "
-                        "\"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}\". "
-                        "See https://www.home-assistant.io/docs/configuration/templating/ for syntax."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "template": {
-                                "type": "string",
-                                "description": "Jinja2 template string to render"
-                            }
-                        },
-                        "required": ["template"]
-                    }
-                ),
-                Tool(
-                    name="ha_get_entity_history",
-                    description=(
-                        "Get recent state history for an entity over the last N hours. Returns a "
-                        "list of {state, last_changed, attributes?} points, sampled if very dense. "
-                        "Attributes are curated per domain (same shape as ha_list_entities) "
-                        "so you can see e.g. how a light's brightness or rgb_color changed over "
-                        "time — useful for questions like \"what color was the lamp before?\" or "
-                        "\"when did the thermostat setpoint last change?\"."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Entity ID to fetch history for"
-                            },
-                            "entity_ids": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Optional list of entity IDs (alternative to entity_id); returns a per-entity map"
-                            },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "default": 24,
-                                "description": "Look-back window in hours (default 24, max 168 = 1 week)"
-                            }
-                        },
-                        "required": []
-                    }
-                ),
-                Tool(
-                    name="ha_get_calendar_events",
-                    description=(
-                        "Get upcoming events over the next N days. Pass a specific "
-                        "calendar_entity, or omit it to aggregate events across ALL "
-                        "calendars. Discover calendar entities via ha_list_entities "
-                        "with domain='calendar'."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "calendar_entity": {
-                                "type": "string",
-                                "description": "Calendar entity ID (e.g. 'calendar.family'). Omit to query all calendars."
-                            },
-                            "days": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 31,
-                                "default": 7,
-                                "description": "Look-ahead window in days (default 7, max 31)"
-                            }
-                        },
-                        "required": []
-                    }
-                ),
-                Tool(
-                    name="ha_create_calendar_event",
-                    description=(
-                        "Create a new event on a Home Assistant calendar entity. Requires a "
-                        "writable calendar (Local Calendar always works; Google requires "
-                        "read-write OAuth; many integrations are read-only and will return an "
-                        "error). Provide EITHER timed event fields (start_date_time + "
-                        "end_date_time, ISO 8601 with offset, e.g. '2026-05-01T14:00:00-04:00') "
-                        "OR all-day fields (start_date + end_date, ISO date YYYY-MM-DD; end_date "
-                        "is exclusive). Do not mix the two pairs. Times are interpreted in HA's "
-                        "configured timezone if no offset is given."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "calendar_entity": {
-                                "type": "string",
-                                "description": "Calendar entity ID (e.g. 'calendar.family')"
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "Event title"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Optional event description / notes"
-                            },
-                            "location": {
-                                "type": "string",
-                                "description": "Optional event location"
-                            },
-                            "start_date_time": {
-                                "type": "string",
-                                "description": "Timed event start, ISO 8601 (e.g. '2026-05-01T14:00:00-04:00'). Pair with end_date_time."
-                            },
-                            "end_date_time": {
-                                "type": "string",
-                                "description": "Timed event end (exclusive), ISO 8601. Pair with start_date_time."
-                            },
-                            "start_date": {
-                                "type": "string",
-                                "description": "All-day event start, YYYY-MM-DD. Pair with end_date."
-                            },
-                            "end_date": {
-                                "type": "string",
-                                "description": "All-day event end (exclusive), YYYY-MM-DD. For a one-day event, set this to the day AFTER start_date."
-                            }
-                        },
-                        "required": ["calendar_entity", "summary"]
-                    }
-                ),
-                # ha_update_calendar_event / ha_delete_calendar_event are intentionally hidden:
-                # the HA CalDav integration doesn't declare UPDATE_EVENT/DELETE_EVENT features
-                # so the WS commands always return "not supported" against our calendar.
-                # Handler methods + dispatch are kept so re-enabling is a Tool() restore away —
-                # see todo.md "Direct CalDav access" for the proper fix.
-            ])
+            )
 
-            # Media Player Control Tools
-            tools.extend([
-                Tool(
-                    name="ha_control_media_player",
-                    description=(
-                        "Control a media player: playback (play/pause/stop/toggle/next/previous/seek), "
-                        "volume, power, or input source. The 'value' field is required for "
-                        "volume_set, seek, and select_source; ignored otherwise.\n"
-                        "\n"
-                        "Playback semantics (IMPORTANT — play and pause are NOT toggles):\n"
-                        "- 'play'   : start/resume playback. Use only when the device is paused or stopped. "
-                        "Calling 'play' on an already-playing device is a no-op.\n"
-                        "- 'pause'  : pause playback. Use only when the device is currently playing. "
-                        "Calling 'pause' on an already-paused device is a no-op.\n"
-                        "- 'toggle' : switch between play and pause based on current state. Prefer this "
-                        "for user requests like 'unpause', 'resume', 'pause/play it' or whenever the "
-                        "current playback state is unknown or ambiguous.\n"
-                        "When in doubt between play/pause, use 'toggle'.\n"
-                        "\n"
-                        "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["play", "pause", "stop", "toggle", "next", "previous",
-                                        "seek", "shuffle", "repeat", "volume_set", "volume_up",
-                                        "volume_down", "mute", "unmute", "turn_on", "turn_off",
-                                        "select_source"],
-                                "description": (
-                                    "Action to perform on the media player. Note: 'play' and 'pause' "
-                                    "are directional (not toggles) — use 'toggle' for 'unpause'/'resume' "
-                                    "or when the current state is unknown."
-                                )
-                            },
-                            "device": {
-                                "type": "string",
-                                "description": "Media player device name or entity_id (optional, auto-detects if not provided)"
-                            },
-                            "value": {
-                                "type": ["number", "string", "boolean"],
-                                "description": (
-                                    "Value for the action. Units by action: "
-                                    "volume_set = integer 0-100 (percent); "
-                                    "seek = integer seconds from start; "
-                                    "select_source = source name string (e.g. 'HDMI 1'); "
-                                    "shuffle/repeat = boolean or 'off'/'all'/'one'."
-                                )
-                            }
-                        },
-                        "required": ["action"]
-                    }
-                ),
-            ])
-            
-            logger.info(f"Listing {len(tools)} Home Assistant tools")
-            return tools
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
-            """Execute a Home Assistant tool"""
-            logger.info(f"Home Assistant tool called: {name} with args: {arguments}")
+        @mcp.tool(
+            name="ha_control_climate",
+            description=(
+                "Control a climate entity (thermostat). Supply any combination of "
+                "temperature, hvac_mode, and fan_mode — each issued as a separate "
+                "HA service call. "
+                "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
+            ),
+            structured_output=False,
+        )
+        async def ha_control_climate(
+            entity_id: Annotated[str, Field(description=(
+                "Climate entity ID (e.g. 'climate.living_room')"
+            ))],
+            temperature: Annotated[float, NULL_OK, Field(description=(
+                "Target temperature (unit matches the entity's configured unit)"
+            ))] = None,
+            hvac_mode: Annotated[
+                Literal["off", "heat", "cool", "auto", "heat_cool", "dry", "fan_only"],
+                NULL_OK, Field(description="HVAC mode"),
+            ] = None,
+            fan_mode: Annotated[str, NULL_OK, Field(description=(
+                "Fan mode (entity-specific, e.g. 'auto', 'low', 'high')"
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "ha_control_climate",
+                {"entity_id": entity_id, "temperature": temperature,
+                 "hvac_mode": hvac_mode, "fan_mode": fan_mode},
+                lambda: self._control_climate(entity_id, temperature, hvac_mode, fan_mode),
+            )
 
-            if self.init_error or not self.ha_client:
-                msg = self.init_error or "Home Assistant clients not initialized"
-                return [types.TextContent(type="text", text=f"Home Assistant unavailable: {msg}")]
+        @mcp.tool(
+            name="ha_activate_scene",
+            description="Activate a Home Assistant scene (scene.turn_on).",
+            structured_output=False,
+        )
+        async def ha_activate_scene(
+            scene_entity: Annotated[str, Field(description=(
+                "Scene entity ID (e.g. 'scene.movie_night')"
+            ))],
+        ) -> str:
+            return await self._call(
+                "ha_activate_scene",
+                {"scene_entity": scene_entity},
+                lambda: self._activate_scene(scene_entity),
+            )
 
-            try:
-                # Basic Home Assistant API Operations
-                if name == "ha_list_entities":
-                    result = await self._list_entities(
-                        arguments.get("domain"),
-                        arguments.get("area"),
-                        arguments.get("include_state"),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_trigger_script",
+            description=(
+                "Run a Home Assistant script (script.turn_on). Optional 'variables' "
+                "object is passed as script variables."
+            ),
+            structured_output=False,
+        )
+        async def ha_trigger_script(
+            script_entity: Annotated[str, Field(description=(
+                "Script entity ID (e.g. 'script.bedtime')"
+            ))],
+            # Any (not Dict[str, Any]): _trigger_script tolerates a JSON *string*
+            # where the schema asks for an object (LLMs send those routinely) and
+            # decodes it server-side. The advertised schema is pinned back to the
+            # baseline object shape below.
+            variables: Annotated[Any, NULL_OK, Field(description="Optional script variables")] = None,
+        ) -> str:
+            return await self._call(
+                "ha_trigger_script",
+                {"script_entity": script_entity, "variables": variables},
+                lambda: self._trigger_script(script_entity, variables or {}),
+            )
 
-                elif name == "ha_get_state":
-                    result = await self._get_state(arguments.get("entity_id"))
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        @mcp.tool(
+            name="ha_trigger_automation",
+            description=(
+                "Manually trigger a Home Assistant automation (automation.trigger). "
+                "Use ha_toggle_automation to enable/disable instead."
+            ),
+            structured_output=False,
+        )
+        async def ha_trigger_automation(
+            automation_entity: Annotated[str, Field(description=(
+                "Automation entity ID (e.g. 'automation.goodnight')"
+            ))],
+        ) -> str:
+            return await self._call(
+                "ha_trigger_automation",
+                {"automation_entity": automation_entity},
+                lambda: self._trigger_automation(automation_entity),
+            )
 
-                elif name == "ha_list_services":
-                    result = await self._list_services(arguments.get("domain"))
-                    return [types.TextContent(type="text", text=result)]
-                
-                elif name == "ha_execute_service":
-                    result = await self._execute_service(
-                        arguments.get("entity_id"),
-                        arguments.get("service"),
-                        arguments.get("service_data") or {},
-                    )
-                    return [types.TextContent(type="text", text=result)]
-                
-                # Device & Automation Control Operations
-                elif name == "ha_control_light":
-                    result = await self._control_light(
-                        arguments.get("entity_id"),
-                        arguments.get("state"),
-                        arguments.get("brightness_pct"),
-                        arguments.get("color_name"),
-                        arguments.get("color_temp_kelvin"),
-                        arguments.get("rgb_color"),
-                        arguments.get("hs_color"),
-                        arguments.get("hex_color"),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_toggle_automation",
+            description=(
+                "Enable or disable a Home Assistant automation (automation.turn_on/turn_off). "
+                "This controls whether the automation runs on its triggers; it does NOT "
+                "manually fire the automation — use ha_trigger_automation for that."
+            ),
+            structured_output=False,
+        )
+        async def ha_toggle_automation(
+            entity_id: Annotated[str, Field(description="Automation entity ID")],
+            enabled: Annotated[bool, Field(description=(
+                "true = turn_on (enable), false = turn_off (disable)"
+            ))],
+        ) -> str:
+            return await self._call(
+                "ha_toggle_automation",
+                {"entity_id": entity_id, "enabled": enabled},
+                lambda: self._toggle_automation(entity_id, bool(enabled)),
+            )
 
-                elif name == "ha_control_climate":
-                    result = await self._control_climate(
-                        arguments.get("entity_id"),
-                        arguments.get("temperature"),
-                        arguments.get("hvac_mode"),
-                        arguments.get("fan_mode"),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_send_notification",
+            description=(
+                "Send a notification through a Home Assistant notify.* service. "
+                "Call ha_list_services with domain='notify' to discover the "
+                "available service names on this HA instance."
+            ),
+            structured_output=False,
+        )
+        async def ha_send_notification(
+            service: Annotated[str, Field(description=(
+                "notify service name, e.g. 'mobile_app_pixel_7' (without the 'notify.' prefix)"
+            ))],
+            message: Annotated[str, Field(description="Notification body")],
+            title: Annotated[str, NULL_OK, Field(description="Optional notification title")] = None,
+            # Any: the baseline schema is the union type ["string", "array"], which
+            # pydantic cannot generate — pinned back to the baseline shape below.
+            target: Annotated[Any, NULL_OK, Field(description=(
+                "Optional target(s) — string or array, service-dependent"
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "ha_send_notification",
+                {"service": service, "message": message, "title": title, "target": target},
+                lambda: self._send_notification(service, message, title, target),
+            )
 
-                elif name == "ha_activate_scene":
-                    result = await self._activate_scene(arguments.get("scene_entity"))
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_list_areas",
+            description=(
+                "List Home Assistant areas (rooms / zones). Useful before calling "
+                "ha_list_entities with an `area` filter when the user names a room."
+            ),
+            structured_output=False,
+        )
+        async def ha_list_areas() -> str:
+            async def run() -> str:
+                return json.dumps(await self._list_areas(), indent=2)
+            return await self._call("ha_list_areas", {}, run)
 
-                elif name == "ha_trigger_script":
-                    result = await self._trigger_script(
-                        arguments.get("script_entity"),
-                        arguments.get("variables") or {},
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_get_presence",
+            description=(
+                "Summarize presence: state of all person.* and device_tracker.* entities. "
+                "Typical states: 'home', 'not_home', or a zone name."
+            ),
+            structured_output=False,
+        )
+        async def ha_get_presence() -> str:
+            async def run() -> str:
+                return json.dumps(await self._get_presence(), indent=2)
+            return await self._call("ha_get_presence", {}, run)
 
-                elif name == "ha_trigger_automation":
-                    result = await self._trigger_automation(arguments.get("automation_entity"))
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_set_timer",
+            description=(
+                "Start a Home Assistant timer helper (timer.start). Requires a timer.* "
+                "entity configured in Home Assistant — discover available timers via "
+                "ha_list_entities with domain='timer'. Duration uses HH:MM:SS "
+                "format (e.g. '0:05:00' = 5 minutes); omit to use the timer's configured "
+                "default duration."
+            ),
+            structured_output=False,
+        )
+        async def ha_set_timer(
+            entity_id: Annotated[str, Field(description="Timer entity ID (e.g. 'timer.kitchen')")],
+            duration: Annotated[str, NULL_OK, Field(description=(
+                "Duration in HH:MM:SS (e.g. '0:10:00' for 10 minutes). Optional."
+            ))] = None,
+        ) -> str:
+            return await self._call(
+                "ha_set_timer",
+                {"entity_id": entity_id, "duration": duration},
+                lambda: self._set_timer(entity_id, duration),
+            )
 
-                elif name == "ha_toggle_automation":
-                    result = await self._toggle_automation(
-                        arguments.get("entity_id"),
-                        bool(arguments.get("enabled")),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_cancel_timer",
+            description="Cancel a running Home Assistant timer (timer.cancel).",
+            structured_output=False,
+        )
+        async def ha_cancel_timer(
+            entity_id: Annotated[str, Field(description="Timer entity ID to cancel")],
+        ) -> str:
+            return await self._call(
+                "ha_cancel_timer",
+                {"entity_id": entity_id},
+                lambda: self._cancel_timer(entity_id),
+            )
 
-                elif name == "ha_send_notification":
-                    result = await self._send_notification(
-                        arguments.get("service"),
-                        arguments.get("message"),
-                        arguments.get("title"),
-                        arguments.get("target"),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_evaluate_template",
+            description=(
+                "Evaluate a Home Assistant Jinja2 template server-side and return the "
+                "rendered text. Escape hatch for compound questions like "
+                "\"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}\". "
+                "See https://www.home-assistant.io/docs/configuration/templating/ for syntax."
+            ),
+            structured_output=False,
+        )
+        async def ha_evaluate_template(
+            template: Annotated[str, Field(description="Jinja2 template string to render")],
+        ) -> str:
+            return await self._call(
+                "ha_evaluate_template",
+                {"template": template},
+                lambda: self._evaluate_template(template),
+            )
 
-                elif name == "ha_list_areas":
-                    result = await self._list_areas()
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        @mcp.tool(
+            name="ha_get_entity_history",
+            description=(
+                "Get recent state history for an entity over the last N hours. Returns a "
+                "list of {state, last_changed, attributes?} points, sampled if very dense. "
+                "Attributes are curated per domain (same shape as ha_list_entities) "
+                "so you can see e.g. how a light's brightness or rgb_color changed over "
+                "time — useful for questions like \"what color was the lamp before?\" or "
+                "\"when did the thermostat setpoint last change?\"."
+            ),
+            structured_output=False,
+        )
+        async def ha_get_entity_history(
+            entity_id: Annotated[str, NULL_OK, Field(description=(
+                "Entity ID to fetch history for"
+            ))] = None,
+            entity_ids: Annotated[List[str], NULL_OK, Field(description=(
+                "Optional list of entity IDs (alternative to entity_id); returns a per-entity map"
+            ))] = None,
+            # None default (not the baseline 24) so the tolerant front-end can tell
+            # "hours omitted" apart from "hours=24" and honor start_time; the
+            # advertised "default": 24 is pinned back below.
+            hours: Annotated[int, Field(
+                ge=1, le=168,
+                description="Look-back window in hours (default 24, max 168 = 1 week)",
+            ), NULL_OK] = None,
+            # Hidden tolerated alias (autonomy briefing passes it); removed from
+            # the advertised schema below.
+            start_time: Annotated[str, NULL_OK] = None,
+        ) -> str:
+            args = {k: v for k, v in {
+                "entity_id": entity_id, "entity_ids": entity_ids,
+                "hours": hours, "start_time": start_time,
+            }.items() if v is not None}
 
-                elif name == "ha_get_presence":
-                    result = await self._get_presence()
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            async def run() -> str:
+                return json.dumps(await self._get_entity_history_multi(args), indent=2)
+            return await self._call("ha_get_entity_history", args, run)
 
-                elif name == "ha_set_timer":
-                    result = await self._set_timer(
-                        arguments.get("entity_id"),
-                        arguments.get("duration"),
-                    )
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_get_calendar_events",
+            description=(
+                "Get upcoming events over the next N days. Pass a specific "
+                "calendar_entity, or omit it to aggregate events across ALL "
+                "calendars. Discover calendar entities via ha_list_entities "
+                "with domain='calendar'."
+            ),
+            structured_output=False,
+        )
+        async def ha_get_calendar_events(
+            calendar_entity: Annotated[str, NULL_OK, Field(description=(
+                "Calendar entity ID (e.g. 'calendar.family'). Omit to query all calendars."
+            ))] = None,
+            # None default (not the baseline 7) so an explicit `days` can be told
+            # apart from the default and the days_ahead alias still wins when it is
+            # the only one passed; the advertised "default": 7 is pinned back below.
+            days: Annotated[int, Field(
+                ge=1, le=31,
+                description="Look-ahead window in days (default 7, max 31)",
+            ), NULL_OK] = None,
+            # Hidden tolerated aliases (autonomy anomaly/briefing pass days_ahead);
+            # removed from the advertised schema below.
+            days_ahead: Annotated[int, NULL_OK] = None,
+            calendar_entities: Annotated[List[str], NULL_OK] = None,
+        ) -> str:
+            args = {k: v for k, v in {
+                "calendar_entity": calendar_entity, "calendar_entities": calendar_entities,
+                "days": days, "days_ahead": days_ahead,
+            }.items() if v is not None}
 
-                elif name == "ha_cancel_timer":
-                    result = await self._cancel_timer(arguments.get("entity_id"))
-                    return [types.TextContent(type="text", text=result)]
+            async def run() -> str:
+                return json.dumps(await self._get_calendar_events_multi(args), indent=2)
+            return await self._call("ha_get_calendar_events", args, run)
 
-                elif name == "ha_evaluate_template":
-                    result = await self._evaluate_template(arguments.get("template"))
-                    return [types.TextContent(type="text", text=result)]
+        @mcp.tool(
+            name="ha_create_calendar_event",
+            description=(
+                "Create a new event on a Home Assistant calendar entity. Requires a "
+                "writable calendar (Local Calendar always works; Google requires "
+                "read-write OAuth; many integrations are read-only and will return an "
+                "error). Provide EITHER timed event fields (start_date_time + "
+                "end_date_time, ISO 8601 with offset, e.g. '2026-05-01T14:00:00-04:00') "
+                "OR all-day fields (start_date + end_date, ISO date YYYY-MM-DD; end_date "
+                "is exclusive). Do not mix the two pairs. Times are interpreted in HA's "
+                "configured timezone if no offset is given."
+            ),
+            structured_output=False,
+        )
+        async def ha_create_calendar_event(
+            calendar_entity: Annotated[str, Field(description=(
+                "Calendar entity ID (e.g. 'calendar.family')"
+            ))],
+            summary: Annotated[str, Field(description="Event title")],
+            description: Annotated[str, NULL_OK, Field(description=(
+                "Optional event description / notes"
+            ))] = None,
+            location: Annotated[str, NULL_OK, Field(description="Optional event location")] = None,
+            start_date_time: Annotated[str, NULL_OK, Field(description=(
+                "Timed event start, ISO 8601 (e.g. '2026-05-01T14:00:00-04:00'). "
+                "Pair with end_date_time."
+            ))] = None,
+            end_date_time: Annotated[str, NULL_OK, Field(description=(
+                "Timed event end (exclusive), ISO 8601. Pair with start_date_time."
+            ))] = None,
+            start_date: Annotated[str, NULL_OK, Field(description=(
+                "All-day event start, YYYY-MM-DD. Pair with end_date."
+            ))] = None,
+            end_date: Annotated[str, NULL_OK, Field(description=(
+                "All-day event end (exclusive), YYYY-MM-DD. For a one-day event, "
+                "set this to the day AFTER start_date."
+            ))] = None,
+        ) -> str:
+            args = {k: v for k, v in {
+                "calendar_entity": calendar_entity, "summary": summary,
+                "description": description, "location": location,
+                "start_date_time": start_date_time, "end_date_time": end_date_time,
+                "start_date": start_date, "end_date": end_date,
+            }.items() if v is not None}
 
-                elif name == "ha_get_entity_history":
-                    result = await self._get_entity_history_multi(arguments)
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            async def run() -> str:
+                return json.dumps(await self._create_calendar_event(args), indent=2)
+            return await self._call("ha_create_calendar_event", args, run)
 
-                elif name == "ha_get_calendar_events":
-                    result = await self._get_calendar_events_multi(arguments)
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        # ha_update_calendar_event / ha_delete_calendar_event are intentionally
+        # not registered: the HA CalDav integration doesn't declare
+        # UPDATE_EVENT/DELETE_EVENT features so the WS commands always return
+        # "not supported" against our calendar. The _update_calendar_event /
+        # _delete_calendar_event impl methods are kept so re-enabling is one
+        # decorated closure away — see todo.md "Direct CalDav access" for the
+        # proper fix.
 
-                elif name == "ha_create_calendar_event":
-                    result = await self._create_calendar_event(arguments)
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        # --- Media Player Control Tools -------------------------------------
 
-                elif name == "ha_update_calendar_event":
-                    result = await self._update_calendar_event(arguments)
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        @mcp.tool(
+            name="ha_control_media_player",
+            description=(
+                "Control a media player: playback (play/pause/stop/toggle/next/previous/seek), "
+                "volume, power, or input source. The 'value' field is required for "
+                "volume_set, seek, and select_source; ignored otherwise.\n"
+                "\n"
+                "Playback semantics (IMPORTANT — play and pause are NOT toggles):\n"
+                "- 'play'   : start/resume playback. Use only when the device is paused or stopped. "
+                "Calling 'play' on an already-playing device is a no-op.\n"
+                "- 'pause'  : pause playback. Use only when the device is currently playing. "
+                "Calling 'pause' on an already-paused device is a no-op.\n"
+                "- 'toggle' : switch between play and pause based on current state. Prefer this "
+                "for user requests like 'unpause', 'resume', 'pause/play it' or whenever the "
+                "current playback state is unknown or ambiguous.\n"
+                "When in doubt between play/pause, use 'toggle'.\n"
+                "\n"
+                "Before calling: confirm the exact entity_id via ha_list_entities — do not guess."
+            ),
+            structured_output=False,
+        )
+        async def ha_control_media_player(
+            action: Annotated[
+                Literal["play", "pause", "stop", "toggle", "next", "previous",
+                        "seek", "shuffle", "repeat", "volume_set", "volume_up",
+                        "volume_down", "mute", "unmute", "turn_on", "turn_off",
+                        "select_source"],
+                Field(description=(
+                    "Action to perform on the media player. Note: 'play' and 'pause' "
+                    "are directional (not toggles) — use 'toggle' for 'unpause'/'resume' "
+                    "or when the current state is unknown."
+                )),
+            ],
+            device: Annotated[str, NULL_OK, Field(description=(
+                "Media player device name or entity_id (optional, auto-detects if not provided)"
+            ))] = None,
+            # Any: the baseline schema is the union type ["number", "string",
+            # "boolean"], which pydantic cannot generate — pinned below. The raw
+            # value passes through untouched, as in the hand-dispatch era.
+            value: Annotated[Any, NULL_OK, Field(description=(
+                "Value for the action. Units by action: "
+                "volume_set = integer 0-100 (percent); "
+                "seek = integer seconds from start; "
+                "select_source = source name string (e.g. 'HDMI 1'); "
+                "shuffle/repeat = boolean or 'off'/'all'/'one'."
+            ))] = None,
+        ) -> str:
+            async def run() -> str:
+                return json.dumps(await self._control_media_player(action, device, value), indent=2)
+            return await self._call(
+                "ha_control_media_player",
+                {"action": action, "device": device, "value": value},
+                run,
+            )
 
-                elif name == "ha_delete_calendar_event":
-                    result = await self._delete_calendar_event(arguments)
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        # --- Baseline-schema pins -------------------------------------------
+        # Constructs the decorator API cannot express are restored on the
+        # advertised inputSchema here (advisory only — argument validation
+        # still runs against the generated pydantic model, exactly like the
+        # query_multimodal_api additionalProperties pin in mcp_general_tools).
+        props = mcp._tool_manager.get_tool("ha_trigger_script").parameters["properties"]
+        props["variables"] = {
+            "additionalProperties": True,
+            "description": "Optional script variables",
+            "type": "object",
+        }
+        props = mcp._tool_manager.get_tool("ha_send_notification").parameters["properties"]
+        props["target"] = {
+            "description": "Optional target(s) — string or array, service-dependent",
+            "items": {"type": "string"},
+            "type": ["string", "array"],
+        }
+        props = mcp._tool_manager.get_tool("ha_control_media_player").parameters["properties"]
+        props["value"] = {
+            "description": (
+                "Value for the action. Units by action: "
+                "volume_set = integer 0-100 (percent); "
+                "seek = integer seconds from start; "
+                "select_source = source name string (e.g. 'HDMI 1'); "
+                "shuffle/repeat = boolean or 'off'/'all'/'one'."
+            ),
+            "type": ["number", "string", "boolean"],
+        }
+        props = mcp._tool_manager.get_tool("ha_get_entity_history").parameters["properties"]
+        props["hours"]["default"] = 24
+        del props["start_time"]
+        props = mcp._tool_manager.get_tool("ha_get_calendar_events").parameters["properties"]
+        props["days"]["default"] = 7
+        del props["days_ahead"]
+        del props["calendar_entities"]
 
-                # Media Player Control Operations
-                elif name == "ha_control_media_player":
-                    result = await self._control_media_player(
-                        arguments.get("action"),
-                        arguments.get("device"),
-                        arguments.get("value")
-                    )
-                    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        logger.info(f"Registered {len(mcp._tool_manager.list_tools())} Home Assistant tools")
+        return mcp
 
-                else:
-                    return [types.TextContent(type="text", text=f"Unknown Home Assistant tool: {name}")]
-                    
-            except Exception as e:
-                logger.error(f"Error executing Home Assistant tool {name}: {e}")
-                return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+    async def _call(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        thunk: Callable[[], Awaitable[str]],
+    ) -> str:
+        """Run one tool body with the old call_tool handler's exact contract.
+
+        Same entry log line, same init guard, plain-text result, and any
+        exception becomes an ``Error: ...`` text payload in ordinary
+        (non-``isError``) content — the agent-visible text stays identical to
+        the hand-dispatch era.
+        """
+        logger.info(f"Home Assistant tool called: {name} with args: {args}")
+        if self.init_error or not self.ha_client:
+            msg = self.init_error or "Home Assistant clients not initialized"
+            return f"Home Assistant unavailable: {msg}"
+        try:
+            return await thunk()
+        except Exception as e:
+            logger.error(f"Error executing Home Assistant tool {name}: {e}")
+            return f"Error: {str(e)}"
 
     # Basic Home Assistant API Methods
     async def _list_entities(
@@ -1852,35 +1792,26 @@ class HomeAssistantMCPServer:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    async def run(self):
-        """Run the MCP server"""
-        logger.info("Starting HavenCore Home Assistant MCP Server...")
-        
-        # Initialize HA clients
-        await self.initialize_clients()
-        
-        # Run the stdio server
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("Home Assistant MCP Server running on stdio")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                initialization_options=InitializationOptions(
-                    server_name="HavenCore Home Assistant MCP Server",
-                    server_version="1.0.0",
-                    capabilities=self.server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
-                    )
-                )
-            )
+async def _stdio_main() -> None:
+    """Initialize the HA clients, then serve stdio.
 
-
-async def main():
-    """Main entry point"""
+    Same lifecycle as the pre-MCPServer async main: ``initialize_clients``
+    must be awaited on the event loop that serves the session (it opens the
+    MediaController's HA WebSocket), so the synchronous ``main()`` runs this
+    wrapper instead of ``mcp.run("stdio")``.
+    """
+    logger.info("Starting HavenCore Home Assistant MCP Server...")
     server = HomeAssistantMCPServer()
-    await server.run()
+    await server.initialize_clients()
+    logger.info("Home Assistant MCP Server running on stdio")
+    await server.mcp.run_stdio_async()
+
+
+def main() -> None:
+    """Stdio entry point (``python -m selene_agent.modules.mcp_homeassistant_tools``)."""
+    # Same event-loop runner MCPServer.run("stdio") uses internally.
+    anyio.run(_stdio_main)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

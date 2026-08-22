@@ -105,7 +105,7 @@ async def _load_homeassistant() -> LoadedModule:
     from selene_agent.modules.mcp_homeassistant_tools.mcp_server import HomeAssistantMCPServer
     inst = await asyncio.to_thread(HomeAssistantMCPServer)
     await inst.initialize_clients()  # opens the HA WebSocket (records init_error itself)
-    return LoadedModule("homeassistant", inst)
+    return LoadedModule("homeassistant", inst, mcp=inst.mcp)
 
 
 async def _load_mqtt() -> LoadedModule:
