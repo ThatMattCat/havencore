@@ -22,10 +22,20 @@ services:
     image: nginx:alpine
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       # Satellite OTA blobs — host-side scp target, served read-only at /firmware/
       - ./volumes/firmware:/usr/share/havencore/firmware:ro
+      # TLS cert for selene.renman.wtf, issued/renewed by the certbot service.
+      # nginx fails to start if the cert is missing — on a fresh host, run the
+      # one-off `docker compose run --rm certbot certonly ...` first
+      # (see docs/services/nginx/).
+      - ./volumes/letsencrypt:/etc/letsencrypt:ro
+    # Reload every 6h so renewed certs are picked up (certbot renews ~30 days
+    # before expiry, so the lag is harmless). Note: a custom command skips the
+    # nginx image's entrypoint.d scripts — fine, we mount our own nginx.conf.
+    command: /bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & exec nginx -g "daemon off;"'
     depends_on:
       agent:
         condition: service_healthy
@@ -36,6 +46,25 @@ services:
       # auto-enable that engine's profile and break mutual exclusivity.
       speech-to-text:
         condition: service_started
+    restart: unless-stopped
+  certbot:
+    # Issues/renews the selene.renman.wtf TLS cert via Cloudflare DNS-01, so
+    # no public DNS record or port-forward is needed (the name is LAN-only).
+    # Credentials: ./volumes/letsencrypt/cloudflare.ini (chmod 600, gitignored)
+    # containing `dns_cloudflare_api_token = <Zone:DNS:Edit token>`.
+    # First issuance is a one-off (see docs/services/nginx/). NOTE the
+    # --entrypoint override — without it, `compose run` keeps this service's
+    # renew-loop entrypoint and silently ignores the certonly args:
+    #   docker compose run --rm --entrypoint certbot certbot certonly \
+    #     --dns-cloudflare \
+    #     --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+    #     -d selene.renman.wtf --register-unsafely-without-email --agree-tos -n
+    # This service then just re-checks every 12h; nginx's 6h reload loop picks
+    # up renewed certs without any cross-container hook.
+    image: certbot/dns-cloudflare:latest
+    volumes:
+      - ./volumes/letsencrypt:/etc/letsencrypt
+    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done'
     restart: unless-stopped
   agent:
     build:
