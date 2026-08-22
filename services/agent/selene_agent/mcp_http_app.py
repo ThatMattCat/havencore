@@ -130,7 +130,7 @@ async def _load_music_assistant() -> LoadedModule:
         if inst.agent is not None:
             await inst.agent.disconnect()
 
-    return LoadedModule("music_assistant", inst, cleanup=_cleanup)
+    return LoadedModule("music_assistant", inst, cleanup=_cleanup, mcp=inst.mcp)
 
 
 async def _load_github() -> LoadedModule:
