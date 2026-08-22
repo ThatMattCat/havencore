@@ -12,19 +12,18 @@ Person and camera arguments are fuzzy-matched on the client side against
 live in face-recognition, not the prompt.
 """
 
-import asyncio
 import difflib
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Callable, Dict, List, Literal, Optional
 
 import requests
+from pydantic import Field
 
-from selene_agent.modules._mcp_compat import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import MCPServer
 
+from selene_agent.modules._mcp_params import NULL_OK
 from selene_agent.utils.logger import get_logger
 
 logger = get_logger('loki')
@@ -84,9 +83,15 @@ def _fuzzy_pick(query: str, choices: List[str], cutoff: float = 0.3) -> List[str
 
 
 class FaceMCPServer:
+    """Face tool surface plus the face-recognition HTTP calls behind it.
+
+    ``self.mcp`` is the configured mcp 2.0 ``MCPServer``; the decorated
+    closures in ``_build_mcp`` are the MCP surface and delegate to the
+    dict-shaped sync impl methods (unchanged from the hand-dispatch era).
+    """
+
     def __init__(self):
-        self.server = Server("havencore-face-tools")
-        self._setup_handlers()
+        self.mcp = self._build_mcp()
 
     # --- HTTP helpers --------------------------------------------------
 
@@ -355,137 +360,147 @@ class FaceMCPServer:
 
     # --- MCP wiring ----------------------------------------------------
 
-    def _setup_handlers(self):
+    def _build_mcp(self) -> MCPServer:
+        """Register the decorated tool surface.
 
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            return [
-                Tool(
-                    name="face_who_is_at",
-                    description=(
-                        "Most recent face detection on `camera` within the last 60 seconds. "
-                        "Returns the matched person's name (or 'unknown' if a face was seen but "
-                        "not identified), confidence, and timestamp. `camera` is fuzzy-matched "
-                        "against the configured camera entity_ids — pass a friendly name like "
-                        "'front door' or the full entity_id."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "camera": {"type": "string", "description": "Camera entity_id or alias"},
-                        },
-                        "required": ["camera"],
-                    },
-                ),
-                Tool(
-                    name="face_recent_visitors",
-                    description=(
-                        "List face detections from the last `hours` hours, newest first. "
-                        "Optionally restrict to one camera. Returns up to 50 entries."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "hours": {"type": "number", "default": 24, "minimum": 0.1},
-                            "camera": {"type": "string", "description": "Optional camera filter"},
-                        },
-                    },
-                ),
-                Tool(
-                    name="face_list_known_people",
-                    description=(
-                        "List every enrolled person along with the number of face images on "
-                        "file and their access level. Use this before enrollment to check "
-                        "whether someone is already known."
-                    ),
-                    inputSchema={"type": "object", "properties": {}},
-                ),
-                Tool(
-                    name="face_enroll_person",
-                    description=(
-                        "Add a face to the gallery. If `name` matches an existing person "
-                        "(fuzzy), that person gets a new face image; otherwise a new person is "
-                        "created first. `source` must be either 'camera:<entity_id>' to capture "
-                        "a snapshot from a live camera, or an http(s) URL pointing at an image."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "source": {
-                                "type": "string",
-                                "description": "'camera:<entity_id>' or an http(s) image URL",
-                            },
-                        },
-                        "required": ["name", "source"],
-                    },
-                ),
-                Tool(
-                    name="face_set_access_level",
-                    description=(
-                        "Set a person's access_level to one of: unknown, resident, guest, "
-                        "blocked. Stored for future automation policies — v1 has no enforcer."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "level": {
-                                "type": "string",
-                                "enum": list(ACCESS_LEVELS),
-                            },
-                        },
-                        "required": ["name", "level"],
-                    },
-                ),
-            ]
+        structured_output=False on every tool: results stay a single
+        TextContent JSON string, byte-identical to the pre-MCPServer wire
+        format (no outputSchema in tools/list, no structuredContent).
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
+        On ``hours`` the ``Field(ge=...)`` metadata must precede ``NULL_OK``
+        so pydantic maps the constraint to ``"minimum"`` in the schema (after
+        a wrap validator it would emit a literal ``"ge"`` key instead).
+        """
+        mcp = MCPServer("havencore-face-tools", version="1.0.0")
+
+        @mcp.tool(
+            name="face_who_is_at",
+            description=(
+                "Most recent face detection on `camera` within the last 60 seconds. "
+                "Returns the matched person's name (or 'unknown' if a face was seen but "
+                "not identified), confidence, and timestamp. `camera` is fuzzy-matched "
+                "against the configured camera entity_ids — pass a friendly name like "
+                "'front door' or the full entity_id."
+            ),
+            structured_output=False,
+        )
+        async def face_who_is_at(
+            camera: Annotated[str, Field(description="Camera entity_id or alias")],
+        ) -> str:
+            return await self._dispatch("face_who_is_at", self._who_is_at, {
+                "camera": camera,
+            })
+
+        @mcp.tool(
+            name="face_recent_visitors",
+            description=(
+                "List face detections from the last `hours` hours, newest first. "
+                "Optionally restrict to one camera. Returns up to 50 entries."
+            ),
+            structured_output=False,
+        )
+        async def face_recent_visitors(
+            hours: Annotated[float, Field(ge=0.1), NULL_OK] = 24,
+            camera: Annotated[str, NULL_OK, Field(description="Optional camera filter")] = None,
+        ) -> str:
+            return await self._dispatch("face_recent_visitors", self._recent_visitors, {
+                "hours": hours,
+                "camera": camera,
+            })
+
+        @mcp.tool(
+            name="face_list_known_people",
+            description=(
+                "List every enrolled person along with the number of face images on "
+                "file and their access level. Use this before enrollment to check "
+                "whether someone is already known."
+            ),
+            structured_output=False,
+        )
+        async def face_list_known_people() -> str:
+            return await self._dispatch("face_list_known_people", self._list_known_people, {})
+
+        @mcp.tool(
+            name="face_enroll_person",
+            description=(
+                "Add a face to the gallery. If `name` matches an existing person "
+                "(fuzzy), that person gets a new face image; otherwise a new person is "
+                "created first. `source` must be either 'camera:<entity_id>' to capture "
+                "a snapshot from a live camera, or an http(s) URL pointing at an image."
+            ),
+            structured_output=False,
+        )
+        async def face_enroll_person(
+            name: str,
+            source: Annotated[str, Field(description="'camera:<entity_id>' or an http(s) image URL")],
+        ) -> str:
+            return await self._dispatch("face_enroll_person", self._enroll_person, {
+                "name": name,
+                "source": source,
+            })
+
+        @mcp.tool(
+            name="face_set_access_level",
+            description=(
+                "Set a person's access_level to one of: unknown, resident, guest, "
+                "blocked. Stored for future automation policies — v1 has no enforcer."
+            ),
+            structured_output=False,
+        )
+        async def face_set_access_level(
+            name: str,
+            level: Literal["unknown", "resident", "guest", "blocked"],
+        ) -> str:
+            return await self._dispatch("face_set_access_level", self._set_access_level, {
+                "name": name,
+                "level": level,
+            })
+
+        return mcp
+
+    async def _dispatch(
+        self,
+        name: str,
+        impl: Callable[[Dict[str, Any]], Dict[str, Any]],
+        args: Dict[str, Any],
+    ) -> str:
+        """Run one (sync) tool impl with the old call_tool handler's contract.
+
+        Indented-JSON text out; requests errors map to the same friendly
+        ``{"error": ...}`` payloads as before, and any other exception becomes
+        ``{"error": str(e)}`` — always ordinary (non-``isError``) content, so
+        the agent-visible text stays identical to the hand-dispatch era. The
+        impls block on ``requests`` exactly as they did inside the old async
+        handler.
+        """
+        try:
+            result = impl(args)
+        except requests.HTTPError as e:
+            detail = ""
             try:
-                if name == "face_who_is_at":
-                    result = self._who_is_at(arguments)
-                elif name == "face_recent_visitors":
-                    result = self._recent_visitors(arguments)
-                elif name == "face_list_known_people":
-                    result = self._list_known_people(arguments)
-                elif name == "face_enroll_person":
-                    result = self._enroll_person(arguments)
-                elif name == "face_set_access_level":
-                    result = self._set_access_level(arguments)
-                else:
-                    result = {"error": f"Unknown tool: {name}"}
-            except requests.HTTPError as e:
-                detail = ""
-                try:
-                    detail = e.response.json().get("detail", e.response.text[:300])
-                except Exception:
-                    detail = e.response.text[:300] if e.response is not None else str(e)
-                logger.warning(f"face tool {name} HTTP error: {e} {detail}")
-                result = {"error": f"face-recognition service error: {detail}"}
-            except requests.RequestException as e:
-                logger.warning(f"face tool {name} network error: {e}")
-                result = {"error": f"face-recognition service unreachable: {e}"}
-            except Exception as e:
-                logger.exception(f"face tool {name} failed")
-                result = {"error": str(e)}
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
-
-    async def run(self):
-        options = self.server.create_initialization_options()
-        async with stdio_server() as (read_stream, write_stream):
-            await self.server.run(read_stream, write_stream, options, raise_exceptions=True)
+                detail = e.response.json().get("detail", e.response.text[:300])
+            except Exception:
+                detail = e.response.text[:300] if e.response is not None else str(e)
+            logger.warning(f"face tool {name} HTTP error: {e} {detail}")
+            result = {"error": f"face-recognition service error: {detail}"}
+        except requests.RequestException as e:
+            logger.warning(f"face tool {name} network error: {e}")
+            result = {"error": f"face-recognition service unreachable: {e}"}
+        except Exception as e:
+            logger.exception(f"face tool {name} failed")
+            result = {"error": str(e)}
+        return json.dumps(result, indent=2)
 
 
-async def main():
-    logger.info("Starting Face Recognition MCP Server...")
-    server = FaceMCPServer()
-    await server.run()
+def main():
+    """Stdio entry point (``python -m selene_agent.modules.mcp_face_tools``)."""
+    logger.info("Starting Face Recognition MCP Server (stdio)...")
+    FaceMCPServer().mcp.run("stdio")
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()  # MCPServer.run("stdio") is synchronous (it owns the event loop)
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
         sys.exit(0)

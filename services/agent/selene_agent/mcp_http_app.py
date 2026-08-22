@@ -143,7 +143,7 @@ async def _load_github() -> LoadedModule:
 async def _load_face() -> LoadedModule:
     from selene_agent.modules.mcp_face_tools.face_mcp_server import FaceMCPServer
     inst = await asyncio.to_thread(FaceMCPServer)
-    return LoadedModule("face", inst)
+    return LoadedModule("face", inst, mcp=inst.mcp)
 
 
 async def _load_vision() -> LoadedModule:
