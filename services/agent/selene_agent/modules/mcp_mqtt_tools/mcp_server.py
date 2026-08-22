@@ -176,10 +176,10 @@ class HACamSnapper:
 
 
 class MQTTServer:
-    """MCP server providing general utility tools"""
+    """MCP server providing MQTT camera-snapshot tools"""
     
     def __init__(self):
-        self.server = Server("havencore-general-tools")
+        self.server = Server("havencore-mqtt-tools")
         self.snapshotter = HACamSnapper(
             ha_url=HAOS_URL,
             ha_token=HAOS_TOKEN,
@@ -229,7 +229,7 @@ class MQTTServer:
     
     async def run(self):
         """Run the MCP server"""
-        logger.info("Starting HavenCore General Tools MCP Server...")
+        logger.info("Starting HavenCore MQTT Tools MCP Server...")
         
         # Run the stdio server
         async with stdio_server() as (read_stream, write_stream):
@@ -238,7 +238,7 @@ class MQTTServer:
                 read_stream,
                 write_stream,
                 initialization_options=InitializationOptions(
-                    server_name="HavenCore General Tools MCP Server",
+                    server_name="HavenCore MQTT Tools MCP Server",
                     server_version="1.0.0",
                     capabilities=self.server.get_capabilities(
                         notification_options=NotificationOptions(),
