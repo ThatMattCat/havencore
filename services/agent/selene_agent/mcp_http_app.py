@@ -149,7 +149,7 @@ async def _load_face() -> LoadedModule:
 async def _load_vision() -> LoadedModule:
     from selene_agent.modules.mcp_vision_tools.server import VisionMCPServer
     inst = await asyncio.to_thread(VisionMCPServer)
-    return LoadedModule("vision", inst)
+    return LoadedModule("vision", inst, mcp=inst.mcp)
 
 
 async def _load_reminder() -> LoadedModule:
