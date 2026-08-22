@@ -2,23 +2,22 @@
 MCP Client Manager for HavenCore
 Manages connections to MCP servers and provides tool discovery and execution.
 
-Two transports per server config: Streamable HTTP (config has `url`, bearer
-token via `token_env` env-var indirection — the mcp-tools service) and the
-legacy stdio subprocess form (config has `command`).
+HTTP-only: every configured server is a Streamable HTTP endpoint
+({"name", "url", "token_env"} — the mcp-tools service), with the bearer
+token resolved by env-var indirection at connect time. The legacy stdio
+subprocess client was retired at the end of the Streamable HTTP migration.
 """
 
 import json
 import asyncio
 import time
 from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 import traceback
-import sys
 import os
 
-from mcp import StdioServerParameters, ClientSession, Tool
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession, Tool
 from mcp.client.streamable_http import streamable_http_client, StreamableHTTPError
 from mcp.shared._httpx_utils import create_mcp_http_client
 
@@ -30,14 +29,18 @@ logger = custom_logger.get_logger('loki')
 
 # --- Transport-failure classification -------------------------------------
 #
-# A tool that ran and failed is NOT the same thing as a dead subprocess.
+# A tool that ran and failed is NOT the same thing as a dead connection.
 # Tearing a connection down because one tool legitimately errored would take
 # every other tool on that server with it, so the classifier below is
-# deliberately narrow: only stream/pipe/process-level failures count.
+# deliberately narrow: only session/connection-level failures count.
 
 try:  # anyio ships with mcp; the guard keeps this module importable regardless
     import anyio as _anyio
 
+    # Not stdio leftovers: the SDK plumbs every session over anyio memory
+    # object streams regardless of transport, so a torn-down HTTP session
+    # still surfaces to callers as BrokenResourceError/ClosedResourceError
+    # (and a closed-out receive as EndOfStream).
     _TRANSPORT_EXC_TYPES: Tuple[type, ...] = (
         _anyio.BrokenResourceError,
         _anyio.ClosedResourceError,
@@ -46,12 +49,10 @@ try:  # anyio ships with mcp; the guard keeps this module importable regardless
 except Exception:  # pragma: no cover - anyio is a hard dep of mcp
     _TRANSPORT_EXC_TYPES = ()
 
-_TRANSPORT_EXC_TYPES = _TRANSPORT_EXC_TYPES + (
-    BrokenPipeError,
-    ConnectionError,  # covers ConnectionReset/Aborted/Refused
-    EOFError,
-    ProcessLookupError,
-)
+# OS-level socket deaths (ConnectionReset/Aborted/Refused, BrokenPipe) chain
+# behind httpx's transport errors but can also surface bare from the
+# socket/SSL layer.
+_TRANSPORT_EXC_TYPES = _TRANSPORT_EXC_TYPES + (ConnectionError,)
 
 # HTTP transport (Streamable HTTP servers). httpx2 is the SDK's vendored
 # httpx; TransportError is the base for all its connect/read/write/timeout
@@ -73,11 +74,8 @@ _TRANSPORT_EXC_NAMES = frozenset({
     "BrokenResourceError",
     "ClosedResourceError",
     "EndOfStream",
-    "BrokenPipeError",
     "ConnectionResetError",
-    "ProcessLookupError",
-    "IncompleteRead",
-    # httpx/httpcore transport failures (HTTP MCP servers)
+    # httpx/httpcore transport failures
     "ConnectError",
     "ConnectTimeout",
     "ReadError",
@@ -101,8 +99,9 @@ except Exception:  # pragma: no cover
 def _iter_exception_chain(exc: BaseException, _depth: int = 0):
     """Yield `exc` plus its explicit causes and any ExceptionGroup members.
 
-    MCP runs its session over anyio task groups, so a dead pipe often reaches
-    us wrapped in an ExceptionGroup or chained behind another exception.
+    MCP runs its session over anyio task groups, so a dead connection often
+    reaches us wrapped in an ExceptionGroup or chained behind another
+    exception.
     """
     if exc is None or _depth > 8:
         return
@@ -137,16 +136,15 @@ def _is_session_terminated_error(exc: BaseException) -> bool:
 
 
 def is_transport_error(exc: BaseException) -> bool:
-    """True only when `exc` means the MCP transport (stdio subprocess or
-    Streamable HTTP session/connection) is gone.
+    """True only when `exc` means the MCP transport (the Streamable HTTP
+    session/connection) is gone.
 
     Explicitly False for `MCPError`: that is a JSON-RPC error the server
     *answered* with (or a client-side read timeout), which proves the
     server is alive. One exception: the HTTP transport reports a dead
     session as an MCPError("Session terminated") — that IS a transport
     death. Ordinary tool exceptions fall through to False too — only
-    broken/closed streams, EOF, dead-process and HTTP connect/read errors
-    return True.
+    broken/closed streams and HTTP connect/read errors return True.
     """
     if _MCPError is not None and isinstance(exc, _MCPError):
         return _is_session_terminated_error(exc)
@@ -170,34 +168,18 @@ class ToolSource(Enum):
 
 @dataclass
 class MCPServerConfig:
-    """Configuration for an MCP server.
+    """Configuration for an MCP server (Streamable HTTP only).
 
-    Two transports:
-    - Streamable HTTP: `url` set (e.g. http://mcp-tools:6010/mcp/reminder),
-      optional `token_env` naming the env var holding the bearer token
-      (env-var indirection — never the token inline).
-    - stdio: `command` (+ args/env), the legacy subprocess form.
-    `url` wins if both are present.
+    `url` points at the server's mount (e.g.
+    http://mcp-tools:6010/mcp/reminder); optional `token_env` names the env
+    var holding the bearer token (env-var indirection — never the token
+    inline). The legacy stdio subprocess shape ({"name", "command", "args"})
+    is no longer supported.
     """
     name: str
-    command: Optional[str] = None
-    args: List[str] = field(default_factory=list)
-    env: Dict[str, str] = field(default_factory=dict)
-    enabled: bool = True
-    url: Optional[str] = None
+    url: str
     token_env: Optional[str] = None
-
-    @property
-    def transport(self) -> str:
-        return "http" if self.url else "stdio"
-
-    def to_stdio_params(self) -> StdioServerParameters:
-        """Convert to StdioServerParameters for MCP client"""
-        return StdioServerParameters(
-            command=self.command,
-            args=self.args,
-            env=self.env
-        )
+    enabled: bool = True
 
     def bearer_token(self) -> Optional[str]:
         """Resolve the bearer token for an HTTP server, or raise if the
@@ -246,39 +228,29 @@ class MCPServerConnection:
         self.read_stream = None
         self.write_stream = None
         self._context_manager = None
-        # Owned httpx client for the Streamable HTTP transport (None for
-        # stdio). Passed into streamable_http_client, so its lifecycle is
-        # ours to manage.
+        # Owned httpx client for the Streamable HTTP transport. Passed into
+        # streamable_http_client, so its lifecycle is ours to manage.
         self._httpx_client = None
         # Transport liveness. The ClientSession object stays truthy long after
-        # its subprocess/session dies, so health is tracked separately.
+        # its session dies, so health is tracked separately.
         self._alive = True
         self.failure_reason: Optional[str] = None
 
     async def connect(self):
-        """Connect to the MCP server (Streamable HTTP if `url` is set,
-        stdio subprocess otherwise)."""
+        """Connect to the MCP server over Streamable HTTP."""
         try:
-            if self.mcp_config.transport == "http":
-                headers = {}
-                token = self.mcp_config.bearer_token()
-                if token:
-                    headers["Authorization"] = f"Bearer {token}"
-                # SDK-standard client: follow_redirects + SSE-friendly
-                # timeouts (30s connect/write, 300s read for the event
-                # stream). Tool-call latency is still bounded by
-                # MCP_TOOL_TIMEOUT_SECONDS in execute_tool.
-                self._httpx_client = create_mcp_http_client(headers=headers)
-                self._context_manager = streamable_http_client(
-                    self.mcp_config.url, http_client=self._httpx_client
-                )
-            else:
-                # Merge any per-server env overrides (from the MCP_SERVERS
-                # config) OVER the inherited environment, rather than
-                # discarding them.
-                self.mcp_config.env = {**os.environ, **(self.mcp_config.env or {})}
-                stdio_params = self.mcp_config.to_stdio_params()
-                self._context_manager = stdio_client(stdio_params)
+            headers = {}
+            token = self.mcp_config.bearer_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            # SDK-standard client: follow_redirects + SSE-friendly timeouts
+            # (30s connect/write, 300s read for the event stream). Tool-call
+            # latency is still bounded by MCP_TOOL_TIMEOUT_SECONDS in
+            # execute_tool.
+            self._httpx_client = create_mcp_http_client(headers=headers)
+            self._context_manager = streamable_http_client(
+                self.mcp_config.url, http_client=self._httpx_client
+            )
 
             streams = await self._context_manager.__aenter__()
             self.read_stream, self.write_stream = streams
@@ -290,7 +262,7 @@ class MCPServerConnection:
 
             logger.info(
                 f"Connected to MCP server: {self.server_name} "
-                f"({self.mcp_config.transport})"
+                f"({self.mcp_config.url})"
             )
 
         except Exception as e:
@@ -335,8 +307,8 @@ class MCPServerConnection:
     async def close_transport(self):
         """Best-effort teardown of a dead transport, safe from any task.
 
-        Deliberately does NOT call `__aexit__` on the stdio/session context
-        managers: those were entered inside the per-server connect task, and
+        Deliberately does NOT call `__aexit__` on the transport/session
+        context managers: those were entered inside the per-server connect task, and
         anyio refuses to exit a cancel scope from a different task (see issue
         #68). Closing the memory streams is task-agnostic and is enough to let
         the reader/writer tasks wind down; the contexts themselves are still
@@ -367,7 +339,7 @@ class MCPServerConnection:
     def is_connected(self) -> bool:
         """Check if connected.
 
-        A non-None `client_session` is not proof of a live subprocess — it
+        A non-None `client_session` is not proof of a live session — it
         stays truthy forever after `connect()`. Transport failures observed
         during tool execution flip `_alive`, and that is reflected here so
         `/mcp/status` stops reporting dead servers as connected.
@@ -385,7 +357,7 @@ class MCPClientManager:
         self.server_tools: Dict[str, List[str]] = {}  # server_name -> [tool_names]
         self.failed_servers: Dict[str, str] = {}  # server_name -> error message
         self._initialized = False
-        # Bounded reconnect state for servers whose subprocess died mid-uptime.
+        # Bounded reconnect state for servers whose transport died mid-uptime.
         self._reconnect_tasks: Dict[str, asyncio.Task] = {}
         self._reconnect_attempts: Dict[str, int] = {}  # per-outage attempt count
         # Connections replaced by a reconnect. Kept so `cleanup()` can still
@@ -656,7 +628,8 @@ class MCPClientManager:
         server_name = tool.server_name
         
         # Fail fast on a server we already know is down: calling into a dead
-        # pipe would otherwise burn the full MCP_TOOL_TIMEOUT_SECONDS per call.
+        # connection would otherwise burn the full MCP_TOOL_TIMEOUT_SECONDS
+        # per call.
         connection = self.connections.get(server_name)
         if connection is None or not connection.is_connected():
             self._schedule_reconnect(server_name)
@@ -792,7 +765,7 @@ class MCPClientManager:
         """Get status information about MCP servers.
 
         `connected_servers` reflects real transport health, so a server whose
-        subprocess died drops out of it instead of being reported as healthy.
+        session died drops out of it instead of being reported as healthy.
         """
         return {
             "configured_servers": list(self.servers.keys()),

@@ -122,9 +122,9 @@ CONVERSATION_CONTEXT_LIMIT_FRACTION = float(os.getenv("CONVERSATION_CONTEXT_LIMI
 CONVERSATION_CONTEXT_LIMIT_TOKENS_OVERRIDE = int(os.getenv("CONVERSATION_CONTEXT_LIMIT_TOKENS", "0"))
 TOOL_RESULT_MAX_CHARS = int(os.getenv("TOOL_RESULT_MAX_CHARS", "8000"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.getenv("MCP_TOOL_TIMEOUT_SECONDS", "120"))
-# Recovery for a dead MCP transport — a crashed stdio subprocess (OOM kill,
-# segfault) or a lost/terminated Streamable HTTP session (mcp-tools restart,
-# network drop). Transport-level failures mark the connection dead and kick a
+# Recovery for a dead MCP transport — a lost/terminated Streamable HTTP
+# session (mcp-tools restart, network drop). Transport-level failures mark
+# the connection dead and kick a
 # *bounded* background reconnect: at most MAX_ATTEMPTS tries per outage, with
 # exponential backoff seeded by BACKOFF_SECONDS, so a server module that will
 # never come up cannot turn into a respawn storm.

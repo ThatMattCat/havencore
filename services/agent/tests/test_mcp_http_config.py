@@ -1,8 +1,9 @@
-"""Tests for the Streamable HTTP MCP client config (Phase 2 cutover).
+"""Tests for the Streamable HTTP MCP client config.
 
-MCP_SERVERS entries may now be HTTP ({"name", "url", "token_env"}) as well
-as the legacy stdio form ({"name", "command", "args"}). Tokens are resolved
-by env-var indirection at connect time, never inlined in the JSON.
+MCP_SERVERS entries are HTTP-only ({"name", "url", "token_env"}); the
+legacy stdio form ({"name", "command", "args"}) is retired and must fail
+loudly. Tokens are resolved by env-var indirection at connect time, never
+inlined in the JSON.
 """
 from __future__ import annotations
 
@@ -44,14 +45,20 @@ def test_http_entries_parse_url_and_token_env(monkeypatch):
 
     assert list(mgr.servers) == ["reminder"]
     cfg = mgr.servers["reminder"]
-    assert cfg.transport == "http"
     assert cfg.url == "http://mcp-tools:6010/mcp/reminder"
     assert cfg.token_env == "MCP_TOKEN_REMINDER"
-    assert cfg.command is None
 
 
-def test_stdio_entries_still_parse(monkeypatch):
-    """stdio retirement is a later phase — command entries must keep working."""
+def test_command_entry_produces_config_error(monkeypatch):
+    """The retired stdio shape must fail loudly — an error naming the new
+    {"name", "url", "token_env"} shape — and register no server, never a
+    silent skip."""
+    import selene_agent.selene_agent as agent_mod
+
+    errors = []
+    monkeypatch.setattr(
+        agent_mod.logger, "error", lambda msg, *a, **k: errors.append(str(msg))
+    )
     mgr = _load(monkeypatch, [
         {
             "name": "mqtt",
@@ -61,26 +68,26 @@ def test_stdio_entries_still_parse(monkeypatch):
         },
     ])
 
-    cfg = mgr.servers["mqtt"]
-    assert cfg.transport == "stdio"
-    assert cfg.command == "python"
-    assert cfg.url is None
-    params = cfg.to_stdio_params()
-    assert params.command == "python"
+    assert mgr.servers == {}
+    assert len(errors) == 1
+    assert "mqtt" in errors[0]
+    assert "stdio" in errors[0]
+    # The error must teach the fix: the HTTP entry shape.
+    assert '"url"' in errors[0] and '"token_env"' in errors[0]
 
 
-def test_mixed_transports_coexist(monkeypatch):
+def test_command_entry_does_not_block_http_entries(monkeypatch):
+    """One legacy entry must not take the valid HTTP entries down with it."""
     mgr = _load(monkeypatch, [
         {"name": "reminder", "url": "http://mcp-tools:6010/mcp/reminder",
          "token_env": "MCP_TOKEN_REMINDER"},
         {"name": "mqtt", "command": "python", "args": ["-m", "x"]},
     ])
 
-    assert mgr.servers["reminder"].transport == "http"
-    assert mgr.servers["mqtt"].transport == "stdio"
+    assert list(mgr.servers) == ["reminder"]
 
 
-def test_entry_without_url_or_command_is_skipped(monkeypatch):
+def test_entry_without_name_or_url_is_skipped(monkeypatch):
     mgr = _load(monkeypatch, [
         {"name": "broken", "enabled": True},
         {"url": "http://mcp-tools:6010/mcp/nameless"},
