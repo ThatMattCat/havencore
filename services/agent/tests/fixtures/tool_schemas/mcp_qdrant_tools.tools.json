@@ -1,0 +1,80 @@
+[
+  {
+    "description": "Store information in the vector database for future retrieval",
+    "inputSchema": {
+      "properties": {
+        "expires_in_days": {
+          "description": "Optional expiry time in days",
+          "type": "integer"
+        },
+        "importance": {
+          "default": 3,
+          "description": "Importance level (1=low, 5=critical)",
+          "maximum": 5,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tags": {
+          "default": [],
+          "description": "Optional tags for categorization",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "The content to store in the database",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "create_memory"
+  },
+  {
+    "description": "Delete a stored memory by its id. Use this when the user asks you to forget, delete, remove, or correct a stored fact. First call `search_memories` to find the matching entry and read its `id`; then call this tool with that id. Deletion is permanent.",
+    "inputSchema": {
+      "properties": {
+        "memory_id": {
+          "description": "The id of the memory to delete (from search_memories results).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "memory_id"
+      ],
+      "type": "object"
+    },
+    "name": "delete_memory"
+  },
+  {
+    "description": "Search information stored in the vector database using semantic similarity",
+    "inputSchema": {
+      "properties": {
+        "days_back": {
+          "description": "Optional: only search data from the last N days",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 5,
+          "description": "Maximum number of results to return",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query to find relevant information",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "search_memories"
+  }
+]

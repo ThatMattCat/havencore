@@ -1,0 +1,139 @@
+[
+  {
+    "description": "Retrieve a list of relevant websites using Brave Search API",
+    "inputSchema": {
+      "properties": {
+        "count": {
+          "default": 4,
+          "description": "Number of results (default: 4)",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "brave_search"
+  },
+  {
+    "description": "Generate an image from a text prompt and return the filepath and URL link to the image.",
+    "inputSchema": {
+      "properties": {
+        "prompt": {
+          "description": "The text prompt to generate an image from, written as tags. eg: mountain, snow, realistic",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "name": "generate_image"
+  },
+  {
+    "description": "Get weather forecast and astronomy data for a location",
+    "inputSchema": {
+      "properties": {
+        "date": {
+          "description": "Date in YYYY-MM-DD format (optional)",
+          "type": "string"
+        },
+        "location": {
+          "description": "City name, ZIP code, or coordinates",
+          "type": "string"
+        }
+      },
+      "required": [
+        "location"
+      ],
+      "type": "object"
+    },
+    "name": "get_weather_forecast"
+  },
+  {
+    "description": "Send an image (and optional text prompt) to the vision LLM for analysis. Use for camera snapshots, photos, screenshots, etc.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "image_url": {
+          "description": "HTTP(S) URL to an image. Common formats supported (PNG, JPEG, WebP). The vision service fetches the URL itself.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The text prompt describing what to analyze in the image (e.g. 'describe what you see', 'is anyone in this image?').",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_url"
+      ],
+      "type": "object"
+    },
+    "name": "query_multimodal_api"
+  },
+  {
+    "description": "Search Wikipedia for information about a topic and return a summary.",
+    "inputSchema": {
+      "properties": {
+        "search_string": {
+          "description": "Search query",
+          "type": "string"
+        },
+        "sentences": {
+          "description": "Number of sentences to return",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "search_string"
+      ],
+      "type": "object"
+    },
+    "name": "search_wikipedia"
+  },
+  {
+    "description": "Send a Signal message (text, optionally with images or short videos) to the homeowner.",
+    "inputSchema": {
+      "properties": {
+        "attachments": {
+          "items": {
+            "description": "URL (auto-downloaded) or local file path of an image or short video to attach.",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "message": {
+          "description": "Message text. Plain text only.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "name": "send_signal_message"
+  },
+  {
+    "description": "Query Wolfram Alpha for answers to factual questions",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "Question to ask Wolfram Alpha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "wolfram_alpha"
+  }
+]
