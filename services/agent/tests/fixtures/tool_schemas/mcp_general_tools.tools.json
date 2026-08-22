@@ -21,6 +21,35 @@
     "name": "brave_search"
   },
   {
+    "description": "Fetch a webpage and return its readable content as markdown. Use for reading articles, documentation, search results, or any page the user asks about. HTML is converted to markdown; long documents are truncated \u2014 call again with the suggested start_index to read further.",
+    "inputSchema": {
+      "properties": {
+        "max_length": {
+          "default": 10000,
+          "description": "Maximum number of characters to return (default: 10000).",
+          "maximum": 50000,
+          "minimum": 1000,
+          "type": "integer"
+        },
+        "start_index": {
+          "default": 0,
+          "description": "Character offset to start reading from (default: 0). A truncated response says which start_index to pass to continue.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "description": "The URL to fetch. Only http:// and https:// URLs are supported.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "name": "fetch_webpage"
+  },
+  {
     "description": "Generate an image from a text prompt and return the filepath and URL link to the image.",
     "inputSchema": {
       "properties": {

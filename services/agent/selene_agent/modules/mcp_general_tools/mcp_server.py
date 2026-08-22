@@ -21,6 +21,7 @@ from pydantic import Field
 from mcp.server import MCPServer
 
 from selene_agent.modules._mcp_params import NULL_OK
+from . import fetch_tools
 from .comfyui_tools import SimpleComfyUI
 from .wiki_tools import query_wikipedia
 from selene_agent.utils.logger import get_logger
@@ -195,6 +196,38 @@ class GeneralToolsServer:
                 {"search_string": search_string, "sentences": sentences},
                 lambda: query_wikipedia(
                     search_string, sentences if sentences is not None else 7
+                ),
+            )
+
+        @mcp.tool(
+            name="fetch_webpage",
+            description=(
+                "Fetch a webpage and return its readable content as markdown. Use for reading "
+                "articles, documentation, search results, or any page the user asks about. "
+                "HTML is converted to markdown; long documents are truncated — call again with "
+                "the suggested start_index to read further."
+            ),
+            structured_output=False,
+        )
+        async def fetch_webpage(
+            url: Annotated[str, Field(description=(
+                "The URL to fetch. Only http:// and https:// URLs are supported."
+            ))],
+            max_length: Annotated[int, Field(ge=1000, le=50000, description=(
+                "Maximum number of characters to return (default: 10000)."
+            )), NULL_OK] = 10000,
+            start_index: Annotated[int, Field(ge=0, description=(
+                "Character offset to start reading from (default: 0). A truncated "
+                "response says which start_index to pass to continue."
+            )), NULL_OK] = 0,
+        ) -> str:
+            return await self._call(
+                "fetch_webpage",
+                {"url": url, "max_length": max_length, "start_index": start_index},
+                lambda: fetch_tools.fetch_webpage(
+                    url,
+                    max_length if max_length is not None else fetch_tools.DEFAULT_MAX_LENGTH,
+                    start_index if start_index is not None else 0,
                 ),
             )
 

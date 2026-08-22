@@ -13,7 +13,7 @@ that aren't specific to any other subsystem.
 | Entry point | `python -m selene_agent.modules.mcp_general_tools` |
 | Transport | MCP Streamable HTTP (served by the `mcp-tools` service; mounted at `/mcp/<name>`) |
 | Server name | `havencore-general-tools` |
-| Tool count | Up to 7 (some tools are conditional on credentials) |
+| Tool count | Up to 8 (some tools are conditional on credentials) |
 
 Tool registration is **conditional on credentials**. The server enumerates
 tools at `list_tools()` time and only includes the ones whose env vars are
@@ -29,7 +29,8 @@ instead of registering one that always errors.
 | `query_multimodal_api(image_url, text?)` | (none) | Send an image URL (and optional text prompt) to the vision LLM (`vllm-vision`). POSTs JSON to the agent's own `/api/vision/ask_url` endpoint, which forwards to `vllm-vision` — the agent-side proxy is the single chokepoint for logging and authentication. Image-only by design (the URL endpoint is single-image). For higher-leverage tools — fresh camera snapshots, two-image diffs, OCR — prefer the dedicated [Vision Tools server](vision.md) (`mcp_vision_tools`); for video uploads, use the multipart `/api/vision/ask` endpoint or the dashboard playground. |
 | `wolfram_alpha(query)` | `WOLFRAM_ALPHA_API_KEY` | Wolfram Alpha LLM API for factual + computational questions. 1000-char response cap, 30 s timeout. |
 | `get_weather_forecast(location, date?)` | `WEATHER_API_KEY` | weatherapi.com forecast — current day by default, or a specific `YYYY-MM-DD` up to 365 days ahead. Returns temp, conditions, precip, wind, and astronomy (sunrise/sunset/moon phase). |
-| `brave_search(query, count?)` | `BRAVE_SEARCH_API_KEY` | Brave Search web results. (The upstream `mcp-server-fetch` server that used to read the returned pages was removed with the MCP SDK 2.0 upgrade; a native fetch tool replaces it in a later phase.) |
+| `brave_search(query, count?)` | `BRAVE_SEARCH_API_KEY` | Brave Search web results. (Pair with `fetch_webpage` to read the returned pages.) |
+| `fetch_webpage(url, max_length?, start_index?)` | (none) | Fetches a URL (http/https only, 15 s timeout, redirects followed) and returns readable content: HTML is converted to markdown with script/style stripped, other text content types pass through, binary content is refused. `max_length` (1000–50000, default 10000) and `start_index` page through long documents — a truncated response says where to resume. Replaces the retired upstream `mcp-server-fetch` server. |
 | `search_wikipedia(search_string, sentences?)` | (none — public API) | Summary from Wikipedia. `sentences` controls summary length; defaults to the helper's default (~7). |
 
 ## Configuration

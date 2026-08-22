@@ -171,7 +171,7 @@ doc with the full tool list, arguments, config, and troubleshooting.
   `cancel_reminder`. See [MCP Reminders](services/agent/tools/reminder.md).
 
 This is a highlight, not the authoritative set — query `GET /api/tools`
-for the full registry (11 MCP modules, 68 tools).
+for the full registry (11 MCP modules, 69 tools).
 
 #### Example Request
 ```bash

@@ -32,7 +32,7 @@ havencore/
 │   │   │   ├── selene_agent.py          # FastAPI app entry point
 │   │   │   ├── orchestrator.py          # Event-based agent loop
 │   │   │   ├── api/                     # REST/WS routers
-│   │   │   ├── modules/                 # Bundled MCP server modules (11 servers, 68 tools)
+│   │   │   ├── modules/                 # Bundled MCP server modules (11 servers, 69 tools)
 │   │   │   │   ├── mcp_general_tools/
 │   │   │   │   ├── mcp_homeassistant_tools/
 │   │   │   │   ├── mcp_face_tools/
