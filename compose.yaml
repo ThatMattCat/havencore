@@ -63,6 +63,41 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # The agent's MCP client connects to mcp-tools over Streamable HTTP at
+      # startup (30s per-server timeout) — wait until the tool host is up.
+      mcp-tools:
+        condition: service_healthy
+    restart: unless-stopped
+  mcp-tools:
+    # MCP Streamable HTTP tool host — serves all 11 in-tree MCP tool modules
+    # from one Starlette app (one mount per module at /mcp/<name>, per-mount
+    # static bearer tokens from MCP_TOKEN_*). Reuses the agent image: same
+    # code, different entrypoint. See selene_agent/mcp_http_app.py.
+    image: agent:${VERSION:-latest}
+    command: ["python", "-m", "selene_agent.mcp_http_app"]
+    env_file:
+      - .env
+    environment:
+      # The reminder module defaults to http://localhost:6002, which is only
+      # correct inside the agent container — point it at the agent service.
+      - AGENT_API_BASE=http://agent:6002
+    volumes:
+      - ./services/agent/:/app
+      # github module's container-managed clone — same named volume as agent.
+      - github_repo_clone:/var/cache/havencore/repo_clone
+    ports:
+      # LAN-IP-scoped on purpose: loopback 6010 on this host is held by an
+      # SSH port-forward, so a 0.0.0.0 bind fails. LAN access (testing,
+      # other machines) is what the published port is for anyway.
+      - "${HOST_IP_ADDRESS}:6010:6010" # MCP Streamable HTTP mounts + /health
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6010/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Module init runs before uvicorn binds; the github module's clone/fetch
+      # can block startup for minutes on a cold volume.
+      start_period: 360s
     restart: unless-stopped
   speech-to-text:
     build:
