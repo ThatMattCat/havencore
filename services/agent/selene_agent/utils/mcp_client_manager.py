@@ -1,10 +1,15 @@
 """
 MCP Client Manager for HavenCore
-Manages connections to MCP servers and provides tool discovery and execution
+Manages connections to MCP servers and provides tool discovery and execution.
+
+Two transports per server config: Streamable HTTP (config has `url`, bearer
+token via `token_env` env-var indirection — the mcp-tools service) and the
+legacy stdio subprocess form (config has `command`).
 """
 
 import json
 import asyncio
+import time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,6 +19,8 @@ import os
 
 from mcp import StdioServerParameters, ClientSession, Tool
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client, StreamableHTTPError
+from mcp.shared._httpx_utils import create_mcp_http_client
 
 from selene_agent.utils import logger as custom_logger
 from selene_agent.utils import config
@@ -46,8 +53,22 @@ _TRANSPORT_EXC_TYPES = _TRANSPORT_EXC_TYPES + (
     ProcessLookupError,
 )
 
-# Name-based fallback so a differently-imported anyio (or a future rename)
-# still classifies correctly.
+# HTTP transport (Streamable HTTP servers). httpx2 is the SDK's vendored
+# httpx; TransportError is the base for all its connect/read/write/timeout
+# errors, and every underlying httpcore2 error reaches us chained behind one
+# (map_httpcore_exceptions uses `raise ... from exc`). HTTPStatusError is
+# deliberately NOT included: the server answered.
+try:
+    import httpx2 as _httpx2
+
+    _TRANSPORT_EXC_TYPES = _TRANSPORT_EXC_TYPES + (_httpx2.TransportError,)
+except Exception:  # pragma: no cover - httpx2 is a hard dep of mcp
+    pass
+
+_TRANSPORT_EXC_TYPES = _TRANSPORT_EXC_TYPES + (StreamableHTTPError,)
+
+# Name-based fallback so a differently-imported anyio/httpx (or a future
+# rename) still classifies correctly.
 _TRANSPORT_EXC_NAMES = frozenset({
     "BrokenResourceError",
     "ClosedResourceError",
@@ -56,6 +77,19 @@ _TRANSPORT_EXC_NAMES = frozenset({
     "ConnectionResetError",
     "ProcessLookupError",
     "IncompleteRead",
+    # httpx/httpcore transport failures (HTTP MCP servers)
+    "ConnectError",
+    "ConnectTimeout",
+    "ReadError",
+    "ReadTimeout",
+    "WriteError",
+    "WriteTimeout",
+    "PoolTimeout",
+    "RemoteProtocolError",
+    "LocalProtocolError",
+    "NetworkError",
+    "CloseError",
+    "StreamableHTTPError",
 })
 
 try:  # SDK 2.x name (1.x called it McpError)
@@ -84,18 +118,42 @@ def _iter_exception_chain(exc: BaseException, _depth: int = 0):
         yield from _iter_exception_chain(cause, _depth + 1)
 
 
+_SESSION_DEATH_MESSAGES = ("session terminated", "session not found")
+
+
+def _is_session_terminated_error(exc: BaseException) -> bool:
+    """The HTTP transport's spellings of "your session is gone".
+
+    On a 404 for an established session (the Streamable HTTP server
+    restarted and forgot the mcp-session-id) two MCPErrors can surface:
+    the SDK *server* answers with a JSON-RPC body "Session not found"
+    (which the client relays verbatim), and when a non-SDK server sends a
+    bare 404 the SDK *client* synthesizes "Session terminated". Unlike
+    every other MCPError these do NOT prove the server can still serve
+    this connection — the session must be re-established.
+    """
+    message = str(getattr(exc, "message", None) or str(exc)).lower()
+    return any(s in message for s in _SESSION_DEATH_MESSAGES)
+
+
 def is_transport_error(exc: BaseException) -> bool:
-    """True only when `exc` means the MCP stdio transport/subprocess is gone.
+    """True only when `exc` means the MCP transport (stdio subprocess or
+    Streamable HTTP session/connection) is gone.
 
     Explicitly False for `MCPError`: that is a JSON-RPC error the server
     *answered* with (or a client-side read timeout), which proves the
-    subprocess is alive. Ordinary tool exceptions fall through to False too —
-    only broken/closed streams, EOF and dead-process errors return True.
+    server is alive. One exception: the HTTP transport reports a dead
+    session as an MCPError("Session terminated") — that IS a transport
+    death. Ordinary tool exceptions fall through to False too — only
+    broken/closed streams, EOF, dead-process and HTTP connect/read errors
+    return True.
     """
     if _MCPError is not None and isinstance(exc, _MCPError):
-        return False
+        return _is_session_terminated_error(exc)
     for item in _iter_exception_chain(exc):
         if _MCPError is not None and isinstance(item, _MCPError):
+            if _is_session_terminated_error(item):
+                return True
             continue
         if isinstance(item, _TRANSPORT_EXC_TYPES):
             return True
@@ -112,13 +170,27 @@ class ToolSource(Enum):
 
 @dataclass
 class MCPServerConfig:
-    """Configuration for an MCP server"""
+    """Configuration for an MCP server.
+
+    Two transports:
+    - Streamable HTTP: `url` set (e.g. http://mcp-tools:6010/mcp/reminder),
+      optional `token_env` naming the env var holding the bearer token
+      (env-var indirection — never the token inline).
+    - stdio: `command` (+ args/env), the legacy subprocess form.
+    `url` wins if both are present.
+    """
     name: str
-    command: str
+    command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-    
+    url: Optional[str] = None
+    token_env: Optional[str] = None
+
+    @property
+    def transport(self) -> str:
+        return "http" if self.url else "stdio"
+
     def to_stdio_params(self) -> StdioServerParameters:
         """Convert to StdioServerParameters for MCP client"""
         return StdioServerParameters(
@@ -126,6 +198,20 @@ class MCPServerConfig:
             args=self.args,
             env=self.env
         )
+
+    def bearer_token(self) -> Optional[str]:
+        """Resolve the bearer token for an HTTP server, or raise if the
+        configured env var is missing/empty (never connect a token-expecting
+        endpoint without one — the server would just 401 opaquely)."""
+        if not self.token_env:
+            return None
+        token = os.environ.get(self.token_env, "").strip()
+        if not token:
+            raise RuntimeError(
+                f"MCP server '{self.name}': token env var "
+                f"'{self.token_env}' is not set or empty"
+            )
+        return token
 
 
 @dataclass
@@ -160,35 +246,57 @@ class MCPServerConnection:
         self.read_stream = None
         self.write_stream = None
         self._context_manager = None
+        # Owned httpx client for the Streamable HTTP transport (None for
+        # stdio). Passed into streamable_http_client, so its lifecycle is
+        # ours to manage.
+        self._httpx_client = None
         # Transport liveness. The ClientSession object stays truthy long after
-        # its subprocess dies, so health is tracked separately.
+        # its subprocess/session dies, so health is tracked separately.
         self._alive = True
         self.failure_reason: Optional[str] = None
 
     async def connect(self):
-        """Connect to the MCP server"""
+        """Connect to the MCP server (Streamable HTTP if `url` is set,
+        stdio subprocess otherwise)."""
         try:
-            # Merge any per-server env overrides (from the MCP_SERVERS config)
-            # OVER the inherited environment, rather than discarding them.
-            self.mcp_config.env = {**os.environ, **(self.mcp_config.env or {})}
-            stdio_params = self.mcp_config.to_stdio_params()
-            
-            self._context_manager = stdio_client(stdio_params)
-            
+            if self.mcp_config.transport == "http":
+                headers = {}
+                token = self.mcp_config.bearer_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                # SDK-standard client: follow_redirects + SSE-friendly
+                # timeouts (30s connect/write, 300s read for the event
+                # stream). Tool-call latency is still bounded by
+                # MCP_TOOL_TIMEOUT_SECONDS in execute_tool.
+                self._httpx_client = create_mcp_http_client(headers=headers)
+                self._context_manager = streamable_http_client(
+                    self.mcp_config.url, http_client=self._httpx_client
+                )
+            else:
+                # Merge any per-server env overrides (from the MCP_SERVERS
+                # config) OVER the inherited environment, rather than
+                # discarding them.
+                self.mcp_config.env = {**os.environ, **(self.mcp_config.env or {})}
+                stdio_params = self.mcp_config.to_stdio_params()
+                self._context_manager = stdio_client(stdio_params)
+
             streams = await self._context_manager.__aenter__()
             self.read_stream, self.write_stream = streams
-            
+
             self.client_session = ClientSession(self.read_stream, self.write_stream)
             self.client_session = await self.client_session.__aenter__()
-            
+
             await self.client_session.initialize()
-            
-            logger.info(f"Connected to MCP server: {self.server_name}")
-            
+
+            logger.info(
+                f"Connected to MCP server: {self.server_name} "
+                f"({self.mcp_config.transport})"
+            )
+
         except Exception as e:
             logger.error(f"Failed to connect to {self.server_name}: {e}")
             raise
-    
+
     async def disconnect(self):
         """Disconnect from the MCP server"""
         if self.client_session:
@@ -196,13 +304,24 @@ class MCPServerConnection:
                 await self.client_session.__aexit__(None, None, None)
             except Exception as e:
                 logger.error(f"Error exiting client session: {e}")
-        
+
         if self._context_manager:
             try:
                 await self._context_manager.__aexit__(None, None, None)
                 logger.debug(f"Disconnected from MCP server: {self.server_name}")
             except Exception as e:
                 logger.error(f"Error disconnecting from {self.server_name}: {e}")
+
+        # Close the owned httpx client last: the transport's context exit
+        # above still uses it (session-terminating DELETE).
+        if self._httpx_client is not None:
+            try:
+                await self._httpx_client.aclose()
+            except Exception as e:
+                logger.debug(
+                    f"Error closing HTTP client for {self.server_name}: {e}"
+                )
+            self._httpx_client = None
     
     def mark_dead(self, reason: str):
         """Flag this connection's transport as gone. Idempotent."""
@@ -234,6 +353,16 @@ class MCPServerConnection:
                 logger.debug(
                     f"Error closing stream for {self.server_name}: {e}"
                 )
+        # HTTP transport: closing the httpx client is also task-agnostic and
+        # tears down the SSE stream plus any wedged in-flight request.
+        if self._httpx_client is not None:
+            try:
+                await self._httpx_client.aclose()
+            except Exception as e:
+                logger.debug(
+                    f"Error closing HTTP client for {self.server_name}: {e}"
+                )
+            self._httpx_client = None
 
     def is_connected(self) -> bool:
         """Check if connected.
@@ -265,6 +394,17 @@ class MCPClientManager:
         self.reconnect_max_attempts = config.MCP_RECONNECT_MAX_ATTEMPTS
         self.reconnect_backoff_seconds = config.MCP_RECONNECT_BACKOFF_SECONDS
         self.reconnect_timeout_seconds = config.MCP_RECONNECT_TIMEOUT_SECONDS
+        # When a reconnect cycle is abandoned, a later tool call may re-arm a
+        # fresh cycle once this cool-down has elapsed (monotonic timestamp of
+        # the give-up recorded per server). Without this, an outage longer
+        # than one bounded cycle — e.g. `docker compose restart mcp-tools`
+        # with github's slow init — would leave the server dead until an
+        # agent restart. The cool-down keeps a genuinely broken server from
+        # turning every tool call into a retry storm.
+        self.reconnect_rearm_cooldown_seconds = (
+            config.MCP_RECONNECT_REARM_COOLDOWN_SECONDS
+        )
+        self._reconnect_gave_up_at: Dict[str, float] = {}
 
     def add_server(self, mcp_config: MCPServerConfig):
         """Add an MCP server configuration"""
@@ -359,11 +499,21 @@ class MCPClientManager:
         if task is not None and not task.done():
             return  # already in flight
         if self._reconnect_attempts.get(server_name, 0) >= self.reconnect_max_attempts:
-            logger.debug(
-                f"Not reconnecting to MCP server {server_name}: "
-                f"{self.reconnect_max_attempts} attempts already exhausted"
+            gave_up_at = self._reconnect_gave_up_at.get(server_name, 0.0)
+            if time.monotonic() - gave_up_at < self.reconnect_rearm_cooldown_seconds:
+                logger.debug(
+                    f"Not reconnecting to MCP server {server_name}: "
+                    f"{self.reconnect_max_attempts} attempts already exhausted "
+                    f"(re-arm cool-down active)"
+                )
+                return
+            # Cool-down elapsed and a caller still wants this server: re-arm
+            # one fresh bounded cycle instead of staying dead forever.
+            logger.info(
+                f"Re-arming MCP reconnect for {server_name} after cool-down"
             )
-            return
+            self._reconnect_attempts[server_name] = 0
+            self._reconnect_gave_up_at.pop(server_name, None)
         try:
             self._reconnect_tasks[server_name] = asyncio.create_task(
                 self._reconnect_server(server_name),
@@ -423,6 +573,7 @@ class MCPClientManager:
                 continue
 
             self._reconnect_attempts[server_name] = 0
+            self._reconnect_gave_up_at.pop(server_name, None)
             self.failed_servers.pop(server_name, None)
             logger.info(f"Reconnected to MCP server: {server_name}")
             return
@@ -431,9 +582,11 @@ class MCPClientManager:
             f"Reconnect abandoned after {self.reconnect_max_attempts} attempts"
         )
         self.failed_servers[server_name] = reason
+        self._reconnect_gave_up_at[server_name] = time.monotonic()
         logger.error(
-            f"MCP server {server_name}: {reason}. Its tools stay unavailable "
-            "until the agent is restarted."
+            f"MCP server {server_name}: {reason}. A later tool call can "
+            f"re-arm another cycle after "
+            f"{self.reconnect_rearm_cooldown_seconds:.0f}s."
         )
 
     async def _discover_server_tools(self, server_name: str, session: ClientSession):
@@ -616,6 +769,7 @@ class MCPClientManager:
             await asyncio.gather(*pending, return_exceptions=True)
         self._reconnect_tasks.clear()
         self._reconnect_attempts.clear()
+        self._reconnect_gave_up_at.clear()
 
         # Connections retired by a reconnect still hold un-exited MCP contexts.
         for connection in list(self.connections.values()) + self._stale_connections:
