@@ -11,9 +11,9 @@ Assistant push / speaker TTS.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_reminder_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_reminder_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/reminder` (bearer token from `MCP_TOKEN_REMINDER`) |
 | Server name | `havencore-reminder-tools` |
-| Backend | Local autonomy REST API at `http://localhost:6002/api/autonomy/items` |
+| Backend | Agent autonomy REST API at `$AGENT_API_BASE/api/autonomy/items` (`http://agent:6002` under compose) |
 | Storage | Reuses the existing `agenda_items` table (`kind='reminder'`) |
 | Delivery handler | `selene_agent/autonomy/handlers/reminder.py` |
 | Tool count | 3 |
@@ -25,10 +25,11 @@ notifier abstraction. This module's only job is to expose
 `schedule_reminder` / `list_reminders` / `cancel_reminder` to the LLM
 so any "remind me to X" request produces a real scheduled item.
 
-Going through the local REST API (rather than calling `autonomy_db`
-directly from the subprocess) reuses the existing pydantic validation
-and triggers `engine.notify_agenda_changed()` so new items are picked
-up immediately rather than on the next dispatch tick.
+Going through the agent's REST API (rather than importing `autonomy_db`
+directly — the module runs in the `mcp-tools` container, not the
+agent's) reuses the existing pydantic validation and triggers
+`engine.notify_agenda_changed()` so new items are picked up immediately
+rather than on the next dispatch tick.
 
 ## Tool inventory
 
@@ -145,16 +146,18 @@ keep firing until cancelled via `cancel_reminder`.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `AGENT_API_BASE` | `http://localhost:6002` | Base URL the subprocess uses to reach the autonomy REST API. The default works because the MCP subprocess runs inside the same container as the FastAPI server. |
+| `AGENT_API_BASE` | `http://localhost:6002` | Base URL the module uses to reach the agent's autonomy REST API. The `localhost` default is only correct when the module runs inside the agent container (e.g. a stdio test run); `compose.yaml` sets `AGENT_API_BASE=http://agent:6002` on the `mcp-tools` service. |
 | `CURRENT_TIMEZONE` | `UTC` | Used to interpret naive ISO timestamps and to resolve cron expressions for `_one_shot_cron` formatting. Read from the same env var as the rest of the agent. |
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_REMINDER` must also be set, or `mcp-tools` won't mount the
+module):
 
 ```json
 {
   "name": "reminder",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],
+  "url": "http://mcp-tools:6010/mcp/reminder",
+  "token_env": "MCP_TOKEN_REMINDER",
   "enabled": true
 }
 ```

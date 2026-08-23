@@ -640,33 +640,61 @@ Notes:
 
 ### MCP (Model Context Protocol) Configuration
 
-The agent's tool surface is delivered by MCP servers bundled in the agent
-image (Home Assistant, Plex, Music Assistant, general, Qdrant, MQTT,
-GitHub, face recognition, reminder). They are spawned as subprocesses
-and advertise tools over stdio — no separate container.
+The agent's tool surface is delivered by the 11 MCP tool modules bundled
+in the agent image (general, Home Assistant, MQTT, Plex, Music Assistant,
+Qdrant, GitHub, face, vision, reminder, device-action). They are served by
+the [`mcp-tools` compose service](services/mcp-tools/README.md) over MCP
+Streamable HTTP — one mount per module at `/mcp/<name>`, each requiring
+its own bearer token from the matching `MCP_TOKEN_*` env var (a module
+whose token var is unset is not mounted at all). The agent connects as an
+HTTP client; the retired stdio shape (`{"name", "command", "args"}`) is
+rejected with a config error.
 
 ```bash
-# Master switch for the MCP client manager
-MCP_ENABLED=true
-
-# Whether MCP-registered tools win over any same-named legacy registration
-MCP_PREFER_OVER_LEGACY=true
-
-# JSON array of MCP server definitions to spawn
+# JSON array of MCP server definitions to connect to (see .env.example for
+# the full 11-entry list; token_env names the env var holding the bearer token)
 MCP_SERVERS='[
-  {"name": "homeassistant",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_homeassistant_tools"],    "enabled": true},
-  {"name": "plex",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_plex_tools"],             "enabled": true},
-  {"name": "music_assistant",  "command": "python", "args": ["-m", "selene_agent.modules.mcp_music_assistant_tools"],  "enabled": true},
-  {"name": "general",          "command": "python", "args": ["-m", "selene_agent.modules.mcp_general_tools"],          "enabled": true},
-  {"name": "qdrant",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_qdrant_tools"],           "enabled": true},
-  {"name": "mqtt",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_mqtt_tools"],             "enabled": true},
-  {"name": "github",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_github_tools"],           "enabled": true},
-  {"name": "face",             "command": "python", "args": ["-m", "selene_agent.modules.mcp_face_tools"],             "enabled": true},
-  {"name": "vision",           "command": "python", "args": ["-m", "selene_agent.modules.mcp_vision_tools"],           "enabled": true},
-  {"name": "reminder",         "command": "python", "args": ["-m", "selene_agent.modules.mcp_reminder_tools"],         "enabled": true},
-  {"name": "device_action",    "command": "python", "args": ["-m", "selene_agent.modules.mcp_device_action_tools"],    "enabled": true}
+  {"name": "homeassistant", "url": "http://mcp-tools:6010/mcp/homeassistant", "token_env": "MCP_TOKEN_HOMEASSISTANT", "enabled": true},
+  {"name": "reminder",      "url": "http://mcp-tools:6010/mcp/reminder",      "token_env": "MCP_TOKEN_REMINDER",      "enabled": true}
 ]'
+
+# Per-mount static bearer tokens, one per module — generate real values
+# with `openssl rand -hex 24`. The full set: MCP_TOKEN_GENERAL_TOOLS,
+# MCP_TOKEN_QDRANT, MCP_TOKEN_HOMEASSISTANT, MCP_TOKEN_MQTT,
+# MCP_TOKEN_PLEX, MCP_TOKEN_MUSIC_ASSISTANT, MCP_TOKEN_GITHUB,
+# MCP_TOKEN_FACE, MCP_TOKEN_VISION, MCP_TOKEN_REMINDER,
+# MCP_TOKEN_DEVICE_ACTION.
+MCP_TOKEN_HOMEASSISTANT="replace-with-openssl-rand-hex-24"
+
+# Extra Host-header values mcp-tools' DNS-rebinding protection accepts,
+# comma-separated. mcp-tools, localhost, 127.0.0.1, and HOST_IP_ADDRESS
+# are always allowed; add any DNS name used to reach nginx (otherwise
+# requests via that name are rejected with 421).
+MCP_HTTP_ALLOWED_HOSTS=""
+
+# Full Origin-header values accepted verbatim, comma-separated. Origins
+# are normally derived from the host allowlist (http:// and https:// per
+# host), which never matches a browser-extension MCP client — e.g.
+# Island's connector sends "Origin: chrome-extension://<extension-id>"
+# and is rejected with 403 unless that origin is listed here.
+MCP_HTTP_ALLOWED_ORIGINS=""
 ```
+
+Client-side tuning (read by the agent):
+
+```bash
+MCP_TOOL_TIMEOUT_SECONDS=120              # hard cap per tool call
+MCP_RECONNECT_MAX_ATTEMPTS=3              # bounded reconnect cycle per outage
+MCP_RECONNECT_BACKOFF_SECONDS=2           # exponential backoff seed
+MCP_RECONNECT_TIMEOUT_SECONDS=30          # per-attempt connect timeout
+MCP_RECONNECT_REARM_COOLDOWN_SECONDS=60   # after an abandoned cycle, a later
+                                          # tool call may re-arm one fresh
+                                          # cycle once this has elapsed
+```
+
+The `mcp-tools` service additionally gets `AGENT_API_BASE=http://agent:6002`
+(set in `compose.yaml`, not `.env`) so the reminder module can reach the
+agent's autonomy REST API from its own container.
 
 ### GitHub (self-inspection + issue filing)
 
@@ -831,9 +859,13 @@ upstream stt_backend {
 }
 ```
 
+TLS termination for `selene.renman.wtf` is built in — the cert lives in
+`./volumes/letsencrypt/` and is issued/renewed by the `certbot` compose
+service (Cloudflare DNS-01, token in `volumes/letsencrypt/cloudflare.ini`).
+See the [nginx service doc](services/nginx/README.md) for the full setup.
+
 **Customization Options**:
 - Load balancing algorithms
-- SSL/TLS termination
 - Rate limiting rules
 - CORS policies
 
@@ -913,7 +945,8 @@ networks:
 #### Port Mapping
 ```yaml
 ports:
-  - "80:80"          # Nginx gateway
+  - "80:80"          # Nginx gateway (plain HTTP, LAN)
+  - "443:443"        # Nginx gateway (TLS, selene.renman.wtf)
   - "6002:6002"      # Agent web interface
   - "8000:8000"      # LLM API (optional external access)
 ```
@@ -963,7 +996,6 @@ HAOS_TOKEN="production_ha_token"
 DEBUG_LOGGING=1
 HOST_IP_ADDRESS="127.0.0.1"
 POSTGRES_DB="havencore_test"
-MCP_ENABLED=true  # Test MCP features
 ```
 
 ## Configuration Validation

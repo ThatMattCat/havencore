@@ -108,20 +108,47 @@ class ChatCompletionResponse(BaseModel):
 # --- Startup helpers ---
 
 def _load_mcp_server_configs(mcp_manager: MCPClientManager):
-    """Load MCP server configurations from environment"""
+    """Load MCP server configurations from environment.
+
+    One entry shape in the MCP_SERVERS JSON list (Streamable HTTP):
+    {"name": ..., "url": "http://mcp-tools:6010/mcp/<name>",
+     "token_env": "MCP_TOKEN_<NAME>", "enabled": true} — the bearer token is
+    resolved from the named env var at connect time, never inlined. The
+    legacy stdio shape ({"name", "command", "args"}) was retired with the
+    Streamable HTTP migration and now fails loudly per entry.
+    """
     if hasattr(config, 'MCP_SERVERS'):
         try:
             servers_config = json.loads(config.MCP_SERVERS)
             for server_cfg in servers_config:
+                name = server_cfg.get('name')
+                url = server_cfg.get('url')
+                if 'command' in server_cfg and not url:
+                    logger.error(
+                        f"MCP server entry '{name or server_cfg}' uses the "
+                        f"retired stdio 'command' shape; the stdio MCP client "
+                        f"has been removed. Reconfigure it as a Streamable "
+                        f'HTTP entry {{"name", "url", "token_env"}} pointing '
+                        f"at the mcp-tools service."
+                    )
+                    continue
+                if not name or not url:
+                    logger.warning(
+                        f"Skipping MCP server entry without a name and url: "
+                        f"{server_cfg}"
+                    )
+                    continue
                 mcp_config = MCPServerConfig(
-                    name=server_cfg.get('name'),
-                    command=server_cfg.get('command'),
-                    args=server_cfg.get('args', []),
-                    env=server_cfg.get('env', {}),
-                    enabled=server_cfg.get('enabled', True)
+                    name=name,
+                    url=url,
+                    token_env=server_cfg.get('token_env'),
+                    enabled=server_cfg.get('enabled', True),
                 )
                 mcp_manager.add_server(mcp_config)
-                logger.info(f"Loaded MCP server config: {mcp_config.name}")
+                logger.info(
+                    f"Loaded MCP server config: {mcp_config.name} "
+                    f"({mcp_config.url})"
+                )
         except Exception as e:
             logger.warning(f"Could not parse MCP_SERVERS JSON: {e}")
 

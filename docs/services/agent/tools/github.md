@@ -12,7 +12,7 @@ directly.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_github_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_github_tools` (wraps `github_mcp_server.py`) |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/github` (bearer token from `MCP_TOKEN_GITHUB`) |
 | Server name | `havencore-github-tools` |
 | Backend | Local git clone at `GITHUB_CLONE_PATH` + `api.github.com` REST |
 | Tool count | 7 |
@@ -62,21 +62,24 @@ not retroactive: **rotate any token that was used by an affected build.**
 | `GITHUB_TOKEN` | — | Fine-grained PAT. Required. Scopes needed on the target repo: **Contents: Read** (for clone/fetch) and **Issues: Read and write** (for list/get/create). |
 | `GITHUB_REPO` | `thatmattcat/havencore` | `owner/name` of the repo Selene reads and files issues against. |
 | `GITHUB_CLONE_PATH` | `/var/cache/havencore/repo_clone` | Container path where the local clone lives. Backed by the named Docker volume `github_repo_clone` in `compose.yaml`. |
-| `GITHUB_MAX_ISSUES_PER_HOUR` | `5` | Sliding-window cap on `github_create_issue` calls per subprocess. Guards against runaway loops. |
+| `GITHUB_MAX_ISSUES_PER_HOUR` | `5` | Sliding-window cap on `github_create_issue` calls per server process. Guards against runaway loops. |
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_GITHUB` must also be set, or `mcp-tools` won't mount the
+module):
 
 ```json
 {
   "name": "github",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_github_tools"],
+  "url": "http://mcp-tools:6010/mcp/github",
+  "token_env": "MCP_TOKEN_GITHUB",
   "enabled": true
 }
 ```
 
 `git` and `ripgrep` are installed into the agent image (see
-`services/agent/Dockerfile`) — no host-side tooling is required.
+`services/agent/Dockerfile`), which the `mcp-tools` service reuses — no
+host-side tooling is required.
 
 ## Security notes
 
@@ -93,8 +96,8 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   defend against injections planted in issue comments. Do not strip the
   markers or the preamble downstream.
 - **Rate limiting:** the issue-creation cap is process-local (a
-  `collections.deque` of timestamps). It resets when the MCP subprocess
-  restarts. It is deliberately low (5/hour) — bump
+  `collections.deque` of timestamps). It resets when the `mcp-tools`
+  service restarts. It is deliberately low (5/hour) — bump
   `GITHUB_MAX_ISSUES_PER_HOUR` only after you've observed the model
   behaving responsibly.
 - **Path traversal:** `github_read_file` and `github_list_dir` resolve
@@ -121,9 +124,9 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   pull requests too; `_list_issues` drops entries carrying a
   `pull_request` key. `github_get_issue` refuses to return a PR with a
   clear error instead of silently falling back.
-- **Rate-limit scope.** The cap lives in the MCP subprocess, which runs
-  as long as the agent container. Restarting the agent resets it — but
-  so does a cold boot of the host, which is the more common case.
+- **Rate-limit scope.** The cap lives in the `mcp-tools` process.
+  Restarting `mcp-tools` resets it — but so does a cold boot of the
+  host, which is the more common case.
 
 ## Usage patterns from the system prompt
 
@@ -157,33 +160,36 @@ Typical flows:
 
 - Confirm the clone exists inside the container:
   ```bash
-  docker compose exec agent ls /var/cache/havencore/repo_clone/.git
+  docker compose exec mcp-tools ls /var/cache/havencore/repo_clone/.git
   ```
 - If the directory is empty, the initial `git clone` failed.
-  Check logs:
+  Check logs (the clone bootstrap runs in `mcp-tools`):
   ```bash
-  docker compose logs agent | grep -i 'github\|git clone'
+  docker compose logs mcp-tools | grep -i 'github\|git clone'
   ```
   The most common cause is a missing or invalid `GITHUB_TOKEN`.
+- Note the clone/fetch runs during module init and can block `mcp-tools`
+  startup for minutes on a cold volume — the service's healthcheck has a
+  360s `start_period` for exactly this.
 
 ### `github_create_issue` returns "rate limit reached"
 
 The per-hour cap was hit. Either wait an hour, raise
 `GITHUB_MAX_ISSUES_PER_HOUR` in `.env` (and `docker compose down && up
--d` to pick up the change), or restart the agent container to reset
-the counter.
+-d` to pick up the change), or restart the `mcp-tools` container to
+reset the counter.
 
 ### `github_pull_latest` returns `fetch failed`
 
 Usually one of:
 - `GITHUB_TOKEN` expired or was rotated with insufficient scope.
-- Network egress from the agent container is blocked.
+- Network egress from the `mcp-tools` container is blocked.
 - The repo was renamed or moved.
 
 Verify with:
 ```bash
-docker compose exec agent git -C /var/cache/havencore/repo_clone remote -v
-docker compose exec agent curl -sI -H "Authorization: Bearer $GITHUB_TOKEN" \
+docker compose exec mcp-tools git -C /var/cache/havencore/repo_clone remote -v
+docker compose exec mcp-tools curl -sI -H "Authorization: Bearer $GITHUB_TOKEN" \
   https://api.github.com/repos/$GITHUB_REPO
 ```
 (The `curl` above will print the token in your shell history — avoid if
@@ -212,7 +218,7 @@ the module can't fix it alone.
   — entrypoint.
 - `services/agent/Dockerfile` — installs `git` and `ripgrep`.
 - `compose.yaml` — declares the `github_repo_clone` named volume and
-  mounts it into the agent container.
+  mounts it into the agent and `mcp-tools` containers.
 
 ## See also
 

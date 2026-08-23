@@ -24,6 +24,11 @@ upstream stt_backend {
 
 server {
     listen 80;
+    listen 443 ssl;   # TLS termination — see "TLS termination" below
+    http2 on;
+
+    ssl_certificate     /etc/letsencrypt/live/selene.renman.wtf/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/selene.renman.wtf/privkey.pem;
 
     # Re-resolve `agent` against Docker's embedded DNS on a 10s TTL so
     # nginx picks up the new container IP after `docker compose restart agent`
@@ -58,6 +63,80 @@ proxy_pass http://$var;` pattern forces nginx to re-resolve the
 hostname on each request (cached for the resolver's `valid=` window).
 This is applied to every agent location: `/v1/chat/completions`,
 `/api/`, `/ws/`, and the SPA catch-all `/`.
+
+The `/mcp/` location uses the same lazy-DNS pattern to reach the
+[`mcp-tools` service](../mcp-tools/README.md) (`mcp-tools:6010`), with
+`proxy_buffering off`, `gzip off`, and hour-long read/send timeouts —
+MCP Streamable HTTP responses are long-lived SSE streams that buffering
+would stall.
+
+## TLS termination (`selene.renman.wtf`)
+
+nginx terminates TLS itself on port 443 — there is no separate proxy in
+front of it. The same `server` block answers both listeners, so the HTTP
+and HTTPS surfaces are identical, and port 80 deliberately stays plain
+HTTP with no redirect: the satellites (OTA), the companion app, and ntfy
+all speak plain HTTP on the LAN.
+
+`selene.renman.wtf` has no public DNS record — it resolves only on the
+LAN, where the local DNS server must point it at the Docker host. The
+certificate is therefore issued with a **Cloudflare DNS-01 challenge**
+(the `renman.wtf` zone is on Cloudflare), which needs no port-forward
+and no public A record. A `certbot` compose service
+(`certbot/dns-cloudflare`) owns issuance and renewal. Certs live in
+`./volumes/letsencrypt/` on the host (gitignored), bind-mounted
+read-only into nginx at `/etc/letsencrypt`.
+
+### Credentials
+
+`./volumes/letsencrypt/cloudflare.ini`, mode `0600`, gitignored:
+
+```ini
+dns_cloudflare_api_token = <token>
+```
+
+The token is a Cloudflare API token scoped to Zone → DNS → Edit on the
+`renman.wtf` zone only (dashboard → My Profile → API Tokens → "Edit
+zone DNS" template).
+
+### First issuance (one-off)
+
+nginx **fails to start while the cert files are missing**, so on a
+fresh host issue the cert before bringing nginx up. Note the
+`--entrypoint` override — without it, `compose run` keeps the service's
+renew-loop entrypoint and silently ignores the `certonly` arguments
+(the container just sits in its 12 h sleep loop):
+
+```bash
+docker compose run --rm --entrypoint certbot certbot certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+  --dns-cloudflare-propagation-seconds 30 \
+  -d selene.renman.wtf \
+  --register-unsafely-without-email --agree-tos --non-interactive
+```
+
+The account is registered without an email on purpose — Let's Encrypt
+stopped sending expiry notices in 2025, and renewal is automated below.
+A deployment that doesn't want TLS at all can instead comment out the
+`listen 443 ssl` / `http2` / `ssl_*` lines in `nginx.conf` and the
+`"443:443"` port in `compose.yaml`.
+
+### Renewal
+
+Two independent loops, no cross-container hooks:
+
+- The `certbot` service runs `certbot renew` every 12 h; certs renew
+  ~30 days before expiry.
+- nginx's compose `command` wraps the normal `nginx -g "daemon off;"`
+  in a 6 h `nginx -s reload` loop, so a renewed cert is picked up
+  within 6 h of landing — harmless given the 30-day head start.
+
+Verify the renewal path end to end with:
+
+```bash
+docker compose exec -T certbot certbot renew --dry-run
+```
 
 ## Satellite OTA firmware (`/firmware/`)
 
@@ -122,7 +201,7 @@ or runs a remote `chmod 644` after. Pick whichever fits the build flow.
 - **Health Checks**: Automatic failover for unhealthy services
 - **Rate Limiting**: Configurable request throttling
 - **CORS Support**: Cross-origin request handling
-- **SSL/TLS**: Encryption termination (when configured)
+- **SSL/TLS**: Terminates TLS for `selene.renman.wtf` on 443 (see [TLS termination](#tls-termination-selenerenmanwtf))
 
 ## Monitoring
 
@@ -145,13 +224,6 @@ Common customizations in `nginx.conf`:
 # Rate limiting
 limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
 limit_req zone=api burst=20 nodelay;
-
-# SSL configuration
-server {
-    listen 443 ssl;
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-}
 
 # Custom headers
 add_header X-Frame-Options DENY;

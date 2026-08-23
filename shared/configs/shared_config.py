@@ -7,12 +7,8 @@ POSTGRES_DB = os.getenv('POSTGRES_DB', 'mydatabase')
 POSTGRES_USER = os.getenv('POSTGRES_USER', 'myuser')
 POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'mypassword')
 
-# MCP Configuration
-MCP_ENABLED = os.getenv('MCP_ENABLED', 'false').lower() == 'true'
-MCP_PREFER_OVER_LEGACY = os.getenv('MCP_PREFER_OVER_LEGACY', 'false').lower() == 'true'
-
 # MCP Server Configurations (JSON format in env vars)
-# Example: MCP_SERVERS='[{"name": "example", "command": "node", "args": ["server.js"], "enabled": true}]'
+# Example: MCP_SERVERS='[{"name": "example", "url": "http://mcp-tools:6010/mcp/example", "token_env": "MCP_TOKEN_EXAMPLE", "enabled": true}]'
 MCP_SERVERS = os.getenv('MCP_SERVERS', '[]')
 
 HOST_IP_ADDRESS = os.getenv('HOST_IP_ADDRESS', '127.0.0.1')

@@ -21,6 +21,7 @@ Each service has its own folder under [`services/`](services/README.md):
 
 - [Agent](services/agent/README.md) — core AI agent, dashboard, and MCP tool servers
   - [Agent tools (MCP servers)](services/agent/tools/README.md)
+- [MCP Tools](services/mcp-tools/README.md) — Streamable HTTP host serving the agent's 11 MCP tool modules
 - [vLLM](services/vllm/README.md) — primary LLM backend
 - [LlamaCPP](services/llamacpp/README.md) — alternative LLM backend
 - [Speech-to-Text](services/speech-to-text/README.md) — Faster Whisper STT

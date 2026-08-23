@@ -15,7 +15,7 @@ itself.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_plex_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_plex_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/plex` (bearer token from `MCP_TOKEN_PLEX`) |
 | Server name | `havencore-plex` |
 | Plex client library | `plexapi` (sync — calls are offloaded via `asyncio.to_thread`) |
 | HA client | Minimal aiohttp REST (`_HAServiceClient` in `plex_client.py`) — used only for wake/launch |
@@ -63,13 +63,15 @@ returns `{"error": "PLEX_URL / PLEX_TOKEN not configured", "hint": …}`.
 Invalid JSON in `PLEX_CLIENT_HA_MAP` is logged and falls back to no-wake
 behavior (the server starts fine; playback just won't pre-warm the TV).
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_PLEX` must also be set, or `mcp-tools` won't mount the
+module):
 
 ```json
 {
   "name": "plex",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_plex_tools"],
+  "url": "http://mcp-tools:6010/mcp/plex",
+  "token_env": "MCP_TOKEN_PLEX",
   "enabled": true
 }
 ```
@@ -83,7 +85,7 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   as the server.
 - **`plexapi` is synchronous.** All library / account calls are wrapped in
   `asyncio.to_thread` (`_do_search`, `_do_list_recent`, etc.) so the
-  stdio event loop stays responsive.
+  server's event loop stays responsive.
 - **`PlexServer` + `MyPlexAccount` are lazy-initialized and cached.** The
   first tool call pays the auth round-trip; subsequent calls reuse the
   connection.
@@ -126,10 +128,10 @@ Common ones:
 - `Unauthorized` — wrong `PLEX_TOKEN`.
 - `NotFound` — `rating_key` doesn't exist (item removed, or you passed a
   key from a different server).
-- `ConnectionRefused` / `Timeout` — agent can't reach `PLEX_URL` from
-  inside the Docker network. Verify with:
+- `ConnectionRefused` / `Timeout` — the `mcp-tools` container can't
+  reach `PLEX_URL` from inside the Docker network. Verify with:
   ```bash
-  docker compose exec agent curl -I $PLEX_URL
+  docker compose exec mcp-tools curl -I $PLEX_URL
   ```
 
 ### `plex_play` returns `"played": false` with `available_clients`
