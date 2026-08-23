@@ -203,6 +203,12 @@ def _transport_security() -> TransportSecuritySettings:
     names (e.g. a LAN DNS alias) go in MCP_HTTP_ALLOWED_HOSTS
     (comma-separated). Getting this wrong is a silent 421 on every
     request, so keep the list generous.
+
+    Origins are derived from the hosts (http:// and https:// each), which
+    covers every web client but not browser-extension MCP clients (e.g.
+    Island's connector sends ``Origin: chrome-extension://<id>``) — those
+    get a 403 unless their full origin is listed verbatim in
+    MCP_HTTP_ALLOWED_ORIGINS (comma-separated).
     """
     hosts: Set[str] = {
         "mcp-tools", "mcp-tools:*",
@@ -221,6 +227,10 @@ def _transport_security() -> TransportSecuritySettings:
     for h in hosts:
         origins.add(f"http://{h}")
         origins.add(f"https://{h}")  # nginx may terminate TLS in front of us
+    for extra in os.getenv("MCP_HTTP_ALLOWED_ORIGINS", "").split(","):
+        extra = extra.strip()
+        if extra:
+            origins.add(extra)
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=sorted(hosts),
