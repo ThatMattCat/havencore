@@ -60,6 +60,7 @@ Env vars (all from the shared `.env` unless noted):
 |-----|---------|
 | `MCP_TOKEN_<NAME>` | Static bearer token per mount (see table above). Generate with `openssl rand -hex 24`. **A module whose token var is unset is not mounted** — nothing is ever served unauthenticated; it shows under `failed` in `/health` and in the agent's `failed_servers`. |
 | `MCP_HTTP_ALLOWED_HOSTS` | Extra Host-header values the DNS-rebinding protection accepts, comma-separated. `mcp-tools`, `localhost`, `127.0.0.1`, and `HOST_IP_ADDRESS` are always allowed; add any DNS name used to reach nginx. |
+| `MCP_HTTP_ALLOWED_ORIGINS` | Full Origin-header values accepted verbatim, comma-separated — for clients whose origin isn't `http(s)://<host>`. Browser-extension MCP clients need this: e.g. Island's connector sends `Origin: chrome-extension://<extension-id>` and gets 403 until that origin is listed. |
 | `MCP_HTTP_PORT` | Listen port (default `6010`). |
 | `AGENT_API_BASE` | Set in `compose.yaml` to `http://agent:6002` — the reminder module's route back to the agent's autonomy REST API. |
 
@@ -83,10 +84,15 @@ Transport defaults are deliberate and the clients depend on them:
 echoed by the client on subsequent requests) and **SSE response bodies**
 (clients must send `Accept: application/json, text/event-stream`).
 
-DNS-rebinding protection validates the Host/Origin header of every
-request against an allowlist (`mcp-tools`, `localhost`, `127.0.0.1`,
-`HOST_IP_ADDRESS`, plus `MCP_HTTP_ALLOWED_HOSTS`); a name not on the
-list is rejected with **421** on every request.
+DNS-rebinding protection validates the Host and Origin headers of every
+request. Hosts are checked against an allowlist (`mcp-tools`,
+`localhost`, `127.0.0.1`, `HOST_IP_ADDRESS`, plus
+`MCP_HTTP_ALLOWED_HOSTS`); a name not on the list is rejected with
+**421** on every request. Origins are derived from that host list
+(`http://` and `https://` per host) plus any values in
+`MCP_HTTP_ALLOWED_ORIGINS` verbatim; an unlisted Origin is rejected
+with **403** ("Invalid Origin header"). Requests without an Origin
+header (curl, the agent's own client) always pass the origin check.
 
 ## Startup and healthcheck
 
@@ -130,7 +136,10 @@ Any MCP client that speaks Streamable HTTP can use the mounts:
 That's the whole contract. For a connector UI (e.g. an enterprise
 browser's custom MCP connectors), enter the mount URL and the token as a
 Bearer credential. If the client reaches nginx via a DNS name, add that
-name to `MCP_HTTP_ALLOWED_HOSTS` or every request 421s.
+name to `MCP_HTTP_ALLOWED_HOSTS` or every request 421s. A connector that
+runs inside a browser extension (e.g. Island) also sends
+`Origin: chrome-extension://<extension-id>` — add that full origin to
+`MCP_HTTP_ALLOWED_ORIGINS` or every request 403s.
 
 Manual smoke test:
 
@@ -147,7 +156,8 @@ curl -is "http://${HOST_IP_ADDRESS}:6010/mcp/reminder" \
 | Symptom | Meaning / fix |
 |---------|---------------|
 | `401 Unauthorized` | Missing or wrong bearer token. Compare the client's token with the module's `MCP_TOKEN_<NAME>` in `.env`; recreate `mcp-tools` + agent after changing it. |
-| `421 Misdirected Request` on every call | Host/Origin failed the DNS-rebinding allowlist. Add the hostname you're connecting through to `MCP_HTTP_ALLOWED_HOSTS`. |
+| `421 Misdirected Request` on every call | Host failed the DNS-rebinding allowlist. Add the hostname you're connecting through to `MCP_HTTP_ALLOWED_HOSTS`. |
+| `403` "Invalid Origin header" on every call | The client's Origin isn't derivable from the host allowlist — typical for browser-extension MCP clients (`chrome-extension://…`). Add the full origin to `MCP_HTTP_ALLOWED_ORIGINS`. |
 | "Session terminated" / "Session not found" errors after a restart | Expected: the restarted host forgot old `Mcp-Session-Id`s. The agent classifies this as a transport death and reconnects in the background — retry the tool call. External clients should re-`initialize`. |
 | A module missing from `mounted` | Its token env var is unset, or its init raised — `/health`'s `failed` map and `docker compose logs mcp-tools` carry the reason. The agent reports it under `failed_servers` in `/api/mcp/status`. |
 | Container unhealthy for minutes after start | Usually the github module's clone/fetch on a cold volume; the healthcheck `start_period` (360s) allows for it. Check `docker compose logs mcp-tools`. |

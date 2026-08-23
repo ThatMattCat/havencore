@@ -450,9 +450,12 @@ value of that module's `MCP_TOKEN_<NAME>` env var. Wrong or missing →
 **Protocol**: standard MCP Streamable HTTP — JSON-RPC over POST with
 `Accept: application/json, text/event-stream`, responses delivered as
 SSE events, stateful sessions keyed by the `Mcp-Session-Id` response
-header (echo it on subsequent requests). A `421` means the Host/Origin
+header (echo it on subsequent requests). A `421` means the Host header
 failed the DNS-rebinding allowlist — add the hostname to
-`MCP_HTTP_ALLOWED_HOSTS`.
+`MCP_HTTP_ALLOWED_HOSTS`. A `403` "Invalid Origin header" means the
+Origin failed it — browser-extension clients (e.g. Island's connector,
+`chrome-extension://…`) need their full origin in
+`MCP_HTTP_ALLOWED_ORIGINS`.
 
 **External MCP clients** (custom connectors, IDE integrations): point
 the client's connector at the mount URL and supply the module's bearer

@@ -671,6 +671,13 @@ MCP_TOKEN_HOMEASSISTANT="replace-with-openssl-rand-hex-24"
 # are always allowed; add any DNS name used to reach nginx (otherwise
 # requests via that name are rejected with 421).
 MCP_HTTP_ALLOWED_HOSTS=""
+
+# Full Origin-header values accepted verbatim, comma-separated. Origins
+# are normally derived from the host allowlist (http:// and https:// per
+# host), which never matches a browser-extension MCP client — e.g.
+# Island's connector sends "Origin: chrome-extension://<extension-id>"
+# and is rejected with 403 unless that origin is listed here.
+MCP_HTTP_ALLOWED_ORIGINS=""
 ```
 
 Client-side tuning (read by the agent):

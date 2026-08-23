@@ -384,9 +384,11 @@ curl -is "http://${HOST_IP_ADDRESS}:6010/mcp/reminder" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual-test","version":"0.0"}}}'
 ```
 
-A wrong or missing token gets `401`. A `421` means the Host/Origin failed
-the DNS-rebinding allowlist — add the name you're using to
-`MCP_HTTP_ALLOWED_HOSTS`.
+A wrong or missing token gets `401`. A `421` means the Host header
+failed the DNS-rebinding allowlist — add the name you're using to
+`MCP_HTTP_ALLOWED_HOSTS`. A `403` "Invalid Origin header" means the
+Origin failed it (browser-extension clients like Island's connector) —
+add the full origin to `MCP_HTTP_ALLOWED_ORIGINS`.
 
 For a full sweep with a real MCP client session,
 `tests/tools_snapshot.py --http` connects to every mount configured in
