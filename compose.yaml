@@ -118,6 +118,13 @@ services:
       # LAN-IP-scoped on purpose: loopback 6010 on this host is held by an
       # SSH port-forward, so a 0.0.0.0 bind fails. LAN access (testing,
       # other machines) is what the published port is for anyway.
+      #
+      # Boot-order gotcha: if dockerd restores this container before the DHCP
+      # lease for HOST_IP_ADDRESS lands, the bind fails with "cannot assign
+      # requested address" and Docker does NOT retry a failed *start* (the
+      # container sits at Exited 255 until `docker compose up -d mcp-tools`).
+      # Fix on the host with the docker.service drop-in in
+      # scripts/host/docker-wait-for-lan-ip.conf.
       - "${HOST_IP_ADDRESS}:6010:6010" # MCP Streamable HTTP mounts + /health
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6010/health"]
@@ -258,6 +265,13 @@ services:
     # profiles: ["vllm"]
     env_file:
       - .env
+    environment:
+      # Resolve the model from the local HF cache only. Without this, vLLM
+      # contacts huggingface.co at startup and crash-loops (exit 1 every ~20s)
+      # when the host boots before internet/DNS is back (2026-09-26 outage:
+      # 71 restarts, 22 min). Set HF_HUB_OFFLINE=0 in .env once to pull a new
+      # model, then flip it back.
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
     ports:
       - "8000:8000"
     volumes:
@@ -326,6 +340,8 @@ services:
       # face-recognition).
       - CUDA_VISIBLE_DEVICES=4
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Same rationale as the `vllm` service: don't depend on internet at boot.
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
     ports:
       - "8001:8000"
     volumes:

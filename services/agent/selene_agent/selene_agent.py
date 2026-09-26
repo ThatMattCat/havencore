@@ -177,8 +177,13 @@ def _detect_model(base_url: str, max_retries: int = 30, retry_interval: int = 30
             logger.info(f"LLM backend not ready, retrying in {retry_interval}s (attempt {attempt}/{max_retries})")
             time.sleep(retry_interval)
 
-    logger.error("Could not detect model after all retries — LLM backend may be down")
-    return "llama"
+    fallback = config.LLM_MODEL_FALLBACK
+    logger.error(
+        "Could not detect model after all retries — LLM backend may be down. "
+        f"Falling back to LLM_MODEL_FALLBACK={fallback!r}; the vLLM provider "
+        "re-detects from /v1/models on the first 404."
+    )
+    return fallback
 
 
 # --- Application lifecycle ---
@@ -247,6 +252,28 @@ async def lifespan(app: FastAPI):
     app.state.vllm_provider = VLLMProvider(
         base_url=api_base, api_key=api_key, model=model_name
     )
+
+    # If startup detection fell back (backend wasn't up yet) and the served
+    # name turns out to differ, the vLLM provider re-detects on its first
+    # 404. Propagate that to every holder of the singleton model name so
+    # direct ``client.chat.completions.create(model=...)`` callers (autonomy
+    # memory/reminder jobs) don't keep using the stale id.
+    def _sync_model_name(new_model: str) -> None:
+        app.state.model_name = new_model
+        for prov in (app.state.provider, app.state.vllm_provider):
+            if isinstance(prov, VLLMProvider):
+                prov.model = new_model
+        pool = getattr(app.state, "session_pool", None)
+        if pool is not None:
+            pool.set_model_name(new_model)
+        engine = getattr(app.state, "autonomy_engine", None)
+        if engine is not None:
+            engine.model_name = new_model
+        logger.info(f"Model name re-detected from /v1/models: {new_model}")
+
+    for prov in (app.state.provider, app.state.vllm_provider):
+        if isinstance(prov, VLLMProvider):
+            prov.on_model_change = _sync_model_name
     logger.info(
         f"Agent LLM provider: {app.state.provider.name} ({app.state.provider.model})"
     )
