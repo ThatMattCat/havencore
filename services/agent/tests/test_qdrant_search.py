@@ -1,6 +1,15 @@
-"""Tests for v2 changes to qdrant_mcp_server."""
+"""Tests for v2 changes to qdrant_mcp_server.
+
+The dict-shaped impl methods are tested directly (as before); the mcp 2.0
+``MCPServer`` decorator surface (``server.mcp``) gets its own section at the
+bottom — schema parity against the fixtures baseline plus the explicit-null /
+error-contract wire behavior.
+"""
 from __future__ import annotations
 
+import copy
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,3 +113,89 @@ async def test_search_fires_access_update(server):
     # Increment is handled via a per-id update path; confirm ids are targeted.
     points = call.kwargs.get("points") or []
     assert set(points) == {"a", "b"}
+
+
+# --- MCPServer decorator surface --------------------------------------------
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "tool_schemas" / "mcp_qdrant_tools.tools.json"
+
+
+def _strip_generator_noise(schema: dict) -> dict:
+    """Drop pydantic's additive schema noise so structure can be compared.
+
+    The mcp 2.0 generator adds a model-level ``title``, a prettified ``title``
+    per property, and ``"default": null`` on optionals that had no baseline
+    default. Real defaults (3 / [] / 5), ranges, enums, descriptions, types,
+    and required lists must all still match the baseline.
+    """
+    schema = copy.deepcopy(schema)
+    schema.pop("title", None)
+    for prop in schema.get("properties", {}).values():
+        prop.pop("title", None)
+        if prop.get("default", "sentinel") is None:
+            prop.pop("default")
+    return schema
+
+
+@pytest.mark.asyncio
+async def test_mcp_surface_matches_schema_baseline(server):
+    baseline = json.loads(_FIXTURE.read_text())
+    tools = {t.name: t for t in await server.mcp.list_tools()}
+
+    assert sorted(tools) == [t["name"] for t in baseline]  # fixture is name-sorted
+    for expected in baseline:
+        tool = tools[expected["name"]]
+        assert tool.description == expected["description"]
+        assert tool.output_schema is None  # structured_output=False: plain text results
+        got = _strip_generator_noise(tool.input_schema)
+        want = _strip_generator_noise(expected["inputSchema"])
+        assert got == want, f"schema drift for {expected['name']}"
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_returns_json_text_and_tolerates_explicit_nulls(server):
+    """Explicit JSON nulls for optional params must behave as "not provided"
+    (LLMs send them routinely), and the result stays one indented-JSON text
+    block — this module's pre-MCPServer wire format."""
+    result = await server.mcp.call_tool("create_memory", {
+        "text": "Null-heavy call",
+        "importance": None,
+        "tags": None,
+        "expires_in_days": None,
+    })
+
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload["success"] is True
+    assert payload["memory_id"]
+    # Null importance/tags flow through to the impl exactly like the old
+    # dict-get dispatch did (stored as-is, no expiry set).
+    point = server.client.upsert.call_args.kwargs["points"][0]
+    assert point.payload["importance"] is None
+    assert point.payload["tags"] is None
+    assert "expires" not in point.payload
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_impl_exception_becomes_error_payload(server):
+    """An unexpected impl exception must surface as {"error": ...} indented
+    JSON (ordinary content, not a protocol error) — the pre-MCPServer
+    contract for this module."""
+    async def _boom(args):
+        raise RuntimeError("kaboom")
+
+    with patch.object(server, "_search_memories", _boom):
+        result = await server.mcp.call_tool("search_memories", {"query": "q"})
+
+    assert not result.is_error
+    assert result.content[0].text == json.dumps({"error": "kaboom"}, indent=2)
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_rejects_out_of_range_limit(server):
+    """ge/le are now enforced at validation (the hand-written schema only
+    advertised them); direct call_tool() re-raises as ToolError."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    with pytest.raises(ToolError, match="limit"):
+        await server.mcp.call_tool("search_memories", {"query": "q", "limit": 0})

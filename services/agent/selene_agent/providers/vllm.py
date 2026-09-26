@@ -8,9 +8,9 @@ preserved exactly.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, NotFoundError
 from openai.types.chat import ChatCompletion
 
 
@@ -28,6 +28,9 @@ class VLLMProvider:
         self._last_cache_create: int = 0
         self._max_model_len: Optional[int] = None
         self._max_model_len_fetched: bool = False
+        # Invoked with the new model id after a successful 404 re-detection so
+        # the app can propagate it to other holders of the model name.
+        self.on_model_change: Optional[Callable[[str], None]] = None
 
     @classmethod
     def from_client(cls, *, client: AsyncOpenAI, model: str) -> "VLLMProvider":
@@ -43,6 +46,7 @@ class VLLMProvider:
         p._last_cache_create = 0
         p._max_model_len = None
         p._max_model_len_fetched = False
+        p.on_model_change = None
         return p
 
     async def chat_completion(
@@ -67,10 +71,51 @@ class VLLMProvider:
                 kwargs["tool_choice"] = tool_choice
         if top_p is not None:
             kwargs["top_p"] = top_p
-        response = await self._client.chat.completions.create(**kwargs)
+        try:
+            response = await self._client.chat.completions.create(**kwargs)
+        except NotFoundError as e:
+            # "The model `X` does not exist": our model id is stale — typically
+            # because startup detection ran while vLLM was still loading and
+            # fell back to LLM_MODEL_FALLBACK. Re-read /v1/models and retry
+            # once with whatever the backend actually serves.
+            new_model = await self._redetect_model()
+            if not new_model or new_model == self.model:
+                raise
+            logger.warning(
+                "vLLM rejected model %r (%s); re-detected %r from /v1/models, retrying",
+                self.model, e, new_model,
+            )
+            self._set_model(new_model)
+            kwargs["model"] = new_model
+            response = await self._client.chat.completions.create(**kwargs)
         self._capture_reasoning(response)
         self._capture_cache_stats(response)
         return response
+
+    async def _redetect_model(self) -> Optional[str]:
+        """Return the first model id vLLM currently serves, or None on failure."""
+        try:
+            resp = await self._client.models.list()
+        except Exception as e:  # noqa: BLE001 — best effort
+            logger.warning("vLLM /v1/models re-detection failed: %s", e)
+            return None
+        for entry in getattr(resp, "data", None) or []:
+            mid = getattr(entry, "id", None)
+            if mid:
+                return mid
+        return None
+
+    def _set_model(self, new_model: str) -> None:
+        self.model = new_model
+        # max_model_len is per-model; force a re-fetch on next use.
+        self._max_model_len = None
+        self._max_model_len_fetched = False
+        cb = self.on_model_change
+        if cb is not None:
+            try:
+                cb(new_model)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("on_model_change callback failed: %s", e)
 
     def _capture_reasoning(self, response: ChatCompletion) -> None:
         # vLLM with --reasoning-parser glm45 (and similar) returns chain-of-thought

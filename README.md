@@ -140,7 +140,7 @@ Concurrent users don't share state. A [`SessionOrchestratorPool`](services/agent
 ### MCP all the way down
 Tools aren't a hardcoded registry — they're discovered at startup by a [`MCPClientManager`](services/agent/selene_agent/utils/mcp_client_manager.py) that spawns each tool server as a subprocess and speaks stdio JSON-RPC to it. A `UnifiedTool` abstraction converts MCP tool schemas to OpenAI function-calling format on the fly. Adding a tool server is a new folder with a `__main__.py`.
 
-**11 MCP servers, 68 tools** live today: Home Assistant (20), General — web/Wolfram/Wikipedia/Brave/weather/image-gen/Signal/multimodal (7), Music Assistant (7), GitHub self-inspection — code search/read + Issues (7), Plex (5), Vision — describe/identify/OCR/compare camera snapshots (5), Face — who's at the door, recent visitors, enrollment, access levels (5), Companion-app device actions — phone camera, alarms (5), Qdrant memory (3), Reminders (3), MQTT camera snapshots (1).
+**11 MCP servers, 69 tools** live today: Home Assistant (20), General — web/Wolfram/Wikipedia/Brave/weather/webpage-fetch/image-gen/Signal/multimodal (8), Music Assistant (7), GitHub self-inspection — code search/read + Issues (7), Plex (5), Vision — describe/identify/OCR/compare camera snapshots (5), Face — who's at the door, recent visitors, enrollment, access levels (5), Companion-app device actions — phone camera, alarms (5), Qdrant memory (3), Reminders (3), MQTT camera snapshots (1).
 
 ### Autonomy engine with actual guardrails
 Selene runs an asyncio dispatcher in the same process that fires `briefing`, `anomaly_sweep`, user-defined `reminder` / `watch` / `routine` / `memory_review` kinds. Each run:

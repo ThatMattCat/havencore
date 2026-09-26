@@ -14,7 +14,7 @@ labor vs. Plex and HA) lives in
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_music_assistant_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_music_assistant_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/music_assistant` (bearer token from `MCP_TOKEN_MUSIC_ASSISTANT`) |
 | Server name | `havencore-music-assistant` |
 | MA client library | `music-assistant-client` (async WebSocket — the same client the HA MA integration uses) |
 | HA client | None — MA talks directly to its own providers; transport control lives on `ha_control_media_player` |
@@ -76,13 +76,15 @@ tool returns
 `{"error": "MASS_URL / MASS_TOKEN not configured", "hint": …}`. The
 agent stays healthy without MA configured.
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_MUSIC_ASSISTANT` must also be set, or `mcp-tools` won't
+mount the module):
 
 ```json
 {
   "name": "music_assistant",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_music_assistant_tools"],
+  "url": "http://mcp-tools:6010/mcp/music_assistant",
+  "token_env": "MCP_TOKEN_MUSIC_ASSISTANT",
   "enabled": true
 }
 ```
@@ -91,7 +93,7 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 
 - **Persistent WS connection.** `MassAgent.connect()` opens one
   `music-assistant-client` session at startup and keeps its listener
-  task alive for the life of the subprocess. Tool calls reuse the
+  task alive for the life of the server process. Tool calls reuse the
   connection; no per-call auth round-trip.
 - **Search fallbacks run server-side.** `mass_client.search` runs the
   typed query; if zero results and a `media_type` filter was set, it
@@ -104,11 +106,11 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
   once via the `chromecast` provider and again via `hass_players`): the
   name the user says is matched exactly first, so duplicates without a
   name collision don't cause a resolution ambiguity.
-- **No reconnect loop.** If the WS drops, the next tool call surfaces
-  an error; the agent's MCP-manager layer can restart the subprocess
-  on repeated failure. Deliberate choice — reconnect logic inside the
-  module was deemed overkill given that the agent already supervises
-  its MCP children.
+- **No reconnect loop.** If the WS to Music Assistant drops, tool calls
+  surface an error until the `mcp-tools` service is restarted
+  (`docker compose restart mcp-tools`). The agent's reconnect logic
+  only heals its own HTTP session to `mcp-tools` — it cannot restart
+  the module's MA connection.
 
 ## Troubleshooting
 
@@ -125,10 +127,10 @@ tools surface that same error. Common causes:
 
 - **Token mismatch** — MA rejects the token as unauthorized. Mint a new
   long-lived token in the MA web UI and update `MASS_TOKEN`.
-- **Wrong URL** — the agent container can't reach `MASS_URL`. Verify
-  from inside the container:
+- **Wrong URL** — the `mcp-tools` container can't reach `MASS_URL`.
+  Verify from inside the container:
   ```bash
-  docker compose exec agent curl -I "$MASS_URL"
+  docker compose exec mcp-tools curl -I "$MASS_URL"
   ```
 - **MA schema mismatch** — the bundled client version has to be
   compatible with the running MA server. Bumping MA without bumping

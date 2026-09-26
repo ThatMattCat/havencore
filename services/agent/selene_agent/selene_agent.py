@@ -108,20 +108,47 @@ class ChatCompletionResponse(BaseModel):
 # --- Startup helpers ---
 
 def _load_mcp_server_configs(mcp_manager: MCPClientManager):
-    """Load MCP server configurations from environment"""
+    """Load MCP server configurations from environment.
+
+    One entry shape in the MCP_SERVERS JSON list (Streamable HTTP):
+    {"name": ..., "url": "http://mcp-tools:6010/mcp/<name>",
+     "token_env": "MCP_TOKEN_<NAME>", "enabled": true} — the bearer token is
+    resolved from the named env var at connect time, never inlined. The
+    legacy stdio shape ({"name", "command", "args"}) was retired with the
+    Streamable HTTP migration and now fails loudly per entry.
+    """
     if hasattr(config, 'MCP_SERVERS'):
         try:
             servers_config = json.loads(config.MCP_SERVERS)
             for server_cfg in servers_config:
+                name = server_cfg.get('name')
+                url = server_cfg.get('url')
+                if 'command' in server_cfg and not url:
+                    logger.error(
+                        f"MCP server entry '{name or server_cfg}' uses the "
+                        f"retired stdio 'command' shape; the stdio MCP client "
+                        f"has been removed. Reconfigure it as a Streamable "
+                        f'HTTP entry {{"name", "url", "token_env"}} pointing '
+                        f"at the mcp-tools service."
+                    )
+                    continue
+                if not name or not url:
+                    logger.warning(
+                        f"Skipping MCP server entry without a name and url: "
+                        f"{server_cfg}"
+                    )
+                    continue
                 mcp_config = MCPServerConfig(
-                    name=server_cfg.get('name'),
-                    command=server_cfg.get('command'),
-                    args=server_cfg.get('args', []),
-                    env=server_cfg.get('env', {}),
-                    enabled=server_cfg.get('enabled', True)
+                    name=name,
+                    url=url,
+                    token_env=server_cfg.get('token_env'),
+                    enabled=server_cfg.get('enabled', True),
                 )
                 mcp_manager.add_server(mcp_config)
-                logger.info(f"Loaded MCP server config: {mcp_config.name}")
+                logger.info(
+                    f"Loaded MCP server config: {mcp_config.name} "
+                    f"({mcp_config.url})"
+                )
         except Exception as e:
             logger.warning(f"Could not parse MCP_SERVERS JSON: {e}")
 
@@ -150,8 +177,13 @@ def _detect_model(base_url: str, max_retries: int = 30, retry_interval: int = 30
             logger.info(f"LLM backend not ready, retrying in {retry_interval}s (attempt {attempt}/{max_retries})")
             time.sleep(retry_interval)
 
-    logger.error("Could not detect model after all retries — LLM backend may be down")
-    return "llama"
+    fallback = config.LLM_MODEL_FALLBACK
+    logger.error(
+        "Could not detect model after all retries — LLM backend may be down. "
+        f"Falling back to LLM_MODEL_FALLBACK={fallback!r}; the vLLM provider "
+        "re-detects from /v1/models on the first 404."
+    )
+    return fallback
 
 
 # --- Application lifecycle ---
@@ -220,6 +252,28 @@ async def lifespan(app: FastAPI):
     app.state.vllm_provider = VLLMProvider(
         base_url=api_base, api_key=api_key, model=model_name
     )
+
+    # If startup detection fell back (backend wasn't up yet) and the served
+    # name turns out to differ, the vLLM provider re-detects on its first
+    # 404. Propagate that to every holder of the singleton model name so
+    # direct ``client.chat.completions.create(model=...)`` callers (autonomy
+    # memory/reminder jobs) don't keep using the stale id.
+    def _sync_model_name(new_model: str) -> None:
+        app.state.model_name = new_model
+        for prov in (app.state.provider, app.state.vllm_provider):
+            if isinstance(prov, VLLMProvider):
+                prov.model = new_model
+        pool = getattr(app.state, "session_pool", None)
+        if pool is not None:
+            pool.set_model_name(new_model)
+        engine = getattr(app.state, "autonomy_engine", None)
+        if engine is not None:
+            engine.model_name = new_model
+        logger.info(f"Model name re-detected from /v1/models: {new_model}")
+
+    for prov in (app.state.provider, app.state.vllm_provider):
+        if isinstance(prov, VLLMProvider):
+            prov.on_model_change = _sync_model_name
     logger.info(
         f"Agent LLM provider: {app.state.provider.name} ({app.state.provider.model})"
     )

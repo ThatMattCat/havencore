@@ -254,7 +254,11 @@
 	const COMMON_OWNED = ['quiet_hours', 'event_rate_limit'];
 
 	function mergeConfig(base, next, owned) {
-		const out = structuredClone(base ?? {});
+		// base is a $state proxy when editing (item comes from the page's
+		// reactive items list) — structuredClone can't clone proxies, so
+		// unwrap it first. snapshot() returns non-proxies as-is, hence the
+		// clone stays to keep `out` mutation-safe either way.
+		const out = structuredClone($state.snapshot(base ?? {}));
 		for (const key of owned) {
 			const subOwned = OWNED_SUBKEYS[key];
 			const prev = out[key];

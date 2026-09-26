@@ -1,0 +1,80 @@
+[
+  {
+    "description": "Ask the user's phone to capture a photo of something in front of them, then identify the primary subject (plant, bug, appliance, gadget, error code, etc.). Returns the vision model's identification text along with the `image_url`. Use when the user asks 'what is this?', 'what plant/bug/animal is this?', or similar one-shot identification questions about something physical near them. Pass `hint` to narrow the domain ('plant', 'electronics'). Times out after roughly 25s if no upload arrives.",
+    "inputSchema": {
+      "properties": {
+        "hint": {
+          "description": "Optional category hint to narrow identification (e.g. 'plant', 'bird', 'appliance').",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "identify_object_in_photo"
+  },
+  {
+    "description": "Ask the user's phone to capture a photo and transcribe all visible text in it. Returns the OCR text along with the `image_url`. Use when the user wants to read a receipt, label, sign, error screen, business card, page of a book, or any other text in front of them. Times out after roughly 25s if no upload arrives.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "read_text_from_image"
+  },
+  {
+    "description": "Schedule an alarm on the user's phone via the device's alarm clock app. Use this when the user asks to set an alarm, schedule a wake-up, or be reminded at a specific time of day. Hour and minute are local to the device. For one-off alarms omit days_of_week; for repeating alarms supply 1=Sunday, 2=Monday, ..., 7=Saturday.",
+    "inputSchema": {
+      "properties": {
+        "days_of_week": {
+          "description": "Repeating days. 1=Sun..7=Sat.",
+          "items": {
+            "maximum": 7,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "hour": {
+          "maximum": 23,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "description": "Optional label.",
+          "type": "string"
+        },
+        "minute": {
+          "maximum": 59,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hour",
+        "minute"
+      ],
+      "type": "object"
+    },
+    "name": "set_alarm"
+  },
+  {
+    "description": "Ask the user's companion-app phone to capture a photo with its camera and upload it back. Returns `{status: 'captured', image_url}` on success \u2014 the image_url can then be passed to vision tools (e.g. `query_multimodal_ai`) for analysis. Use when the user asks to take/snap/capture a picture WITHOUT a follow-up vision question. If the user is asking 'what is this?' or 'read this for me', prefer the more specific `identify_object_in_photo` / `read_text_from_image` tools \u2014 they capture and analyze in one step. Optionally pass a short `reason` describing why the photo is needed; the companion app may surface it. Times out after roughly 25s if no upload arrives.",
+    "inputSchema": {
+      "properties": {
+        "reason": {
+          "description": "Brief, user-facing rationale for the capture (e.g. 'to identify the plant').",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "take_photo"
+  },
+  {
+    "description": "Ask the user's phone to capture a photo and identify the person in it against the enrolled face gallery. Returns `{found: bool, name?, confidence?}` along with the `image_url`. Use when the user asks 'who is this?', 'do you know who that is?', 'is anyone in front of me?', or similar identity questions about a person physically near them. The face must already be enrolled in the face-recognition gallery for a match to land; unrecognized faces return `{found: false}` rather than an error. Times out after roughly 25s if no upload arrives.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "who_is_in_view"
+  }
+]

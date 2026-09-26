@@ -30,10 +30,10 @@ TOOL = "ha_turn_on"
 
 
 class FakeResult:
-    """Stand-in for CallToolResult."""
+    """Stand-in for CallToolResult (SDK 2.x snake_case field access)."""
 
     def __init__(self, text: str, is_error: bool = False):
-        self.isError = is_error
+        self.is_error = is_error
         self.content = [type("TextContent", (), {"text": text})()]
 
 
@@ -55,7 +55,9 @@ class FakeSession:
 def _build_manager(behavior=None) -> MCPClientManager:
     """A manager with one configured+connected server exposing one tool."""
     mgr = MCPClientManager()
-    server_config = MCPServerConfig(name=SERVER, command="python", args=["-m", "x"])
+    server_config = MCPServerConfig(
+        name=SERVER, url=f"http://mcp-tools:6010/mcp/{SERVER}"
+    )
     mgr.add_server(server_config)
 
     conn = MCPServerConnection(SERVER, server_config)
@@ -73,13 +75,13 @@ def _build_manager(behavior=None) -> MCPClientManager:
     # Keep reconnect timing deterministic; the cap is what matters here.
     mgr.reconnect_backoff_seconds = 0
 
-    # No test may spawn a real MCP subprocess: the default stub makes every
+    # No test may open a real MCP connection: the default stub makes every
     # reconnect attempt fail instantly. Tests that exercise recovery override
     # this with their own fake.
-    async def no_subprocess_connect(server_name, server_config):
-        raise RuntimeError("stubbed: no real MCP subprocess in tests")
+    async def no_connection_connect(server_name, server_config):
+        raise RuntimeError("stubbed: no real MCP connection in tests")
 
-    mgr._connect_to_server = no_subprocess_connect  # type: ignore[assignment]
+    mgr._connect_to_server = no_connection_connect  # type: ignore[assignment]
     return mgr
 
 
@@ -112,12 +114,10 @@ def test_classifier_separates_transport_from_tool_errors():
     assert mcm.is_transport_error(RuntimeError("tool blew up")) is False
     assert mcm.is_transport_error(KeyError("missing")) is False
     assert mcm.is_transport_error(asyncio.TimeoutError()) is False
-    # An McpError means the server answered us — it is demonstrably alive.
-    if mcm._McpError is not None:
-        from mcp.types import ErrorData
-
+    # An MCPError means the server answered us — it is demonstrably alive.
+    if mcm._MCPError is not None:
         assert mcm.is_transport_error(
-            mcm._McpError(ErrorData(code=-32602, message="Unknown tool"))
+            mcm._MCPError(-32602, "Unknown tool")
         ) is False
 
 
@@ -292,7 +292,7 @@ async def test_dead_server_call_fails_fast(monkeypatch):
 async def test_dead_server_call_schedules_reconnect():
     """Failing fast still arms recovery rather than giving up silently."""
     mgr = _build_manager()
-    mgr.connections[SERVER].mark_dead("subprocess exited")
+    mgr.connections[SERVER].mark_dead("session terminated")
 
     reconnected = asyncio.Event()
 

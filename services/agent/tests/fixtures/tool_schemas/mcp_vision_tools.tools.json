@@ -1,0 +1,101 @@
+[
+  {
+    "description": "Compare two images side-by-side and describe what changed. Useful for 'did the package get picked up?', 'did anyone enter the room?', or any A/B before/after question. Both images are sent to the vision model in one call. Optional `focus` narrows the comparison.",
+    "inputSchema": {
+      "properties": {
+        "focus": {
+          "description": "Optional aspect to focus on (e.g. 'people', 'the porch').",
+          "type": "string"
+        },
+        "image_url_a": {
+          "description": "First (earlier) image URL.",
+          "type": "string"
+        },
+        "image_url_b": {
+          "description": "Second (later) image URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_url_a",
+        "image_url_b"
+      ],
+      "type": "object"
+    },
+    "name": "compare_snapshots"
+  },
+  {
+    "description": "One-shot 'what's happening on the {camera} camera?' \u2014 captures a fresh frame from the named Home Assistant camera and runs vision on it. Replaces the two-step 'snapshot then describe' chain. `camera_name` is fuzzy-matched against snapshot URLs, so 'backyard' or 'front door' both work.",
+    "inputSchema": {
+      "properties": {
+        "camera_name": {
+          "description": "Camera name or alias (e.g. 'backyard', 'front_door').",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "Optional focus for the description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "camera_name"
+      ],
+      "type": "object"
+    },
+    "name": "describe_camera_snapshot"
+  },
+  {
+    "description": "General-purpose vision: describe an image at an HTTP(S) URL. Use for camera frames, photos, screenshots, anything a user or another tool produces a URL for. Pass a `prompt` to focus the description; omit it for a generic 'what's in this scene' answer.",
+    "inputSchema": {
+      "properties": {
+        "image_url": {
+          "description": "HTTP(S) URL of the image to analyze.",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "Optional question or instruction for the vision model.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_url"
+      ],
+      "type": "object"
+    },
+    "name": "describe_image"
+  },
+  {
+    "description": "Identify the primary subject of an image \u2014 plant, bug, appliance, error code, gadget, etc. Returns a concise name and one-sentence description. Pass `hint` to narrow the domain ('plant', 'bug', 'appliance brand').",
+    "inputSchema": {
+      "properties": {
+        "hint": {
+          "description": "Optional category hint to narrow identification.",
+          "type": "string"
+        },
+        "image_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_url"
+      ],
+      "type": "object"
+    },
+    "name": "identify_object"
+  },
+  {
+    "description": "Transcribe all visible text in an image (OCR-flavored). For receipts, mail, error screenshots, whiteboards, code on screens. Preserves rough layout where it matters.",
+    "inputSchema": {
+      "properties": {
+        "image_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_url"
+      ],
+      "type": "object"
+    },
+    "name": "read_text_in_image"
+  }
+]

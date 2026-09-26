@@ -1,0 +1,80 @@
+[
+  {
+    "description": "Cancel a reminder by id. Use list_reminders first to look up the id.",
+    "inputSchema": {
+      "properties": {
+        "id": {
+          "description": "The reminder id (UUID), as returned by list_reminders or schedule_reminder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "cancel_reminder"
+  },
+  {
+    "description": "List the user's reminders. Returns id, title, next fire time, cron expression, channel, and one_shot flag. Use this before cancel_reminder to find the right id.",
+    "inputSchema": {
+      "properties": {
+        "include_disabled": {
+          "description": "If true, also include disabled reminders (cancelled or already-fired one-shots). Default false.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_reminders"
+  },
+  {
+    "description": "Schedule a reminder for the user. Use for any 'remind me to X' request. Provide exactly one of `in_seconds` (relative delay; preferred for phrases like 'in an hour'), `at` (ISO 8601 absolute time, e.g. '2026-04-27T18:00:00'; naive times are interpreted in local tz), or `cron` (5-field cron in local tz for recurring; '0 18 * * 0' = Sundays at 6pm). Default channel is 'signal'. By default the agent rewrites the reminder body in its own voice at fire time and may attach a generated image when the channel is 'signal'; pass `personalize: false` for verbatim delivery.",
+    "inputSchema": {
+      "properties": {
+        "at": {
+          "description": "Fire once at this absolute time (ISO 8601). Naive timestamps are interpreted in the user's local timezone.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Optional longer body text. Defaults to title.",
+          "type": "string"
+        },
+        "channel": {
+          "description": "Delivery channel. signal = Signal message (default; cross-location). ha_push = phone push via Home Assistant. speaker = TTS announcement on a Music Assistant target.",
+          "enum": [
+            "signal",
+            "ha_push",
+            "speaker"
+          ],
+          "type": "string"
+        },
+        "cron": {
+          "description": "Recurring 5-field cron (minute hour day-of-month month day-of-week) in local tz. Examples: '0 18 * * 0' = Sundays 6pm; '30 7 * * 1-5' = weekdays 7:30am.",
+          "type": "string"
+        },
+        "in_seconds": {
+          "description": "Fire once after this many seconds. Use for 'in N minutes/hours' style requests.",
+          "type": "integer"
+        },
+        "personalize": {
+          "description": "Whether the agent rewrites the body in its own voice at fire time (and may attach a generated image for signal channel). Defaults to true. Set to false for verbatim delivery.",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Short reminder text (e.g. 'Take the trash out'). Used as the notification title and, if `body` is omitted, the body.",
+          "type": "string"
+        },
+        "to": {
+          "description": "Optional recipient override per channel: signal phone number, ha_push notify.<service>, or speaker MA device target.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "name": "schedule_reminder"
+  }
+]

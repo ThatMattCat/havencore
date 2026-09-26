@@ -4,18 +4,25 @@
 Exposes cross-provider search, player enumeration, and queue-aware playback
 on Music Assistant — the audio-only counterpart to the Plex module, targeting
 Chromecasts / Google Homes / ESP32 satellites.
+
+MCP surface is the mcp 2.0 ``MCPServer`` decorator API: the tools are typed
+functions registered in ``MusicAssistantMCPServer._build_mcp`` (see
+``mcp_reminder_tools/mcp_server.py`` for the pattern). The ``MassAgent``
+client layer (long-lived Music Assistant WebSocket opened by the async
+``initialize()``, closed by ``disconnect()``) is unchanged; the HTTP host
+loader and the stdio ``main()`` both keep that init/cleanup lifecycle
+around serving.
 """
 
-import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, Literal, Optional
 
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool
-import mcp.types as types
+import anyio
+from pydantic import Field
 
+from mcp.server import MCPServer
+
+from selene_agent.modules._mcp_params import NULL_OK
 from selene_agent.utils import config as agent_config
 from selene_agent.utils.logger import get_logger
 
@@ -31,10 +38,9 @@ TEST_MODE = not MASS_URL or not MASS_TOKEN
 
 class MusicAssistantMCPServer:
     def __init__(self):
-        self.server: Server = Server("havencore-music-assistant")
         self.agent: Optional[MassAgent] = None
         self.init_error: Optional[str] = None
-        self._setup_handlers()
+        self.mcp = self._build_mcp()
 
     async def initialize(self) -> None:
         if TEST_MODE:
@@ -50,161 +56,188 @@ class MusicAssistantMCPServer:
             logger.error(f"Failed to init Music Assistant agent: {e}")
             self.agent = None
 
-    def _setup_handlers(self) -> None:
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            return [
-                Tool(
-                    name="mass_search",
-                    description=(
-                        "Search the Music Assistant library across all connected providers "
-                        "(Plex, Spotify, etc.) for tracks/albums/artists/playlists/radio. "
-                        "Returns rows with `uri` (opaque — pass to mass_play_media), `name`, "
-                        "`artist`, `album`, `media_type`, and `providers`.\n\n"
-                        "Query tip: MA's search is title-biased. Prefer a single short query "
-                        "(a title OR an artist, not both in one string). The server will "
-                        "auto-fallback if a typed search misses, but the cleanest result comes "
-                        "from concise queries like 'The Better Life' or '3 Doors Down'."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search text (title, artist, keywords)."},
-                            "media_type": {
-                                "type": "string",
-                                "enum": ["track", "album", "artist", "playlist", "radio"],
-                                "description": "Optional filter for result type.",
-                            },
-                            "limit": {"type": "integer", "description": "Max items per bucket (default 5).", "default": 5},
-                        },
-                        "required": ["query"],
-                    },
-                ),
-                Tool(
-                    name="mass_list_players",
-                    description=(
-                        "Enumerate Music Assistant players (speakers). Returns `player_id`, "
-                        "`display_name`, `available`, `powered`, `state`, `volume_level`, and "
-                        "`current_item`. Hidden players are excluded unless `include_hidden=true`. "
-                        "Use the `display_name` values as `player_name` inputs to other tools."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "include_hidden": {
-                                "type": "boolean",
-                                "description": "Include players that MA has flagged hide_in_ui (e.g. the web player). Default false.",
-                                "default": False,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="mass_play_media",
-                    description=(
-                        "Play a media item on a speaker. `uri` comes from a prior mass_search result. "
-                        "`player_name` is a speaker display_name from mass_list_players (partial match accepted). "
-                        "`mode` controls queue behavior: 'replace' (default — clear queue, play now), "
-                        "'next' (insert after current), 'add' (append to end)."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "uri": {"type": "string", "description": "MA URI from a prior search result."},
-                            "player_name": {"type": "string", "description": "Speaker display_name — partial match accepted."},
-                            "mode": {
-                                "type": "string",
-                                "enum": ["replace", "next", "add"],
-                                "description": "Queue behavior. Default 'replace'.",
-                                "default": "replace",
-                            },
-                        },
-                        "required": ["uri", "player_name"],
-                    },
-                ),
-                Tool(
-                    name="mass_get_queue",
-                    description=(
-                        "Return what's playing and what's up next on a speaker. Powers "
-                        "'what's playing in the living room?' and 'what's next?' questions."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "player_name": {"type": "string", "description": "Speaker display_name."},
-                            "item_limit": {"type": "integer", "description": "Upcoming items to include. Default 5.", "default": 5},
-                        },
-                        "required": ["player_name"],
-                    },
-                ),
-                Tool(
-                    name="mass_queue_clear",
-                    description="Empty the queue on a speaker and stop playback.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "player_name": {"type": "string", "description": "Speaker display_name."},
-                        },
-                        "required": ["player_name"],
-                    },
-                ),
-                Tool(
-                    name="mass_play_announcement",
-                    description=(
-                        "Play a short audio announcement URL on a speaker. Ducks any "
-                        "currently playing track on Music Assistant's side and resumes it "
-                        "when the announcement finishes. Used by the autonomy engine's "
-                        "`speak` delivery channel to play TTS on ESP32 satellites / "
-                        "Chromecasts / Google Homes. `player_name` is a display_name from "
-                        "mass_list_players. `volume` is 0.0-1.0 (or 0-100 percent)."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "player_name": {"type": "string", "description": "Speaker display_name."},
-                            "url": {
-                                "type": "string",
-                                "description": "HTTP(S) URL to the audio clip. Must be reachable from the MA host.",
-                            },
-                            "volume": {
-                                "type": "number",
-                                "description": "Optional volume (0.0-1.0 float or 0-100 int). Defaults to MA's configured announcement level.",
-                            },
-                            "pre_announce": {
-                                "type": "boolean",
-                                "description": "Optional — play MA's chime before the clip. Defaults to MA's player setting.",
-                            },
-                        },
-                        "required": ["player_name", "url"],
-                    },
-                ),
-                Tool(
-                    name="mass_playback_control",
-                    description=(
-                        "Queue-level actions beyond basic pause/resume (which stay on ha_control_media_player). "
-                        "Supported: 'shuffle_on', 'shuffle_off', 'repeat_off', 'repeat_one', 'repeat_all'."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "player_name": {"type": "string", "description": "Speaker display_name."},
-                            "action": {
-                                "type": "string",
-                                "enum": [
-                                    "shuffle_on", "shuffle_off",
-                                    "repeat_off", "repeat_one", "repeat_all",
-                                ],
-                            },
-                        },
-                        "required": ["player_name", "action"],
-                    },
-                ),
-            ]
+    def _build_mcp(self) -> MCPServer:
+        """Register the decorated tool surface.
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
-            result = await self._dispatch(name, arguments or {})
-            return [types.TextContent(type="text", text=json.dumps(result, default=str))]
+        structured_output=False on every tool: results stay a single
+        TextContent JSON string, byte-identical to the pre-MCPServer wire
+        format (no outputSchema in tools/list, no structuredContent).
+        """
+        mcp = MCPServer("havencore-music-assistant", version="1.0.0")
+
+        @mcp.tool(
+            name="mass_search",
+            description=(
+                "Search the Music Assistant library across all connected providers "
+                "(Plex, Spotify, etc.) for tracks/albums/artists/playlists/radio. "
+                "Returns rows with `uri` (opaque — pass to mass_play_media), `name`, "
+                "`artist`, `album`, `media_type`, and `providers`.\n\n"
+                "Query tip: MA's search is title-biased. Prefer a single short query "
+                "(a title OR an artist, not both in one string). The server will "
+                "auto-fallback if a typed search misses, but the cleanest result comes "
+                "from concise queries like 'The Better Life' or '3 Doors Down'."
+            ),
+            structured_output=False,
+        )
+        async def mass_search(
+            query: Annotated[str, Field(
+                description="Search text (title, artist, keywords).",
+            )],
+            media_type: Annotated[Literal["track", "album", "artist", "playlist", "radio"], NULL_OK, Field(
+                description="Optional filter for result type.",
+            )] = None,
+            limit: Annotated[int, NULL_OK, Field(
+                description="Max items per bucket (default 5).",
+            )] = 5,
+        ) -> str:
+            return await self._call("mass_search", {
+                "query": query,
+                "media_type": media_type,
+                "limit": limit,
+            })
+
+        @mcp.tool(
+            name="mass_list_players",
+            description=(
+                "Enumerate Music Assistant players (speakers). Returns `player_id`, "
+                "`display_name`, `available`, `powered`, `state`, `volume_level`, and "
+                "`current_item`. Hidden players are excluded unless `include_hidden=true`. "
+                "Use the `display_name` values as `player_name` inputs to other tools."
+            ),
+            structured_output=False,
+        )
+        async def mass_list_players(
+            include_hidden: Annotated[bool, NULL_OK, Field(
+                description="Include players that MA has flagged hide_in_ui (e.g. the web player). Default false.",
+            )] = False,
+        ) -> str:
+            return await self._call("mass_list_players", {
+                "include_hidden": include_hidden,
+            })
+
+        @mcp.tool(
+            name="mass_play_media",
+            description=(
+                "Play a media item on a speaker. `uri` comes from a prior mass_search result. "
+                "`player_name` is a speaker display_name from mass_list_players (partial match accepted). "
+                "`mode` controls queue behavior: 'replace' (default — clear queue, play now), "
+                "'next' (insert after current), 'add' (append to end)."
+            ),
+            structured_output=False,
+        )
+        async def mass_play_media(
+            uri: Annotated[str, Field(
+                description="MA URI from a prior search result.",
+            )],
+            player_name: Annotated[str, Field(
+                description="Speaker display_name — partial match accepted.",
+            )],
+            mode: Annotated[Literal["replace", "next", "add"], NULL_OK, Field(
+                description="Queue behavior. Default 'replace'.",
+            )] = "replace",
+        ) -> str:
+            return await self._call("mass_play_media", {
+                "uri": uri,
+                "player_name": player_name,
+                "mode": mode,
+            })
+
+        @mcp.tool(
+            name="mass_get_queue",
+            description=(
+                "Return what's playing and what's up next on a speaker. Powers "
+                "'what's playing in the living room?' and 'what's next?' questions."
+            ),
+            structured_output=False,
+        )
+        async def mass_get_queue(
+            player_name: Annotated[str, Field(
+                description="Speaker display_name.",
+            )],
+            item_limit: Annotated[int, NULL_OK, Field(
+                description="Upcoming items to include. Default 5.",
+            )] = 5,
+        ) -> str:
+            return await self._call("mass_get_queue", {
+                "player_name": player_name,
+                "item_limit": item_limit,
+            })
+
+        @mcp.tool(
+            name="mass_queue_clear",
+            description="Empty the queue on a speaker and stop playback.",
+            structured_output=False,
+        )
+        async def mass_queue_clear(
+            player_name: Annotated[str, Field(
+                description="Speaker display_name.",
+            )],
+        ) -> str:
+            return await self._call("mass_queue_clear", {"player_name": player_name})
+
+        @mcp.tool(
+            name="mass_play_announcement",
+            description=(
+                "Play a short audio announcement URL on a speaker. Ducks any "
+                "currently playing track on Music Assistant's side and resumes it "
+                "when the announcement finishes. Used by the autonomy engine's "
+                "`speak` delivery channel to play TTS on ESP32 satellites / "
+                "Chromecasts / Google Homes. `player_name` is a display_name from "
+                "mass_list_players. `volume` is 0.0-1.0 (or 0-100 percent)."
+            ),
+            structured_output=False,
+        )
+        async def mass_play_announcement(
+            player_name: Annotated[str, Field(
+                description="Speaker display_name.",
+            )],
+            url: Annotated[str, Field(
+                description="HTTP(S) URL to the audio clip. Must be reachable from the MA host.",
+            )],
+            volume: Annotated[float, NULL_OK, Field(
+                description="Optional volume (0.0-1.0 float or 0-100 int). Defaults to MA's configured announcement level.",
+            )] = None,
+            pre_announce: Annotated[bool, NULL_OK, Field(
+                description="Optional — play MA's chime before the clip. Defaults to MA's player setting.",
+            )] = None,
+        ) -> str:
+            return await self._call("mass_play_announcement", {
+                "player_name": player_name,
+                "url": url,
+                "volume": volume,
+                "pre_announce": pre_announce,
+            })
+
+        @mcp.tool(
+            name="mass_playback_control",
+            description=(
+                "Queue-level actions beyond basic pause/resume (which stay on ha_control_media_player). "
+                "Supported: 'shuffle_on', 'shuffle_off', 'repeat_off', 'repeat_one', 'repeat_all'."
+            ),
+            structured_output=False,
+        )
+        async def mass_playback_control(
+            player_name: Annotated[str, Field(
+                description="Speaker display_name.",
+            )],
+            action: Literal[
+                "shuffle_on", "shuffle_off",
+                "repeat_off", "repeat_one", "repeat_all",
+            ],
+        ) -> str:
+            return await self._call("mass_playback_control", {
+                "player_name": player_name,
+                "action": action,
+            })
+
+        return mcp
+
+    async def _call(self, name: str, args: Dict[str, Any]) -> str:
+        """Run one tool with the old call_tool handler's exact contract:
+        the dispatched result (success or error dict) as one compact-JSON
+        text block in ordinary (non-``isError``) content."""
+        result = await self._dispatch(name, args)
+        return json.dumps(result, default=str)
 
     async def _dispatch(self, name: str, args: Dict[str, Any]) -> Any:
         if self.agent is None:
@@ -256,24 +289,28 @@ class MusicAssistantMCPServer:
         return {"error": f"unknown tool {name!r}"}
 
 
-async def main() -> None:
+async def _stdio_main() -> None:
+    """Connect to Music Assistant, serve stdio, disconnect on exit.
+
+    Same lifecycle as the pre-MCPServer async main: the WebSocket must be
+    opened and closed on the event loop that serves the session, so the
+    synchronous ``main()`` runs this wrapper instead of ``mcp.run("stdio")``
+    (which could not await ``initialize()`` / ``disconnect()``).
+    """
     server_instance = MusicAssistantMCPServer()
     await server_instance.initialize()
-
     try:
-        async with stdio_server() as (read_stream, write_stream):
-            await server_instance.server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="havencore-music-assistant",
-                    server_version="0.1.0",
-                    capabilities=server_instance.server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
-                    ),
-                ),
-            )
+        await server_instance.mcp.run_stdio_async()
     finally:
         if server_instance.agent is not None:
             await server_instance.agent.disconnect()
+
+
+def main() -> None:
+    """Stdio entry point (``python -m selene_agent.modules.mcp_music_assistant_tools``)."""
+    # Same event-loop runner MCPServer.run("stdio") uses internally.
+    anyio.run(_stdio_main)
+
+
+if __name__ == "__main__":
+    main()

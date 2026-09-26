@@ -12,7 +12,7 @@ having to assemble image URLs and prompts manually.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_vision_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_vision_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/vision` (bearer token from `MCP_TOKEN_VISION`) |
 | Server name | `havencore-vision-tools` |
 | Backing service | [vllm-vision (port 8001)](../../vllm-vision/README.md) |
 | Tool count | 5 |
@@ -119,15 +119,18 @@ in-cluster (it always is — same compose network).
 |-----|---------|-------|
 | `VISION_ASK_URL_ENDPOINT` | `http://agent:6002/api/vision/ask_url` | Override only if you're bench-testing against a different agent host. |
 | `VISION_HTTP_TIMEOUT_SEC` | `180` | Per-call timeout for both endpoints. Vision generation is sometimes slow on cold cache; 180 s leaves headroom. |
-| `HAOS_URL`, `HAOS_TOKEN`, `MQTT_BROKER`, `MQTT_PORT` | (inherited from agent env) | Used by the lazy `HACamSnapper` for `describe_camera_snapshot`. Same values the `mcp_mqtt_tools` server reads — no separate config. |
+| `HAOS_URL`, `HAOS_TOKEN`, `MQTT_BROKER`, `MQTT_PORT` | (from the shared `.env`) | Used by the lazy `HACamSnapper` for `describe_camera_snapshot`. Same values the `mcp_mqtt_tools` server reads — no separate config. |
 
 ### `MCP_SERVERS` entry
+
+`MCP_TOKEN_VISION` must also be set, or `mcp-tools` won't mount the
+module:
 
 ```json
 {
   "name": "vision",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_vision_tools"],
+  "url": "http://mcp-tools:6010/mcp/vision",
+  "token_env": "MCP_TOKEN_VISION",
   "enabled": true
 }
 ```
@@ -173,16 +176,16 @@ publishes after `script.capture_all_cameras` is wedged.
 
 ### `compare_snapshots` fails with `"VISION_API_BASE is not configured"`
 
-The direct-to-vllm-vision path requires the env var. Confirm the agent
-container has it set:
+The direct-to-vllm-vision path requires the env var. Confirm the
+`mcp-tools` container (where the tool runs) has it set:
 
 ```bash
-docker compose exec agent bash -lc 'echo $VISION_API_BASE'
+docker compose exec mcp-tools bash -lc 'echo $VISION_API_BASE'
 ```
 
 Empty string ⇒ `.env` is missing the `VISION_*` block (the same one
 the rest of the vision pipeline needs). Add it from `.env.example` and
-`docker compose down agent && docker compose up -d agent`.
+`docker compose down mcp-tools && docker compose up -d mcp-tools`.
 
 ### Any tool returns `"vision API error (5xx)"`
 
@@ -218,5 +221,5 @@ verbatim, so a model-side OOM or schema mismatch shows up here.
   tool these wrap.
 - [MQTT Tools](mqtt.md) — `get_camera_snapshots`, the HA-script trigger
   `describe_camera_snapshot` reuses.
-- [Tool Development](development.md) — module layout, MCP stdio
-  handshake, registration in `MCP_SERVERS`.
+- [Tool Development](development.md) — module layout, the `MCPServer`
+  decorator pattern, testing, registration in `MCP_SERVERS`.

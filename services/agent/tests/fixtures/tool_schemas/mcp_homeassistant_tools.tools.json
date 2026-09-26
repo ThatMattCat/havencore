@@ -1,0 +1,500 @@
+[
+  {
+    "description": "Activate a Home Assistant scene (scene.turn_on).",
+    "inputSchema": {
+      "properties": {
+        "scene_entity": {
+          "description": "Scene entity ID (e.g. 'scene.movie_night')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene_entity"
+      ],
+      "type": "object"
+    },
+    "name": "ha_activate_scene"
+  },
+  {
+    "description": "Cancel a running Home Assistant timer (timer.cancel).",
+    "inputSchema": {
+      "properties": {
+        "entity_id": {
+          "description": "Timer entity ID to cancel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "type": "object"
+    },
+    "name": "ha_cancel_timer"
+  },
+  {
+    "description": "Control a climate entity (thermostat). Supply any combination of temperature, hvac_mode, and fan_mode \u2014 each issued as a separate HA service call. Before calling: confirm the exact entity_id via ha_list_entities \u2014 do not guess.",
+    "inputSchema": {
+      "properties": {
+        "entity_id": {
+          "description": "Climate entity ID (e.g. 'climate.living_room')",
+          "type": "string"
+        },
+        "fan_mode": {
+          "description": "Fan mode (entity-specific, e.g. 'auto', 'low', 'high')",
+          "type": "string"
+        },
+        "hvac_mode": {
+          "description": "HVAC mode",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "auto",
+            "heat_cool",
+            "dry",
+            "fan_only"
+          ],
+          "type": "string"
+        },
+        "temperature": {
+          "description": "Target temperature (unit matches the entity's configured unit)",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "type": "object"
+    },
+    "name": "ha_control_climate"
+  },
+  {
+    "description": "Turn a light on/off/toggle with optional brightness and color. Color can be specified as rgb_color, hs_color, hex_color, color_temp_kelvin, or color_name \u2014 specify at most ONE of these. The rgb_color / hs_color / color_temp_kelvin values returned by ha_list_entities and ha_get_entity_history can be passed back here unchanged to reproduce a prior color. turn_off and toggle ignore brightness/color. Before calling: confirm the exact entity_id via ha_list_entities \u2014 do not guess.",
+    "inputSchema": {
+      "properties": {
+        "brightness_pct": {
+          "description": "Brightness percentage 0-100 (on only)",
+          "maximum": 100,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "color_name": {
+          "description": "CSS color name, e.g. 'red', 'warm_white' (on only)",
+          "type": "string"
+        },
+        "color_temp_kelvin": {
+          "description": "Color temperature in Kelvin, e.g. 2700-6500 (on only)",
+          "type": "integer"
+        },
+        "entity_id": {
+          "description": "Light entity ID (e.g. 'light.living_room_lamp')",
+          "type": "string"
+        },
+        "hex_color": {
+          "description": "Color as a hex string like '#FF8040' or 'FF8040' (on only). Converted to rgb_color before calling HA.",
+          "type": "string"
+        },
+        "hs_color": {
+          "description": "Color as [hue 0-360, saturation 0-100] (on only). Matches the hs_color shape returned by ha_list_entities.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "rgb_color": {
+          "description": "Color as [R,G,B] integers 0-255 (on only). Matches the rgb_color shape returned by ha_list_entities.",
+          "items": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "state": {
+          "description": "Desired state",
+          "enum": [
+            "on",
+            "off",
+            "toggle"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "name": "ha_control_light"
+  },
+  {
+    "description": "Control a media player: playback (play/pause/stop/toggle/next/previous/seek), volume, power, or input source. The 'value' field is required for volume_set, seek, and select_source; ignored otherwise.\n\nPlayback semantics (IMPORTANT \u2014 play and pause are NOT toggles):\n- 'play'   : start/resume playback. Use only when the device is paused or stopped. Calling 'play' on an already-playing device is a no-op.\n- 'pause'  : pause playback. Use only when the device is currently playing. Calling 'pause' on an already-paused device is a no-op.\n- 'toggle' : switch between play and pause based on current state. Prefer this for user requests like 'unpause', 'resume', 'pause/play it' or whenever the current playback state is unknown or ambiguous.\nWhen in doubt between play/pause, use 'toggle'.\n\nBefore calling: confirm the exact entity_id via ha_list_entities \u2014 do not guess.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "description": "Action to perform on the media player. Note: 'play' and 'pause' are directional (not toggles) \u2014 use 'toggle' for 'unpause'/'resume' or when the current state is unknown.",
+          "enum": [
+            "play",
+            "pause",
+            "stop",
+            "toggle",
+            "next",
+            "previous",
+            "seek",
+            "shuffle",
+            "repeat",
+            "volume_set",
+            "volume_up",
+            "volume_down",
+            "mute",
+            "unmute",
+            "turn_on",
+            "turn_off",
+            "select_source"
+          ],
+          "type": "string"
+        },
+        "device": {
+          "description": "Media player device name or entity_id (optional, auto-detects if not provided)",
+          "type": "string"
+        },
+        "value": {
+          "description": "Value for the action. Units by action: volume_set = integer 0-100 (percent); seek = integer seconds from start; select_source = source name string (e.g. 'HDMI 1'); shuffle/repeat = boolean or 'off'/'all'/'one'.",
+          "type": [
+            "number",
+            "string",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "ha_control_media_player"
+  },
+  {
+    "description": "Create a new event on a Home Assistant calendar entity. Requires a writable calendar (Local Calendar always works; Google requires read-write OAuth; many integrations are read-only and will return an error). Provide EITHER timed event fields (start_date_time + end_date_time, ISO 8601 with offset, e.g. '2026-05-01T14:00:00-04:00') OR all-day fields (start_date + end_date, ISO date YYYY-MM-DD; end_date is exclusive). Do not mix the two pairs. Times are interpreted in HA's configured timezone if no offset is given.",
+    "inputSchema": {
+      "properties": {
+        "calendar_entity": {
+          "description": "Calendar entity ID (e.g. 'calendar.family')",
+          "type": "string"
+        },
+        "description": {
+          "description": "Optional event description / notes",
+          "type": "string"
+        },
+        "end_date": {
+          "description": "All-day event end (exclusive), YYYY-MM-DD. For a one-day event, set this to the day AFTER start_date.",
+          "type": "string"
+        },
+        "end_date_time": {
+          "description": "Timed event end (exclusive), ISO 8601. Pair with start_date_time.",
+          "type": "string"
+        },
+        "location": {
+          "description": "Optional event location",
+          "type": "string"
+        },
+        "start_date": {
+          "description": "All-day event start, YYYY-MM-DD. Pair with end_date.",
+          "type": "string"
+        },
+        "start_date_time": {
+          "description": "Timed event start, ISO 8601 (e.g. '2026-05-01T14:00:00-04:00'). Pair with end_date_time.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "Event title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "calendar_entity",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "name": "ha_create_calendar_event"
+  },
+  {
+    "description": "Evaluate a Home Assistant Jinja2 template server-side and return the rendered text. Escape hatch for compound questions like \"{{ is_state('binary_sensor.back_door','on') and is_state('person.matt','home') }}\". See https://www.home-assistant.io/docs/configuration/templating/ for syntax.",
+    "inputSchema": {
+      "properties": {
+        "template": {
+          "description": "Jinja2 template string to render",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template"
+      ],
+      "type": "object"
+    },
+    "name": "ha_evaluate_template"
+  },
+  {
+    "description": "Execute a Home Assistant service on an entity. Use service_data to pass service parameters such as brightness, color, temperature, volume, etc. Example: service='turn_on' with service_data={'brightness_pct': 50, 'color_name': 'blue'} on a light entity. Before calling: confirm the exact entity_id via ha_list_entities \u2014 do not guess.",
+    "inputSchema": {
+      "properties": {
+        "entity_id": {
+          "description": "The entity ID to execute the service on (e.g., 'light.living_room')",
+          "type": "string"
+        },
+        "service": {
+          "description": "The service name to execute (e.g., 'turn_on', 'turn_off', 'toggle', 'set_temperature')",
+          "type": "string"
+        },
+        "service_data": {
+          "additionalProperties": true,
+          "description": "Optional service-specific parameters as a JSON object. Common examples: {'brightness_pct': 50}, {'color_name': 'red'}, {'temperature': 72, 'hvac_mode': 'heat'}, {'volume_level': 0.5}.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "entity_id",
+        "service"
+      ],
+      "type": "object"
+    },
+    "name": "ha_execute_service"
+  },
+  {
+    "description": "Get upcoming events over the next N days. Pass a specific calendar_entity, or omit it to aggregate events across ALL calendars. Discover calendar entities via ha_list_entities with domain='calendar'.",
+    "inputSchema": {
+      "properties": {
+        "calendar_entity": {
+          "description": "Calendar entity ID (e.g. 'calendar.family'). Omit to query all calendars.",
+          "type": "string"
+        },
+        "days": {
+          "default": 7,
+          "description": "Look-ahead window in days (default 7, max 31)",
+          "maximum": 31,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "ha_get_calendar_events"
+  },
+  {
+    "description": "Get recent state history for an entity over the last N hours. Returns a list of {state, last_changed, attributes?} points, sampled if very dense. Attributes are curated per domain (same shape as ha_list_entities) so you can see e.g. how a light's brightness or rgb_color changed over time \u2014 useful for questions like \"what color was the lamp before?\" or \"when did the thermostat setpoint last change?\".",
+    "inputSchema": {
+      "properties": {
+        "entity_id": {
+          "description": "Entity ID to fetch history for",
+          "type": "string"
+        },
+        "entity_ids": {
+          "description": "Optional list of entity IDs (alternative to entity_id); returns a per-entity map",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hours": {
+          "default": 24,
+          "description": "Look-back window in hours (default 24, max 168 = 1 week)",
+          "maximum": 168,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "ha_get_entity_history"
+  },
+  {
+    "description": "Summarize presence: state of all person.* and device_tracker.* entities. Typical states: 'home', 'not_home', or a zone name.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "ha_get_presence"
+  },
+  {
+    "description": "Cheap single-entity state read. Returns {entity_id, state, attributes, last_changed, last_updated} for one entity in one round-trip. Use this for trivial reads \u2014 \"is the porch light on\", \"what's the thermostat set to\", \"what was that door's last state change?\" \u2014 instead of ha_list_entities (which returns the whole domain) or ha_evaluate_template (which is the escape hatch for compound logic). Attributes are curated per domain, same shape as ha_list_entities, so the value round-trips into ha_control_*.",
+    "inputSchema": {
+      "properties": {
+        "entity_id": {
+          "description": "Entity ID to read (e.g. 'light.porch', 'climate.living_room').",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "type": "object"
+    },
+    "name": "ha_get_state"
+  },
+  {
+    "description": "List Home Assistant areas (rooms / zones). Useful before calling ha_list_entities with an `area` filter when the user names a room.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "ha_list_areas"
+  },
+  {
+    "description": "List Home Assistant entities, optionally filtered by domain and/or area. At least one of `domain` or `area` must be provided. \n\n- `domain` alone \u2192 all entities in that domain with state + curated attributes (e.g. domain='light' \u2192 every light and its brightness / rgb_color / color_temp_kelvin / color_mode). Returned as {entity_id: {state, attributes}}. If the domain has no entities (e.g. 'notify', 'tts', 'script' \u2014 these expose services, not entities), the response includes a `hint` field pointing you at ha_list_services.\n- `area` alone \u2192 entities assigned to the area, grouped by domain, as bare entity_id strings (cheap directory lookup). Set include_state=true to attach state + curated attributes.\n- `domain` + `area` \u2192 entities of that domain within the area (grouped shape, still cheap; include_state=true to attach state).\n\nArea accepts an area_id or case-insensitive area name / alias (e.g. 'kitchen' or 'Kitchen'). Attributes are curated per domain (lights: brightness / rgb_color / hs_color / color_temp_kelvin / color_mode; climate: current_temperature / temperature / hvac_action; covers: current_position; media_player: source / volume_level / media_title; etc.) and round-trip back into the matching ha_control_* tool.",
+    "inputSchema": {
+      "properties": {
+        "area": {
+          "description": "Area filter \u2014 area_id or case-insensitive area name / alias (e.g. 'kitchen').",
+          "type": "string"
+        },
+        "domain": {
+          "description": "Domain filter, e.g. 'light', 'switch', 'climate', 'media_player', 'sensor', 'cover'.",
+          "type": "string"
+        },
+        "include_state": {
+          "description": "Attach state + curated attributes to each entity. Default: true for domain-only queries, false when an area filter is used (area listings can be large).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "ha_list_entities"
+  },
+  {
+    "description": "List callable services (actions) for a Home Assistant domain. Returns a JSON object mapping service_name \u2192 description. Use this for domains that expose actions rather than entity state:\n- 'notify' \u2192 every notification target is a separate service (e.g. notify.mobile_app_matt, notify.family_group). ha_list_entities returns nothing for 'notify'; this tool is how you discover who you can notify.\n- 'tts' \u2192 tts.speak, tts.cloud_say, etc.\n- 'script' \u2192 each script is its own service.\n- 'light' / 'switch' / 'climate' / etc. \u2192 turn_on, turn_off, set_*, toggle, and any custom services.\n\nPair the service name with ha_execute_service to invoke it (e.g. service='turn_on', entity_id='light.kitchen').",
+    "inputSchema": {
+      "properties": {
+        "domain": {
+          "description": "Domain name (e.g. 'notify', 'tts', 'script', 'light', 'climate').",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain"
+      ],
+      "type": "object"
+    },
+    "name": "ha_list_services"
+  },
+  {
+    "description": "Send a notification through a Home Assistant notify.* service. Call ha_list_services with domain='notify' to discover the available service names on this HA instance.",
+    "inputSchema": {
+      "properties": {
+        "message": {
+          "description": "Notification body",
+          "type": "string"
+        },
+        "service": {
+          "description": "notify service name, e.g. 'mobile_app_pixel_7' (without the 'notify.' prefix)",
+          "type": "string"
+        },
+        "target": {
+          "description": "Optional target(s) \u2014 string or array, service-dependent",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "string",
+            "array"
+          ]
+        },
+        "title": {
+          "description": "Optional notification title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "message"
+      ],
+      "type": "object"
+    },
+    "name": "ha_send_notification"
+  },
+  {
+    "description": "Start a Home Assistant timer helper (timer.start). Requires a timer.* entity configured in Home Assistant \u2014 discover available timers via ha_list_entities with domain='timer'. Duration uses HH:MM:SS format (e.g. '0:05:00' = 5 minutes); omit to use the timer's configured default duration.",
+    "inputSchema": {
+      "properties": {
+        "duration": {
+          "description": "Duration in HH:MM:SS (e.g. '0:10:00' for 10 minutes). Optional.",
+          "type": "string"
+        },
+        "entity_id": {
+          "description": "Timer entity ID (e.g. 'timer.kitchen')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "type": "object"
+    },
+    "name": "ha_set_timer"
+  },
+  {
+    "description": "Enable or disable a Home Assistant automation (automation.turn_on/turn_off). This controls whether the automation runs on its triggers; it does NOT manually fire the automation \u2014 use ha_trigger_automation for that.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "description": "true = turn_on (enable), false = turn_off (disable)",
+          "type": "boolean"
+        },
+        "entity_id": {
+          "description": "Automation entity ID",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "name": "ha_toggle_automation"
+  },
+  {
+    "description": "Manually trigger a Home Assistant automation (automation.trigger). Use ha_toggle_automation to enable/disable instead.",
+    "inputSchema": {
+      "properties": {
+        "automation_entity": {
+          "description": "Automation entity ID (e.g. 'automation.goodnight')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "automation_entity"
+      ],
+      "type": "object"
+    },
+    "name": "ha_trigger_automation"
+  },
+  {
+    "description": "Run a Home Assistant script (script.turn_on). Optional 'variables' object is passed as script variables.",
+    "inputSchema": {
+      "properties": {
+        "script_entity": {
+          "description": "Script entity ID (e.g. 'script.bedtime')",
+          "type": "string"
+        },
+        "variables": {
+          "additionalProperties": true,
+          "description": "Optional script variables",
+          "type": "object"
+        }
+      },
+      "required": [
+        "script_entity"
+      ],
+      "type": "object"
+    },
+    "name": "ha_trigger_script"
+  }
+]

@@ -1,0 +1,89 @@
+[
+  {
+    "description": "Add a face to the gallery. If `name` matches an existing person (fuzzy), that person gets a new face image; otherwise a new person is created first. `source` must be either 'camera:<entity_id>' to capture a snapshot from a live camera, or an http(s) URL pointing at an image.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "description": "'camera:<entity_id>' or an http(s) image URL",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "face_enroll_person"
+  },
+  {
+    "description": "List every enrolled person along with the number of face images on file and their access level. Use this before enrollment to check whether someone is already known.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "face_list_known_people"
+  },
+  {
+    "description": "List face detections from the last `hours` hours, newest first. Optionally restrict to one camera. Returns up to 50 entries.",
+    "inputSchema": {
+      "properties": {
+        "camera": {
+          "description": "Optional camera filter",
+          "type": "string"
+        },
+        "hours": {
+          "default": 24,
+          "minimum": 0.1,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "face_recent_visitors"
+  },
+  {
+    "description": "Set a person's access_level to one of: unknown, resident, guest, blocked. Stored for future automation policies \u2014 v1 has no enforcer.",
+    "inputSchema": {
+      "properties": {
+        "level": {
+          "enum": [
+            "unknown",
+            "resident",
+            "guest",
+            "blocked"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "level"
+      ],
+      "type": "object"
+    },
+    "name": "face_set_access_level"
+  },
+  {
+    "description": "Most recent face detection on `camera` within the last 60 seconds. Returns the matched person's name (or 'unknown' if a face was seen but not identified), confidence, and timestamp. `camera` is fuzzy-matched against the configured camera entity_ids \u2014 pass a friendly name like 'front door' or the full entity_id.",
+    "inputSchema": {
+      "properties": {
+        "camera": {
+          "description": "Camera entity_id or alias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "camera"
+      ],
+      "type": "object"
+    },
+    "name": "face_who_is_at"
+  }
+]

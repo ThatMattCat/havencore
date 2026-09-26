@@ -7,16 +7,16 @@ POSTGRES_DB = os.getenv('POSTGRES_DB', 'mydatabase')
 POSTGRES_USER = os.getenv('POSTGRES_USER', 'myuser')
 POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'mypassword')
 
-# MCP Configuration
-MCP_ENABLED = os.getenv('MCP_ENABLED', 'false').lower() == 'true'
-MCP_PREFER_OVER_LEGACY = os.getenv('MCP_PREFER_OVER_LEGACY', 'false').lower() == 'true'
-
 # MCP Server Configurations (JSON format in env vars)
-# Example: MCP_SERVERS='[{"name": "example", "command": "node", "args": ["server.js"], "enabled": true}]'
+# Example: MCP_SERVERS='[{"name": "example", "url": "http://mcp-tools:6010/mcp/example", "token_env": "MCP_TOKEN_EXAMPLE", "enabled": true}]'
 MCP_SERVERS = os.getenv('MCP_SERVERS', '[]')
 
 HOST_IP_ADDRESS = os.getenv('HOST_IP_ADDRESS', '127.0.0.1')
 LLM_API_BASE = os.getenv('LLM_API_BASE', 'http://10.0.0.1:8000/v1')
+# Model id the agent uses when LLM_API_BASE never answers /v1/models during
+# startup (e.g. vLLM still loading after a host reboot). Should match vLLM's
+# --served-model-name so chat works as soon as the backend comes up.
+LLM_MODEL_FALLBACK = os.getenv('LLM_MODEL_FALLBACK', 'gpt-3.5-turbo')
 
 VISION_API_BASE = os.getenv('VISION_API_BASE', 'http://10.0.0.1:8001/v1')
 VISION_API_KEY = os.getenv('VISION_API_KEY', '1234')

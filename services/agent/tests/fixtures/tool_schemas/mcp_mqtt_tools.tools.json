@@ -1,0 +1,11 @@
+[
+  {
+    "description": "Capture a snapshot from all cameras and return a text description of the images",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "get_camera_snapshots"
+  }
+]

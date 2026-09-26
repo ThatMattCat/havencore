@@ -2,12 +2,19 @@
 
 The HTTP layer (`_post_json`) is mocked — these tests assert that each tool
 constructs the right payload, picks the right endpoint (chokepoint vs.
-direct-to-vllm), and surfaces the right shape back to the LLM.
+direct-to-vllm), and surfaces the right shape back to the LLM. The mcp 2.0
+``MCPServer`` decorator surface is covered at the bottom: schema parity
+against the fixtures baseline, the happy-path wire format with explicit
+nulls, and the ``{"error": ...}`` indented-JSON error contract.
 """
 from __future__ import annotations
 
+import copy
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from selene_agent.modules.mcp_vision_tools.server import (
@@ -17,6 +24,8 @@ from selene_agent.modules.mcp_vision_tools.server import (
     DEFAULT_OCR_PROMPT,
     VisionMCPServer,
 )
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "tool_schemas" / "mcp_vision_tools.tools.json"
 
 
 def _ask_url_response(text: str) -> dict:
@@ -254,3 +263,103 @@ async def test_ask_url_propagates_http_error(server):
     server._post_json = AsyncMock(side_effect=ValueError("vision API error (502)"))
     with pytest.raises(ValueError, match="vision API error"):
         await server._ask_url("hi", "http://x/img.jpg")
+
+
+# --- MCP surface (mcp 2.0 MCPServer decorator API) ------------------------
+
+
+def _strip_generator_noise(schema: dict) -> dict:
+    """Drop pydantic's additive schema noise so structure can be compared.
+
+    The mcp 2.0 generator adds a model-level ``title``, a prettified ``title``
+    per property, and ``"default": null`` on optionals that had no baseline
+    default. Descriptions, types, and required lists must all still match
+    the baseline.
+    """
+    schema = copy.deepcopy(schema)
+    schema.pop("title", None)
+    for prop in schema.get("properties", {}).values():
+        prop.pop("title", None)
+        if prop.get("default", "sentinel") is None:
+            prop.pop("default")
+    return schema
+
+
+async def test_mcp_surface_matches_schema_baseline(server):
+    baseline = json.loads(_FIXTURE.read_text())
+    tools = {t.name: t for t in await server.mcp.list_tools()}
+
+    assert sorted(tools) == [t["name"] for t in baseline]  # fixture is name-sorted
+    for expected in baseline:
+        tool = tools[expected["name"]]
+        assert tool.description == expected["description"]
+        assert tool.output_schema is None  # structured_output=False: plain text results
+        got = _strip_generator_noise(tool.input_schema)
+        want = _strip_generator_noise(expected["inputSchema"])
+        assert got == want, f"schema drift for {expected['name']}"
+
+
+async def test_mcp_call_tool_returns_json_text_and_tolerates_explicit_nulls(server):
+    """Explicit JSON null for the optional prompt must behave as "not
+    provided" (LLMs send them routinely) — the impl falls back to the default
+    describe prompt — and the result stays one indented-JSON text block, this
+    module's pre-MCPServer wire format."""
+    server._post_json = AsyncMock(return_value=_ask_url_response("a quiet porch"))
+
+    result = await server.mcp.call_tool("describe_image", {
+        "image_url": "http://x/img.jpg",
+        "prompt": None,
+    })
+
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload == {
+        "image_url": "http://x/img.jpg",
+        "prompt": DEFAULT_DESCRIBE_PROMPT,
+        "description": "a quiet porch",
+    }
+    assert result.content[0].text == json.dumps(payload, indent=2)
+
+
+async def test_mcp_call_tool_network_error_keeps_friendly_message(server):
+    """The aiohttp.ClientError branch of the old handler survives: an
+    unreachable vision service maps to the same friendly text in ordinary
+    (non-isError) content."""
+    exc = aiohttp.ClientConnectionError("nope")
+    server._post_json = AsyncMock(side_effect=exc)
+
+    result = await server.mcp.call_tool("read_text_in_image", {
+        "image_url": "http://x/receipt.jpg",
+    })
+
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload == {"error": f"vision service unreachable: {exc}"}
+    assert result.content[0].text == json.dumps(payload, indent=2)
+
+
+async def test_mcp_call_tool_value_error_becomes_error_payload(server):
+    """ValueError (the impls' own failure signal, e.g. a non-2xx from the
+    chokepoint) surfaces as {"error": str(e)} — never a protocol error."""
+    server._post_json = AsyncMock(side_effect=ValueError("vision API error (502): bad gateway"))
+
+    result = await server.mcp.call_tool("identify_object", {
+        "image_url": "http://x/img.jpg",
+        "hint": None,
+    })
+
+    assert not result.is_error
+    assert json.loads(result.content[0].text) == {
+        "error": "vision API error (502): bad gateway"
+    }
+
+
+async def test_mcp_call_tool_missing_required_param_raises_tool_error(server):
+    """Missing image_url now fails pydantic validation; direct call_tool()
+    re-raises as ToolError (over the wire: is_error=True)."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    server._post_json = AsyncMock()
+    with pytest.raises(ToolError, match="image_url"):
+        await server.mcp.call_tool("describe_image", {})
+    server._post_json.assert_not_called()

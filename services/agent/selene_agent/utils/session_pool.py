@@ -80,6 +80,14 @@ class SessionOrchestratorPool:
 
     # ----- Construction helpers -------------------------------------------------
 
+    def set_model_name(self, model_name: str) -> None:
+        """Update the model id handed to newly built orchestrators (and to
+        live ones, which only use it for metrics/labels — actual completions
+        go through ``provider_getter``)."""
+        self._model_name = model_name
+        for orch in self._sessions.values():
+            orch.model_name = model_name
+
     def _build_orchestrator(self, session_id: str) -> AgentOrchestrator:
         return AgentOrchestrator(
             client=self._client,

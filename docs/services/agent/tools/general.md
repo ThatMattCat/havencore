@@ -11,12 +11,12 @@ that aren't specific to any other subsystem.
 |---|---|
 | Module path | `services/agent/selene_agent/modules/mcp_general_tools/` |
 | Entry point | `python -m selene_agent.modules.mcp_general_tools` |
-| Transport | MCP stdio |
+| Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/general_tools` (bearer token from `MCP_TOKEN_GENERAL_TOOLS`) |
 | Server name | `havencore-general-tools` |
-| Tool count | Up to 7 (some tools are conditional on credentials) |
+| Tool count | Up to 8 (some tools are conditional on credentials) |
 
-Tool registration is **conditional on credentials**. The server enumerates
-tools at `list_tools()` time and only includes the ones whose env vars are
+Tool registration is **conditional on credentials**. The server registers
+tools when it is constructed and only includes the ones whose env vars are
 set. This is by design — missing credentials silently drop the tool
 instead of registering one that always errors.
 
@@ -29,7 +29,8 @@ instead of registering one that always errors.
 | `query_multimodal_api(image_url, text?)` | (none) | Send an image URL (and optional text prompt) to the vision LLM (`vllm-vision`). POSTs JSON to the agent's own `/api/vision/ask_url` endpoint, which forwards to `vllm-vision` — the agent-side proxy is the single chokepoint for logging and authentication. Image-only by design (the URL endpoint is single-image). For higher-leverage tools — fresh camera snapshots, two-image diffs, OCR — prefer the dedicated [Vision Tools server](vision.md) (`mcp_vision_tools`); for video uploads, use the multipart `/api/vision/ask` endpoint or the dashboard playground. |
 | `wolfram_alpha(query)` | `WOLFRAM_ALPHA_API_KEY` | Wolfram Alpha LLM API for factual + computational questions. 1000-char response cap, 30 s timeout. |
 | `get_weather_forecast(location, date?)` | `WEATHER_API_KEY` | weatherapi.com forecast — current day by default, or a specific `YYYY-MM-DD` up to 365 days ahead. Returns temp, conditions, precip, wind, and astronomy (sunrise/sunset/moon phase). |
-| `brave_search(query, count?)` | `BRAVE_SEARCH_API_KEY` | Brave Search web results. Usually paired with the `fetch` MCP (from `mcp_server_fetch`) to actually read one of the returned pages. |
+| `brave_search(query, count?)` | `BRAVE_SEARCH_API_KEY` | Brave Search web results. (Pair with `fetch_webpage` to read the returned pages.) |
+| `fetch_webpage(url, max_length?, start_index?)` | (none) | Fetches a URL (http/https only, 15 s timeout, redirects followed) and returns readable content: HTML is converted to markdown with script/style stripped, other text content types pass through, binary content is refused. `max_length` (1000–50000, default 10000) and `start_index` page through long documents — a truncated response says where to resume. Replaces the retired upstream `mcp-server-fetch` server. |
 | `search_wikipedia(search_string, sentences?)` | (none — public API) | Summary from Wikipedia. `sentences` controls summary length; defaults to the helper's default (~7). |
 
 ## Configuration
@@ -57,13 +58,15 @@ network); see
 [Configuration](../../../configuration.md) and the
 [vllm-vision service doc](../../vllm-vision/README.md).
 
-The agent spawns the server via `MCP_SERVERS` in `.env`:
+The agent connects to the server via its `MCP_SERVERS` entry in `.env`
+(`MCP_TOKEN_GENERAL_TOOLS` must also be set, or `mcp-tools` won't mount
+the module):
 
 ```json
 {
   "name": "general_tools",
-  "command": "python",
-  "args": ["-m", "selene_agent.modules.mcp_general_tools"],
+  "url": "http://mcp-tools:6010/mcp/general_tools",
+  "token_env": "MCP_TOKEN_GENERAL_TOOLS",
   "enabled": true
 }
 ```
@@ -104,7 +107,7 @@ The agent spawns the server via `MCP_SERVERS` in `.env`:
 ### A tool you expect isn't listed
 
 The server only registers tools whose env vars are populated. Check
-`/api/tools` on the agent or call `/mcp/status` to see what came through.
+`/api/tools` or `/api/mcp/status` on the agent to see what came through.
 Common misses:
 
 - `wolfram_alpha` → `WOLFRAM_ALPHA_API_KEY` unset.
@@ -113,12 +116,12 @@ Common misses:
 
 ### `generate_image` returns a ComfyUI connection error
 
-The `text-to-image` service isn't reachable from inside the agent
-container. Verify with:
+The `text-to-image` service isn't reachable from inside the `mcp-tools`
+container (where the tool runs). Verify with:
 
 ```bash
 docker compose ps text-to-image
-docker compose exec agent curl -I http://text-to-image:8188
+docker compose exec mcp-tools curl -I http://text-to-image:8188
 ```
 
 ### `query_multimodal_api` returns a 5xx or `Vision API error`
@@ -192,8 +195,9 @@ curl -fsSL 'http://127.0.0.1:8080/v1/qrcodelink?device_name=HavenCore' \
 #    Settings → Linked Devices → Link New Device → scan the QR.
 
 # 4. Set SIGNAL_PHONE_NUMBER in .env to the phone number on your Signal
-#    account (E.164, e.g. +15551234567), restart the agent.
-docker compose up -d agent
+#    account (E.164, e.g. +15551234567), then recreate mcp-tools (which
+#    registers the tool) and the agent (which re-discovers the tool list).
+docker compose up -d mcp-tools agent
 ```
 
 Leaving `SIGNAL_DEFAULT_RECIPIENT` empty sends messages to your own number

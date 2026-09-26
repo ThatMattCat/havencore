@@ -1,8 +1,17 @@
-"""Tests for the reminder MCP tool (selene_agent.modules.mcp_reminder_tools)."""
+"""Tests for the reminder MCP tool (selene_agent.modules.mcp_reminder_tools).
+
+The module is the pilot for the mcp 2.0 ``MCPServer`` decorator API: the
+dict-shaped impl methods on ``ReminderToolsServer`` are tested directly (as
+before), and the decorated tool surface (``server.mcp``) gets its own
+section — schema parity against the fixtures baseline plus the
+explicit-null / validation-error wire behavior.
+"""
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -334,3 +343,108 @@ async def test_cancel_reminder_success():
     assert result["deleted"] is True
     assert fake.last_call["method"] == "DELETE"
     assert fake.last_call["url"].endswith("/api/autonomy/items/abc-123")
+
+
+# --- MCPServer decorator surface --------------------------------------------
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "tool_schemas" / "mcp_reminder_tools.tools.json"
+
+
+def _strip_generator_noise(schema: dict) -> dict:
+    """Drop pydantic's additive schema noise so structure can be compared.
+
+    The mcp 2.0 generator adds a model-level ``title``, a prettified
+    ``title`` per property, and ``default`` for optional params. Everything
+    else (types, enums, descriptions, required) must match the baseline.
+    """
+    schema = copy.deepcopy(schema)
+    schema.pop("title", None)
+    for prop in schema.get("properties", {}).values():
+        prop.pop("title", None)
+        prop.pop("default", None)
+    return schema
+
+
+@pytest.mark.asyncio
+async def test_mcp_surface_matches_schema_baseline():
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    baseline = json.loads(_FIXTURE.read_text())
+    server = mcp_server.ReminderToolsServer()
+    tools = {t.name: t for t in await server.mcp.list_tools()}
+
+    assert sorted(tools) == [t["name"] for t in baseline]  # fixture is name-sorted
+    for expected in baseline:
+        tool = tools[expected["name"]]
+        assert tool.description == expected["description"]
+        assert tool.output_schema is None  # structured_output=False: plain text results
+        got = _strip_generator_noise(tool.input_schema)
+        want = _strip_generator_noise(expected["inputSchema"])
+        assert got == want, f"schema drift for {expected['name']}"
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_returns_json_text_and_tolerates_explicit_nulls():
+    """Explicit JSON nulls for optional params must behave as \"not provided\"
+    (LLMs send them routinely), and the result stays one JSON text block."""
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    fake = _FakeSession(_FakeResponse(200, {"item": {"id": "n-1", "next_fire_at": None}}))
+    server = mcp_server.ReminderToolsServer()
+
+    with patch.object(mcp_server.aiohttp, "ClientSession", return_value=fake):
+        result = await server.mcp.call_tool("schedule_reminder", {
+            "title": "Null-heavy call",
+            "in_seconds": 60,
+            "body": None,
+            "at": None,
+            "cron": None,
+            "channel": None,
+            "to": None,
+            "personalize": None,
+        })
+
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "ok"
+    assert payload["channel"] == "signal"      # null channel -> default
+    assert payload["personalize"] is True      # null personalize -> default
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_impl_exception_becomes_error_payload():
+    """An unexpected impl exception must surface as {"status": "error"} JSON
+    (ordinary content, not a protocol error) — the pre-MCPServer contract."""
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    server = mcp_server.ReminderToolsServer()
+
+    async def _boom(args):
+        raise RuntimeError("kaboom")
+
+    with patch.object(server, "list_reminders", _boom):
+        result = await server.mcp.call_tool("list_reminders", {})
+
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload == {"status": "error", "error": "kaboom"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_rejects_invalid_channel_via_enum():
+    """The Literal enum now rejects bad channels at validation; over the wire
+    this becomes CallToolResult(is_error=True) with the pydantic message."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from selene_agent.modules.mcp_reminder_tools import mcp_server
+
+    server = mcp_server.ReminderToolsServer()
+
+    # Direct call_tool() re-raises; the transport handler converts this into
+    # CallToolResult(is_error=True) with the same message.
+    with pytest.raises(ToolError, match="channel"):
+        await server.mcp.call_tool("schedule_reminder", {
+            "title": "x",
+            "in_seconds": 60,
+            "channel": "carrier_pigeon",
+        })

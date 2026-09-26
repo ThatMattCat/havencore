@@ -1,0 +1,86 @@
+[
+  {
+    "description": "List Plex player-capable devices the user can play media on. Use to discover valid `client_name` values for plex_play, or when the user asks where they can play something.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "plex_list_clients"
+  },
+  {
+    "description": "List 'on deck' items \u2014 continue-watching queue across the Plex library.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "default": 10,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "plex_list_on_deck"
+  },
+  {
+    "description": "List recently added media across Plex libraries. Use for 'what's new?' queries.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "default": 10,
+          "type": "integer"
+        },
+        "media_type": {
+          "description": "Optional: 'movie', 'show', or 'music'.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "plex_list_recent"
+  },
+  {
+    "description": "Play a specific Plex item on a specific client. Pass `rating_key` from a prior plex_search / plex_list_recent / plex_list_on_deck result, and `client_name` from plex_list_clients (or the user's spoken name \u2014 partial matches accepted). If a Home Assistant mapping is configured for the client, the TV is woken and the Plex app is launched first as needed.",
+    "inputSchema": {
+      "properties": {
+        "client_name": {
+          "description": "Plex client/device name \u2014 partial match is fine.",
+          "type": "string"
+        },
+        "rating_key": {
+          "description": "Plex rating_key of the item to play.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rating_key",
+        "client_name"
+      ],
+      "type": "object"
+    },
+    "name": "plex_play"
+  },
+  {
+    "description": "Search the Plex library for movies, shows, episodes, or music. Returns up to `limit` items with rating_key (use with plex_play), title, year, type, and summary. Use this before plex_play to find the exact item to play.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "default": 10,
+          "description": "Max results (default 10).",
+          "type": "integer"
+        },
+        "media_type": {
+          "description": "Optional filter: 'movie', 'show', 'episode', 'track', 'album', 'artist'.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Search text \u2014 title, keywords, or partial match.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "plex_search"
+  }
+]
