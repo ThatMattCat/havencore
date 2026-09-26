@@ -187,7 +187,7 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 - vLLM (Qwen3.8-Flash-Next W4A16, 4× tensor-parallel + expert-parallel, PLE tables offloaded to host RAM)
 - Faster-Whisper (STT)
 - Kokoro TTS
-- Qwen3-VL-8B-Instruct-AWQ (vision, served by a second vLLM on the fifth GPU)
+- Vision via the same Flash-Next model (multimodal; the optional Qwen3-VL `vllm-vision` service is shelved behind a compose profile)
 - ComfyUI (image gen)
 - BGE-large embeddings (TEI)
 - Qdrant (vectors)
@@ -252,7 +252,7 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 │  │                 ├─ metrics_db (turn_metrics)                  │
 │  │                 └─ autonomy engine (asyncio)                  │
 │  │                                                               │
-│  │   stt (6001)  tts (6005)  vllm-vision (8001)  comfy (8188)    │
+│  │   stt (6001)  tts (6005)  comfy (8188)  [vllm-vision: opt]    │
 │  │   face-rec (6006)  ntfy (8585)  embeddings (3000)             │
 │  │   qdrant (6333)  mosquitto (1883)  signal-api (127.0.0.1:8080)│
 │  └───────────────────────────────────────────────────────────────┘
@@ -299,7 +299,7 @@ havencore/
 │   │   └── frontend/         #   SvelteKit dashboard (static adapter)
 │   ├── speech-to-text/       # Faster-Whisper
 │   ├── text-to-speech/       # Kokoro
-│   ├── vllm/  vllm-vision/   # LLM backends (chat + vision)
+│   ├── vllm/  vllm-vision/   # LLM backends (chat model also serves vision; vllm-vision shelved)
 │   ├── text-to-image/        # ComfyUI
 │   ├── face-recognition/     # InsightFace buffalo_l
 │   ├── postgres/ qdrant/ embeddings/

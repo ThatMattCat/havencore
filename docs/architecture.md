@@ -96,7 +96,7 @@ conversation_histories (
 )
 ```
 
-### 6. LLM Backend Services (Ports 8000, 8001)
+### 6. LLM Backend Services (Port 8000; optionally 8001)
 **Purpose**: Large Language Model Inference
 
 #### vLLM Chat Backend (Port 8000)
@@ -105,12 +105,13 @@ conversation_histories (
 - Supports quantized (compressed-tensors/AWQ/GPTQ) and full-precision models
 - Serves `Qwen3.8-Flash-Next` (MoE, INT4 W4A16 quant, PLE tables offloaded to host RAM) under the OpenAI-compat name `gpt-3.5-turbo`
 - Owns GPUs 0-3 outright (`-tp 4` + expert parallel); every other GPU service is pinned to GPU 4
+- Multimodal: also serves the vision pipeline (`/api/vision/*`, `query_multimodal_api`, the vision MCP tools) — `VISION_API_BASE` / `VISION_SERVED_NAME` point at this same instance. `--limit-mm-per-prompt` allows 2 images per prompt and `--mm-processor-kwargs` caps each image at ~2 MP so image tokens stay bounded; they still share the chat KV cache on GPUs 0-3
 
-#### vLLM Vision Backend (Port 8001)
-- Serves `Qwen3-VL-8B-Instruct-AWQ` (the `cyankiwi` 4-bit quant) under the OpenAI-compat name `gpt-4-vision`
-- Pinned to GPU 4 via `CUDA_VISIBLE_DEVICES`, sharing it with the STT/TTS/embeddings/face/ComfyUI helpers
-- Backs the vision MCP tools (describe / OCR / identify / compare images)
-- All tunables exposed via `VISION_*` env vars
+#### vLLM Vision Backend (Port 8001) — optional, shelved
+- Second vLLM instance for a dedicated Qwen3-VL model (`cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit`) under the OpenAI-compat name `gpt-4-vision`
+- Profile-gated (`profiles: ["vllm-vision"]`) and off by default since the chat model became multimodal; re-enable via `COMPOSE_PROFILES` and point `VISION_API_BASE` / `VISION_SERVED_NAME` back at it when vision load should not compete with chat for KV cache
+- When enabled, pinned to GPU 4 via `CUDA_VISIBLE_DEVICES`, sharing it with the STT/TTS/embeddings/face/ComfyUI helpers (~10.5 GiB at the shared-card config)
+- Service tunables exposed via `VISION_MODEL` / `VISION_MAX_MODEL_LEN` / `VISION_MAX_NUM_SEQS` / `VISION_GPU_MEM_UTIL`
 
 ### 7. Vector Database (Qdrant - Port 6333)
 **Purpose**: Embeddings and Semantic Search
@@ -212,7 +213,7 @@ services:
   - text-to-speech (TTS)
   - postgres (database)
   - vllm (chat LLM inference)
-  - vllm-vision (vision LLM inference)
+  - vllm-vision (optional dedicated vision LLM — profile-gated, off by default)
   - text-to-image (ComfyUI)
   - face-recognition (InsightFace)
   - qdrant (vector DB)
@@ -293,7 +294,7 @@ services:
 
 ### AI/ML Stack
 - **Chat LLM**: vLLM serving `VnimanieAI/Qwen3.8-Flash-Next-W4A16` (MoE, INT4) under the OpenAI-compat name `gpt-3.5-turbo`
-- **Vision LLM**: vLLM serving `cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` under the OpenAI-compat name `gpt-4-vision`
+- **Vision LLM**: the same Flash-Next vLLM (the model is multimodal); the shelved `vllm-vision` service (`cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` as `gpt-4-vision`) remains available behind a compose profile
 - **Speech-to-Text**: Faster-Whisper
 - **Text-to-Speech**: Kokoro (default) or Chatterbox-Turbo (Resemble AI) — selectable
 - **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`

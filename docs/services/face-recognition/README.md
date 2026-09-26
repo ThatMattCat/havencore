@@ -57,7 +57,7 @@ face-recognition:
 |---|---|
 | Service port | 6006 (HTTP, no nginx route — accessed by the agent + operator on the host) |
 | Model | InsightFace `buffalo_l` (RetinaFace detect + ArcFace R100 embed, 512-d, ONNXRuntime-GPU on cuDNN 9) |
-| GPU | Host GPU from `FACE_RECOGNITION_GPU` in `.env` (default 3; the reference host uses 4, beside `vllm-vision` and the other helpers) via `CUDA_VISIBLE_DEVICES`; `ctx_id=0` inside the container |
+| GPU | Host GPU from `FACE_RECOGNITION_GPU` in `.env` (default 3; the reference host uses 4, beside the other helpers) via `CUDA_VISIBLE_DEVICES`; `ctx_id=0` inside the container |
 | Vector store | Qdrant collection `faces`, 512-d cosine |
 | DB | Postgres tables `people`, `face_images`, `face_detections` (idempotent migration on startup; same DDL appended to `services/postgres/init.sql` for fresh deployments) |
 | MQTT | `paho-mqtt` 2.x, subscribes to `haven/face/trigger/+`, publishes results + status |
@@ -86,7 +86,7 @@ The full env reference lives in [`docs/configuration.md` → Face recognition](.
 8. **Continuous improvement** (only when identified): if quality ≥ `FACE_REC_IMPROVEMENT_QUALITY_FLOOR`, confidence ≥ `FACE_REC_IMPROVEMENT_THRESHOLD`, and the person has fewer than `FACE_REC_MAX_EMBEDDINGS_PER_PERSON` gallery embeddings, contribute the new crop. FIFO-evicts the oldest non-primary embedding if the cap is hit.
 9. Publish to `haven/face/identified` or `haven/face/unknown`; status → `idle` (in `try/finally` so it always emits).
 
-If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, `age=NULL`, `sex=NULL`, and publishes to `haven/face/no_face`. This gives downstream subscribers (the autonomy engine and the `vllm-vision` scene-description gather) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
+If no face cleared `FACE_REC_QUALITY_FLOOR` at step 4 (frames were captured but nothing identifiable came back — hidden face, bad angle, wildlife), the pipeline still saves the *middle* frame as a snapshot, inserts a `face_detections` row with `person_id=NULL`, `confidence=NULL`, `quality_score=0.0`, `age=NULL`, `sex=NULL`, and publishes to `haven/face/no_face`. This gives downstream subscribers (the autonomy engine and the vision scene-description gather) a chance to evaluate the snapshot for context — see [autonomy/cameras.md](../agent/autonomy/cameras.md).
 
 InsightFace inference runs in a worker thread (`asyncio.to_thread`) so a burst doesn't peg the FastAPI event loop while the MQTT bridge is consuming triggers.
 

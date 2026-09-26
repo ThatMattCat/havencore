@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Phase 1 decision gate for the vllm-vision service.
+# Vision backend smoke test. Originally the Phase 1 decision gate for the
+# vllm-vision service; the defaults now target the main chat vLLM on :8000
+# (the Flash-Next model is multimodal and serves vision by default). It still
+# works against the shelved vllm-vision service — override VISION_BASE to
+# http://localhost:8001 and VISION_MODEL to gpt-4-vision (and GPU_INDEX=4).
 #
 # Runs the six acceptance criteria from docs/services/vllm-vision/README.md
 # and exits non-zero if any of (steady-state VRAM, latency budget, sustained
@@ -7,22 +11,22 @@
 # reported but don't block — the operator's eyes are the judge.
 #
 # Usage:
-#   scripts/vision-smoke-test.sh                          # uses default fixtures + http://localhost:8001
-#   VISION_BASE=http://10.0.0.1:8001 scripts/vision-smoke-test.sh
+#   scripts/vision-smoke-test.sh                          # uses default fixtures + http://localhost:8000 (chat vLLM)
+#   VISION_BASE=http://localhost:8001 VISION_MODEL=gpt-4-vision GPU_INDEX=4 scripts/vision-smoke-test.sh   # shelved vllm-vision
 #   IMAGE=/path/to/test.jpg VIDEO=/path/to/clip.mp4 scripts/vision-smoke-test.sh
 #
 # Env vars:
-#   VISION_BASE   default http://localhost:8001
-#   VISION_MODEL  default gpt-4-vision (must match VISION_SERVED_NAME)
-#   GPU_INDEX     default 4
+#   VISION_BASE   default http://localhost:8000 (chat vLLM; http://localhost:8001 for vllm-vision)
+#   VISION_MODEL  default gpt-3.5-turbo (must match VISION_SERVED_NAME; gpt-4-vision for vllm-vision)
+#   GPU_INDEX     default 4 (the VRAM criterion samples one card — use 0-3 when testing the chat vLLM)
 #   IMAGE         path to a ~1MP test image (default: scripts/vision-smoke-test-fixtures/test.jpg)
 #   VIDEO         optional path to a 5-second clip
 #   N_QUERIES     sustained-load query count, default 50
 
 set -euo pipefail
 
-VISION_BASE="${VISION_BASE:-http://localhost:8001}"
-VISION_MODEL="${VISION_MODEL:-gpt-4-vision}"
+VISION_BASE="${VISION_BASE:-http://localhost:8000}"
+VISION_MODEL="${VISION_MODEL:-gpt-3.5-turbo}"
 GPU_INDEX="${GPU_INDEX:-4}"
 IMAGE="${IMAGE:-$(dirname "$0")/vision-smoke-test-fixtures/test.jpg}"
 VIDEO="${VIDEO:-}"

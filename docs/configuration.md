@@ -117,7 +117,9 @@ TEXT_TO_IMAGE_GPU="3"      # ComfyUI (isolated at the Docker level via device_id
 
 The text-to-speech GPU depends on the active engine — `TTS_KOKORO_GPU`
 (default) or `CHATTERBOX_GPU` — see [TTS engine selection](#tts-engine-selection)
-below. `vllm-vision` is pinned in `compose.yaml` (`CUDA_VISIBLE_DEVICES=4`).
+below. The optional `vllm-vision` service (off by default — see
+[Vision Backend Configuration](#vision-backend-configuration)) is pinned
+in `compose.yaml` (`CUDA_VISIBLE_DEVICES=4`).
 
 The `.env.example` defaults are single-GPU-friendly, but the default chat
 model (Qwen3.8-Flash-Next) needs GPUs 0-3 **to itself**: its KV cache
@@ -125,7 +127,8 @@ does not shrink with tensor parallelism, so any helper holding VRAM on
 those cards costs it context. On the reference 5-GPU host every one of
 these vars — `STT_DEVICE`, `EMBEDDINGS_GPU`, `FACE_RECOGNITION_GPU`,
 `TEXT_TO_IMAGE_GPU`, `TTS_KOKORO_GPU` / `CHATTERBOX_GPU` — is set to
-`4`, beside `vllm-vision`. See
+`4`. Nothing LLM-sized lives on GPU 4 by default — vision is served by
+the chat model on GPUs 0-3. See
 [vLLM → GPU layout and sizing](services/vllm/README.md#gpu-layout-and-sizing).
 
 ComfyUI is the odd one out: it still opened a CUDA context on GPU 0 when
@@ -838,22 +841,35 @@ are logged at INFO: `[anthropic] cache read=N create=N input=N output=N`.
 
 ### Vision Backend Configuration
 
-The `vllm-vision` service is a second vLLM instance pinned to GPU 4 (the
-card shared with the STT/TTS/embeddings/face/ComfyUI helpers) and serving
-a Qwen3-VL model — currently the 8B AWQ quant at half the card. The agent reaches it via three env vars,
-mirroring the `LLM_API_BASE` / `LLM_API_KEY` pattern:
+Vision is served by the **chat vLLM itself**: the default model
+`VnimanieAI/Qwen3.8-Flash-Next-W4A16` is multimodal (its 27-layer ViT
+survives the W4A16 quant, and the `vllm` service passes
+`--limit-mm-per-prompt '{"image": 2, "video": 1}'` plus an
+`--mm-processor-kwargs` size cap so each image costs ~2k tokens at most).
+The agent reaches it via env vars mirroring the `LLM_API_BASE` /
+`LLM_API_KEY` pattern:
 
 ```bash
-VISION_API_BASE="http://10.0.0.1:8001/v1"   # Host-scoped URL the agent calls (NOT the compose-internal vllm-vision:8000).
-VISION_API_KEY="1234"                       # Bearer token; vllm-vision currently doesn't enforce, but the SDK requires a value.
-VISION_SERVED_NAME="gpt-4-vision"           # OpenAI-compat alias the model is served under; sent in every request body.
+VISION_API_BASE="http://10.0.0.1:8000/v1"   # Same endpoint as LLM_API_BASE (host-scoped, NOT the compose-internal vllm:8000).
+VISION_API_KEY="1234"                       # Bearer token; vLLM currently doesn't enforce, but the SDK requires a value.
+VISION_SERVED_NAME="gpt-3.5-turbo"          # Must match the chat vLLM's --served-model-name; sent in every request body.
+#VISION_CHAT_TEMPLATE_KWARGS='{"enable_thinking": false}'  # Default. Raw JSON forwarded as chat_template_kwargs on every vision call.
 ```
 
+`VISION_CHAT_TEMPLATE_KWARGS` exists because Flash-Next is a reasoning
+model: without `enable_thinking=false` it spends the small vision
+`max_tokens` budget on its think block and returns empty content (both
+vision paths now surface that as an explicit "returned no content"
+error rather than a blank answer). Set it to an empty string to omit the
+field for a backend that rejects `chat_template_kwargs`; invalid JSON
+logs a warning and omits the field. The parser lives in
+`selene_agent.utils.config.vision_chat_template_kwargs()`.
+
 `VISION_API_BASE` must be reachable **from inside the agent container** —
-typically the same host LAN IP `LLM_API_BASE` uses, on port `8001`. A
-hostname that only resolves outside the docker network will fail with
-`Cannot connect to host` even though DNS resolves. After changing the
-value, recreate the agent so the env is picked up:
+typically the same host LAN IP `LLM_API_BASE` uses. A hostname that only
+resolves outside the docker network will fail with `Cannot connect to
+host` even though DNS resolves. After changing the value, recreate the
+agent so the env is picked up:
 
 ```bash
 docker compose up -d --force-recreate --no-deps agent
@@ -868,11 +884,26 @@ clients can show which tier of the fallback ladder is active. The five
 purpose-built tools (`describe_image`, `describe_camera_snapshot`,
 `compare_snapshots`, `identify_object`, `read_text_in_image`) live in
 the [Vision Tools MCP server](services/agent/tools/vision.md).
-Service-side flags (`VISION_MODEL`, `VISION_MAX_MODEL_LEN`,
-`VISION_MAX_NUM_SEQS`, `VISION_GPU_MEM_UTIL`) are read from `.env` by
-`compose.yaml`; the
+**Tradeoff.** Image tokens now consume the chat model's KV cache on
+GPUs 0-3. Occasional camera snapshots and playground uploads are fine; a
+steady stream of frames is not. The escape hatch is the shelved
+`vllm-vision` service — a second vLLM instance on GPU 4 serving a
+dedicated Qwen3-VL model, kept behind the `vllm-vision` compose profile.
+To re-enable it:
+
+```bash
+COMPOSE_PROFILES="kokoro,vllm-vision"       # add the profile beside the TTS engine's
+VISION_API_BASE="http://10.0.0.1:8001/v1"   # its host port
+VISION_SERVED_NAME="gpt-4-vision"           # its --served-model-name
+```
+
+then `docker compose down && docker compose up -d`. Its service-side
+flags (`VISION_MODEL`, `VISION_MAX_MODEL_LEN`, `VISION_MAX_NUM_SEQS`,
+`VISION_GPU_MEM_UTIL`) are read from `.env` by `compose.yaml` and only
+apply while that profile is active; the
 [vllm-vision service doc](services/vllm-vision/README.md) covers the
-model ladder and the values the shared-GPU layout requires.
+model ladder and the values the shared-GPU layout requires. Leaving it
+off frees ~10.5 GiB on GPU 4 for the helpers and ComfyUI.
 
 ### Nginx Gateway Configuration
 

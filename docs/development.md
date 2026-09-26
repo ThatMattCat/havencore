@@ -55,7 +55,7 @@ havencore/
 │   ├── text-to-speech/      # TTS service (Chatterbox-Turbo)
 │   ├── text-to-image/       # ComfyUI
 │   ├── vllm/                # Chat LLM backend
-│   ├── vllm-vision/         # Vision LLM backend
+│   ├── vllm-vision/         # Optional dedicated vision LLM (shelved; profile-gated)
 │   ├── face-recognition/    # InsightFace identity service
 │   ├── qdrant/              # Vector DB
 │   └── embeddings/          # text-embeddings-inference

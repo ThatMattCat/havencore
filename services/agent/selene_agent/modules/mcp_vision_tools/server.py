@@ -1,5 +1,7 @@
 """
-Vision Tools MCP Server — purpose-built tools on top of the vllm-vision service.
+Vision Tools MCP Server — purpose-built tools on top of the vision-capable vLLM
+(the Flash-Next chat model by default; the shelved vllm-vision service if
+VISION_API_BASE points at it).
 
 The general-purpose `query_multimodal_api` (in `mcp_general_tools`) already routes
 through the agent's `/api/vision/ask_url` chokepoint. This module layers
@@ -10,7 +12,7 @@ All single-image tools route through the same `/api/vision/ask_url` chokepoint
 so logging, auth, and the served-model-name stay in one place. The one
 exception is `compare_snapshots`, which needs two images in a single message —
 the chokepoint's body schema is single-image only, so this tool talks to
-vllm-vision's OpenAI-compat endpoint directly. Both code paths share a single
+the vision vLLM's OpenAI-compat endpoint directly. Both code paths share a single
 `_post_json` helper for HTTP plumbing.
 
 Tools exposed:
@@ -137,8 +139,9 @@ class VisionMCPServer:
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> str:
-        """Call vllm-vision directly with a multi-image message. Used only
-        for compare_snapshots; the ask_url chokepoint is single-image."""
+        """Call the vision-capable vLLM directly with a multi-image message.
+        Used only for compare_snapshots; the ask_url chokepoint is single-image.
+        Requires --limit-mm-per-prompt image >= 2 on that vLLM."""
         if not config.VISION_API_BASE:
             raise ValueError("VISION_API_BASE is not configured")
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -151,13 +154,25 @@ class VisionMCPServer:
             "temperature": temperature,
             "stream": False,
         }
+        # Same as the /api/vision chokepoint: keep reasoning models from
+        # spending the vision budget on a think block.
+        template_kwargs = config.vision_chat_template_kwargs()
+        if template_kwargs:
+            payload["chat_template_kwargs"] = template_kwargs
         data = await self._post_json(
             f"{config.VISION_API_BASE.rstrip('/')}/chat/completions", payload
         )
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
-            raise ValueError(f"unexpected vllm-vision response shape: {e}")
+            raise ValueError(f"unexpected vision vLLM response shape: {e}")
+        if content is None or content == "":
+            raise ValueError(
+                "vision model returned no content (reasoning may have exhausted "
+                "max_tokens; raise max_tokens or keep VISION_CHAT_TEMPLATE_KWARGS "
+                "enable_thinking=false)"
+            )
+        return content
 
     # --- snapshot resolution -------------------------------------------
 

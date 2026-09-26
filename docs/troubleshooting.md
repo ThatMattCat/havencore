@@ -250,7 +250,7 @@ plus ~2 GiB of profiling peak per GPU) plus KV cache is exceeding
 available VRAM on one of GPUs 0-3 — typically because an aux service
 (TTS/STT/embeddings/face/ComfyUI) is still pinned to that card. With
 `-tp 4` vLLM occupies *all four* cards simultaneously and expects them
-to itself; the helpers belong on GPU 4 beside `vllm-vision`.
+to itself; the helpers belong on GPU 4.
 
 **Solutions**:
 
@@ -261,7 +261,8 @@ to itself; the helpers belong on GPU 4 beside `vllm-vision`.
 #    - embeddings:    EMBEDDINGS_GPU
 #    - face-rec:      FACE_RECOGNITION_GPU
 #    - ComfyUI:       TEXT_TO_IMAGE_GPU (Docker device_ids, not CUDA_VISIBLE_DEVICES)
-#    - vllm-vision:   compose.yaml `CUDA_VISIBLE_DEVICES=4` (already there)
+#    - vllm-vision:   only if that optional profile is enabled; compose.yaml
+#                     `CUDA_VISIBLE_DEVICES=4` (already there)
 #    Then `docker compose down && docker compose up -d`.
 
 # 2. Shrink the KV cache window:
@@ -339,8 +340,10 @@ curl http://localhost:8000/v1/models
 
 **Cause**: the small models are still pinned to one of GPUs 0-3, where
 vLLM (at `--gpu-memory-utilization 0.94`) leaves essentially nothing —
-or they are on GPU 4 and `vllm-vision` is holding more of it than the
-`VISION_GPU_MEM_UTIL=0.50` the shared layout assumes.
+or they are on GPU 4 and something else is holding more of it than
+expected — a large ComfyUI model, or the optional `vllm-vision` profile
+enabled at a `VISION_GPU_MEM_UTIL` above the `0.50` the shared layout
+assumes.
 
 **Solutions**:
 
@@ -354,7 +357,9 @@ STT_DEVICE="4"        # Whisper uses raw index, not cuda: prefix
 docker compose up -d --force-recreate text-to-speech-kokoro speech-to-text
 ```
 
-`vllm-vision` shares GPU 4 with the helpers at half the card — see the
+By default no LLM lives on GPU 4 — vision is served by the chat model on
+GPUs 0-3. If you have re-enabled the shelved `vllm-vision` profile it
+takes half the card; see the
 [vllm-vision service doc](services/vllm-vision/README.md) for the model
 ladder and the `VISION_*` values that layout requires.
 

@@ -37,6 +37,8 @@ vllm:
     --enable-expert-parallel
     --max-model-len 98304
     --max-num-seqs 64
+    --limit-mm-per-prompt '{"image": 2, "video": 1}'
+    --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
     --gpu-memory-utilization 0.94
     --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}'
     --tool-call-parser qwen3_coder
@@ -71,6 +73,22 @@ Flag-by-flag:
   MTP speculative decoding is therefore off; re-enable it only if the
   context window is dropped. fp8 KV cache is rejected by the model
   ("QSA requires a BF16 main KV cache").
+- `--limit-mm-per-prompt '{"image": 2, "video": 1}'` /
+  `--mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'`
+  — the model is multimodal (its 27-layer ViT survives the W4A16 quant),
+  and this instance is the agent's vision backend (`VISION_API_BASE` /
+  `VISION_SERVED_NAME` in `.env` point here). vLLM's default is one image
+  per prompt; `compare_snapshots` needs two. The size cap bounds each
+  image at ~2 MP (~2k tokens, a full 1080p snapshot) where the
+  checkpoint's default `longest_edge` is 16.7 MP (~16k tokens per image),
+  so memory profiling and per-request KV stay bounded. Image tokens still
+  come out of the chat KV budget below — occasional snapshots are fine, a
+  stream of frames is not; the shelved
+  [vllm-vision](../vllm-vision/README.md) service is the escape hatch
+  for isolating vision load. Vision calls also pass
+  `chat_template_kwargs: {"enable_thinking": false}`
+  (`VISION_CHAT_TEMPLATE_KWARGS`) so the reasoning block doesn't eat the
+  small vision `max_tokens` budget.
 - `--gpu-memory-utilization 0.94` — see the GPU layout section below
   for why the budget has to be this high.
 - `--trust-remote-code` — required for the `qwen4_exp` architecture.
@@ -106,10 +124,13 @@ Environment and container settings:
 ### GPU layout and sizing
 
 GPUs 0-3 are **dedicated** to this service. Every other GPU consumer —
-`vllm-vision`, `speech-to-text`, `text-to-speech`, `embeddings`,
-`face-recognition`, `text-to-image` — is pinned to GPU 4 via the
-`*_GPU` / `STT_DEVICE` vars in `.env` (see
+`speech-to-text`, `text-to-speech`, `embeddings`, `face-recognition`,
+`text-to-image` — is pinned to GPU 4 via the `*_GPU` / `STT_DEVICE` vars
+in `.env` (see
 [configuration.md → GPU Settings](../../configuration.md#gpu-settings)).
+The optional `vllm-vision` service, when its compose profile is enabled,
+is pinned to GPU 4 as well; by default it is off because this instance
+serves vision.
 
 The reason is KV cache. KV cost is ~14.7 KB/token/GPU and does **not**
 shrink with tensor parallelism (the model has 2 KV heads, which

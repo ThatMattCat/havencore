@@ -13,7 +13,7 @@ tools live here:
   `device_action` *before* the tool body runs, the phone captures +
   uploads a JPEG to `/api/companion/upload`, and the orchestrator
   awaits the upload future in-process. Vision-chained variants forward
-  the resulting `image_url` to the vllm-vision pipeline; the
+  the resulting `image_url` to the vision pipeline (`/api/vision/ask_url`); the
   face-identify variant POSTs the JPEG bytes to the face-recognition
   service and surfaces the matched identity. See
   [Camera tools](#camera-tools) for the full flow.

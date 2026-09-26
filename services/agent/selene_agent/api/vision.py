@@ -1,4 +1,6 @@
-"""Vision proxy — wraps the vllm-vision OpenAI-compat chat-completion endpoint."""
+"""Vision proxy — wraps the OpenAI-compat chat-completion endpoint of the
+vision-capable vLLM (the Flash-Next chat model by default; VISION_API_BASE /
+VISION_SERVED_NAME can point at the shelved vllm-vision service instead)."""
 import base64
 import time
 from typing import Any, Optional
@@ -26,7 +28,8 @@ async def _call_vision(
     max_tokens: int,
     temperature: float,
 ) -> tuple[str, int, dict]:
-    """POST a chat-completions request to vllm-vision and return (content, latency_ms, usage)."""
+    """POST a chat-completions request to the vision-capable vLLM and return
+    (content, latency_ms, usage)."""
     body = {
         "model": config.VISION_SERVED_NAME,
         "messages": messages,
@@ -34,6 +37,11 @@ async def _call_vision(
         "max_tokens": max_tokens,
         "stream": False,
     }
+    # Reasoning models (Flash-Next) would spend the small vision budget on
+    # their think block; the default kwargs turn thinking off per-request.
+    template_kwargs = config.vision_chat_template_kwargs()
+    if template_kwargs:
+        body["chat_template_kwargs"] = template_kwargs
 
     started = time.perf_counter()
     try:
@@ -55,6 +63,15 @@ async def _call_vision(
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         raise HTTPException(status_code=502, detail="Unexpected vLLM response shape")
+    if content is None or content == "":
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Vision model returned no content (reasoning may have exhausted "
+                "max_tokens; raise max_tokens or keep VISION_CHAT_TEMPLATE_KWARGS "
+                "enable_thinking=false)"
+            ),
+        )
 
     return content, latency_ms, payload.get("usage", {})
 
@@ -72,8 +89,8 @@ async def ask(
     Accepts both `file` (preferred — image OR video) and `image` (legacy
     image-only field name retained so older callers keep working). The MIME
     type on the upload picks the content-part shape: `image/*` -> image_url,
-    `video/*` -> video_url. vllm-vision handles both via the OpenAI-compat
-    multimodal schema.
+    `video/*` -> video_url. The vision-capable vLLM (the Flash-Next chat model
+    by default) handles both via the OpenAI-compat multimodal schema.
     """
     if not prompt.strip():
         raise HTTPException(status_code=400, detail="prompt is required")
@@ -132,7 +149,7 @@ class VisionAskUrlRequest(BaseModel):
 async def ask_url(req: VisionAskUrlRequest):
     """JSON body with text + image_url. Used by the query_multimodal_api MCP tool.
 
-    vllm-vision fetches image_url itself (http(s):// or data: URLs).
+    The vision-capable vLLM fetches image_url itself (http(s):// or data: URLs).
     """
     if not (req.text or req.image_url):
         raise HTTPException(status_code=400, detail="text or image_url is required")

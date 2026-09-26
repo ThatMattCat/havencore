@@ -159,8 +159,9 @@ async def test_compare_snapshots_sends_both_images_in_one_call(server):
     with patch(
         "selene_agent.modules.mcp_vision_tools.server.config"
     ) as mock_config:
-        mock_config.VISION_API_BASE = "http://10.0.0.1:8001/v1"
-        mock_config.VISION_SERVED_NAME = "gpt-4-vision"
+        mock_config.VISION_API_BASE = "http://10.0.0.1:8000/v1"
+        mock_config.VISION_SERVED_NAME = "gpt-3.5-turbo"
+        mock_config.vision_chat_template_kwargs.return_value = {"enable_thinking": False}
         result = await server._compare_snapshots(
             {
                 "image_url_a": "http://x/a.jpg",
@@ -173,7 +174,11 @@ async def test_compare_snapshots_sends_both_images_in_one_call(server):
     assert result["focus"] == "the porch"
     url, payload = server._post_json.await_args.args
     assert url.endswith("/chat/completions")
-    assert "10.0.0.1:8001" in url  # direct vllm-vision, not the chokepoint
+    assert "10.0.0.1:8000" in url  # direct to the vision vLLM, not the chokepoint
+    assert payload["model"] == "gpt-3.5-turbo"
+    # Reasoning model: thinking is turned off per-request so the vision
+    # max_tokens budget goes to the answer.
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     content = payload["messages"][0]["content"]
     image_parts = [p for p in content if p["type"] == "image_url"]
     assert len(image_parts) == 2
@@ -181,6 +186,37 @@ async def test_compare_snapshots_sends_both_images_in_one_call(server):
     assert image_parts[1]["image_url"]["url"] == "http://x/b.jpg"
     text_part = next(p for p in content if p["type"] == "text")
     assert "the porch" in text_part["text"]
+
+
+async def test_compare_snapshots_omits_chat_template_kwargs_when_unset(server):
+    server._post_json = AsyncMock(return_value=_vllm_chat_response("nothing changed"))
+    with patch(
+        "selene_agent.modules.mcp_vision_tools.server.config"
+    ) as mock_config:
+        mock_config.VISION_API_BASE = "http://10.0.0.1:8000/v1"
+        mock_config.VISION_SERVED_NAME = "gpt-3.5-turbo"
+        mock_config.vision_chat_template_kwargs.return_value = None
+        await server._compare_snapshots(
+            {"image_url_a": "http://x/a.jpg", "image_url_b": "http://x/b.jpg"}
+        )
+    _, payload = server._post_json.await_args.args
+    assert "chat_template_kwargs" not in payload
+
+
+async def test_compare_snapshots_empty_content_is_error(server):
+    # A reasoning model that burned max_tokens on its think block returns
+    # content=None; surface that as a tool error instead of "null".
+    server._post_json = AsyncMock(return_value=_vllm_chat_response(None))
+    with patch(
+        "selene_agent.modules.mcp_vision_tools.server.config"
+    ) as mock_config:
+        mock_config.VISION_API_BASE = "http://10.0.0.1:8000/v1"
+        mock_config.VISION_SERVED_NAME = "gpt-3.5-turbo"
+        mock_config.vision_chat_template_kwargs.return_value = {"enable_thinking": False}
+        with pytest.raises(ValueError, match="returned no content"):
+            await server._compare_snapshots(
+                {"image_url_a": "http://x/a.jpg", "image_url_b": "http://x/b.jpg"}
+            )
 
 
 async def test_compare_snapshots_requires_both_urls(server):

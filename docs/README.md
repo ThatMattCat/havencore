@@ -22,11 +22,11 @@ Each service has its own folder under [`services/`](services/README.md):
 - [Agent](services/agent/README.md) — core AI agent, dashboard, and MCP tool servers
   - [Agent tools (MCP servers)](services/agent/tools/README.md)
 - [MCP Tools](services/mcp-tools/README.md) — Streamable HTTP host serving the agent's 11 MCP tool modules
-- [vLLM](services/vllm/README.md) — primary LLM backend
+- [vLLM](services/vllm/README.md) — primary LLM backend (chat + vision — the Flash-Next model is multimodal)
 - [LlamaCPP](services/llamacpp/README.md) — alternative LLM backend
 - [Speech-to-Text](services/speech-to-text/README.md) — Faster Whisper STT
 - [Text-to-Speech](services/text-to-speech/README.md) — selectable: Kokoro (default, fast) or Chatterbox-Turbo (expressive, cloning, streaming)
-- [vLLM Vision](services/vllm-vision/README.md) — Qwen3-VL image-understanding backend on the fifth GPU (shared with the STT/TTS/embeddings/face/ComfyUI helpers)
+- [vLLM Vision](services/vllm-vision/README.md) — optional second vLLM for a dedicated Qwen3-VL model; shelved behind the `vllm-vision` compose profile now that the chat model serves vision
 - [Text-to-Image](services/text-to-image/README.md) — ComfyUI image generation
 - [Face Recognition](services/face-recognition/README.md) — InsightFace identity for HA cameras
 - [Postgres](services/postgres/README.md) — conversation + metrics storage
