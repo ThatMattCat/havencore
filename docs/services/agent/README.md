@@ -136,7 +136,7 @@ abstraction in `selene_agent/providers/`. STT/TTS always stay local.
 
 | Provider | Default model | Notes |
 |---|---|---|
-| `vllm` | `gpt-3.5-turbo` (served name for the local Qwen3.8-27B) | Default. Direct `AsyncOpenAI` wrapper — zero translation overhead. Captures `reasoning` / `reasoning_content` extras from vLLM's reasoning-parser output, surfaces them as `REASONING` events (dashboard-only on the wire), and normalizes them onto the assistant message as `reasoning_content` so the chat template can render `<think>…</think>` on the next in-turn iteration. The legacy `reasoning` alias (used by some vLLM reasoning parsers) is dropped on append. Defensively pulls `<think>…</think>` blocks out of raw content too, folding them into the same `reasoning_content` field. |
+| `vllm` | `gpt-3.5-turbo` (served name for the local Qwen3.8-Flash-Next) | Default. Direct `AsyncOpenAI` wrapper — zero translation overhead. Captures `reasoning` / `reasoning_content` extras from vLLM's reasoning-parser output, surfaces them as `REASONING` events (dashboard-only on the wire), and normalizes them onto the assistant message as `reasoning_content` so the chat template can render `<think>…</think>` on the next in-turn iteration. The legacy `reasoning` alias (used by some vLLM reasoning parsers) is dropped on append. Defensively pulls `<think>…</think>` blocks out of raw content too, folding them into the same `reasoning_content` field. |
 | `anthropic` | `claude-opus-4-7` | Uses the official `AsyncAnthropic` SDK. Translates OpenAI-shaped messages ↔ Anthropic `tool_use`/`tool_result` blocks; strips `temperature`/`top_p` for Opus 4.7 (rejected by the API), forwards them for older Anthropic models. |
 | `openai` | — | Stubbed; falls back to vLLM with a warning. |
 

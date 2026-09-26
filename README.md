@@ -184,10 +184,10 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 <td>
 
 **AI / ML**
-- vLLM (GLM-4.5-Air-AWQ-FP16Mix, 4× tensor-parallel + expert-parallel)
+- vLLM (Qwen3.8-Flash-Next W4A16, 4× tensor-parallel + expert-parallel, PLE tables offloaded to host RAM)
 - Faster-Whisper (STT)
 - Kokoro TTS
-- Qwen3-VL-32B-Instruct-AWQ (vision, served by a second vLLM)
+- Qwen3-VL-8B-Instruct-AWQ (vision, served by a second vLLM on the fifth GPU)
 - ComfyUI (image gen)
 - BGE-large embeddings (TEI)
 - Qdrant (vectors)

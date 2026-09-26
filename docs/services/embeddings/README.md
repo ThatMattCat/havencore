@@ -18,9 +18,12 @@ embeddings:
     - "3000:3000"
   environment:
     - MODEL_ID=BAAI/bge-large-en-v1.5
+    - CUDA_VISIBLE_DEVICES=${EMBEDDINGS_GPU:-0}
 ```
 
 The default model is `bge-large-en-v1.5` (1024-dim). Set `EMBEDDING_DIM` in the agent's env to match whatever model you run.
+
+The host GPU comes from `EMBEDDINGS_GPU` in `.env` (default `0`). With the default chat model, GPUs 0-3 belong to the `vllm` service, so the reference host sets this to `4` — see [configuration.md → GPU Settings](../../configuration.md#gpu-settings).
 
 ## API usage
 

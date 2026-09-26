@@ -1,8 +1,8 @@
 # vLLM Vision Backend
 
-Second vLLM instance, dedicated to a vision-language model. Pinned to the 5th RTX 3090 (`CUDA_VISIBLE_DEVICES=4`). Exposes an OpenAI-compatible API on host port 8001.
+Second vLLM instance, dedicated to a vision-language model. Pinned to the 5th RTX 3090 (`CUDA_VISIBLE_DEVICES=4`), which it now shares with every non-LLM GPU service (STT, TTS, embeddings, face-recognition, ComfyUI) — GPUs 0-3 are dedicated to the main `vllm` service. Exposes an OpenAI-compatible API on host port 8001.
 
-The main `vllm` service (text-only LLM, served as `gpt-3.5-turbo`) is unaffected; this is a separate process with its own GPU and its own served-model-name.
+The main `vllm` service (text-only LLM, served as `gpt-3.5-turbo`) is unaffected; this is a separate process on a different GPU with its own served-model-name.
 
 ## Purpose
 
@@ -10,15 +10,15 @@ The main `vllm` service (text-only LLM, served as `gpt-3.5-turbo`) is unaffected
 - Automatic scene description on face-recognition autonomy triggers, so "person in backyard" becomes "Matt in a flannel walking the cat" before the triage LLM ever sees it
 - General-purpose vision tools surfaced via `mcp_vision_tools` (`describe_image`, `describe_camera_snapshot`, `compare_snapshots`, `identify_object`, `read_text_in_image`)
 
-## Single-card sizing — three-tier fallback
+## Single-card sizing — three-tier ladder
 
-A single 24GB card is right on the edge for the larger Qwen3-VL variants. The active config is the dense 32B at the top of the ladder; lower tiers are documented so a swap is a one-line change to `VISION_MODEL` in `.env`, then `docker compose down && up -d vllm-vision`. Nothing else changes.
+A single 24GB card is right on the edge for the larger Qwen3-VL variants, and since the Flash-Next chat model took GPUs 0-3 for itself, GPU 4 also has to host STT, TTS, embeddings, face-recognition and ComfyUI. The active config is therefore the **8B** model at the bottom of the ladder, run at half the card (`VISION_GPU_MEM_UTIL=0.50`) so the helpers fit beside it. The larger tiers are documented so a swap is a one-line change to `VISION_MODEL` in `.env`, then `docker compose down && up -d vllm-vision` — but they only fit if the helpers move off GPU 4 (or a sixth card appears).
 
 | Tier | Model | Notes |
 |------|-------|-------|
-| 1 (active) | `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` | Dense 32B, AWQ ~17–18GB. Highest quality. Tight on 24GB — official Qwen recipe wants tensor-parallel-size 2. |
-| 2 (fallback) | `QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ` | MoE: 30B total / 3B active. Same weight footprint as Tier 1 but lighter activations / KV-cache pressure. Plausibly fits where Tier 1 doesn't. |
-| 3 (fallback) | `Qwen/Qwen3-VL-8B-Instruct-AWQ` | ~5–6GB weights. ~18GB headroom. Fit is essentially guaranteed; quality is lower but plenty for camera scene description. |
+| 1 | `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` | Dense 32B, AWQ ~17–18GB. Highest quality. Tight on 24GB — official Qwen recipe wants tensor-parallel-size 2. Needs the whole card. |
+| 2 | `QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ` | MoE: 30B total / 3B active. Same weight footprint as Tier 1 but lighter activations / KV-cache pressure. Previous active config, at `VISION_GPU_MEM_UTIL=0.93` / `VISION_MAX_MODEL_LEN=55296`. Needs the whole card. |
+| 3 (active) | `cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` | 7.5 GB on disk, ~7.3 GiB of weights in VRAM. At `VISION_GPU_MEM_UTIL=0.50` / `VISION_MAX_MODEL_LEN=16384` / `VISION_MAX_NUM_SEQS=1` the measured KV capacity is 30,448 tokens. Quality is lower but plenty for camera scene description. Note: `Qwen/Qwen3-VL-8B-Instruct-AWQ` does **not** exist on Hugging Face; the `cyankiwi` repo is the real one. |
 
 ## Configuration
 
@@ -41,26 +41,35 @@ vllm-vision:
     --trust-remote-code
 ```
 
-The image digest is the same one the main `vllm` service uses — vLLM 0.19.0, well above the 0.11.0 minimum Qwen3-VL requires, and known-good on NVIDIA driver 580.x.
+The image digest is vLLM 0.19.0 — well above the 0.11.0 minimum Qwen3-VL requires, and known-good on NVIDIA driver 580.x. (The main `vllm` service moved to a newer vendor build for Qwen3.8-Flash-Next; this service did not need to follow.)
+
+The `compose.yaml` defaults above are the Tier 1 values. The host `.env` overrides them for the active Tier 3 config:
+
+```bash
+VISION_MODEL="cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit"
+VISION_GPU_MEM_UTIL=0.50
+VISION_MAX_MODEL_LEN=16384
+VISION_MAX_NUM_SEQS=1
+```
 
 ### Env vars (set in `.env`)
 
 | Var | Default | What it does |
 |-----|---------|--------------|
-| `VISION_MODEL` | `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` | HF model id |
+| `VISION_MODEL` | `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` | HF model id. Active: `cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` |
 | `VISION_API_BASE` | `http://10.0.0.1:8001/v1` | Where the agent reaches the service (host-scoped) |
 | `VISION_API_KEY` | `1234` | Bearer token (vllm-vision doesn't enforce, but the SDK requires a value) |
 | `VISION_SERVED_NAME` | `gpt-4-vision` | OpenAI-compat alias |
 | `VISION_MAX_MODEL_LEN` | `16384` | Context window. Drop to 8192 if Tier 1 OOMs. |
-| `VISION_MAX_NUM_SEQS` | `2` | Concurrent sequences. Drop to 1 if Tier 1 OOMs. |
-| `VISION_GPU_MEM_UTIL` | `0.92` | vLLM reservation fraction. Push to 0.96 if borderline. |
+| `VISION_MAX_NUM_SEQS` | `2` | Concurrent sequences. Drop to 1 if Tier 1 OOMs. Active: `1` |
+| `VISION_GPU_MEM_UTIL` | `0.92` | vLLM reservation fraction. Push to 0.96 if borderline. Active: `0.50`, leaving the other half of GPU 4 for the helper services. |
 
 ## Bring-up
 
-1. Confirm GPU 4 is the dedicated RTX 3090 (`nvidia-smi --query-gpu=index,name --format=csv`).
+1. Confirm GPU 4 is the 5th RTX 3090 (`nvidia-smi --query-gpu=index,name --format=csv`) and that the helper services' `*_GPU` / `STT_DEVICE` vars in `.env` point at it too — GPUs 0-3 must stay free for the main `vllm` service (see [vLLM → GPU layout](../vllm/README.md#gpu-layout-and-sizing)).
 2. Add the `VISION_*` block from `.env.example` to `.env`.
 3. `docker compose up -d vllm-vision`.
-4. **Cold start is long** — Qwen3-VL-32B weights are ~17GB and the first download takes a while. The healthcheck has `start_period: 1200s` (20 min). Track it with `docker compose logs -f vllm-vision`.
+4. **Cold start is long** on first download — Qwen3-VL-32B weights are ~17GB (the active 8B quant is 7.5 GB). The healthcheck has `start_period: 1200s` (20 min). Track it with `docker compose logs -f vllm-vision`.
 5. Once healthy, run `scripts/vision-smoke-test.sh` from the repo root. It enforces six acceptance criteria (cold-start within 1200s, steady-state VRAM ≤22.5GB, p50 ≤8s / p95 ≤15s on a ~1MP image with `max_tokens=400`, 50 sequential image queries with no errors, at least one 5-second video clip processed without OOM, and a quality sanity check on a known image). Treat its exit code as the decision gate.
 
 ### If sizing fails
@@ -69,7 +78,7 @@ Walk down the fallback ladder in order:
 
 1. **Retry Tier 1 with tighter flags** before swapping models. Set `VISION_MAX_MODEL_LEN=8192`, `VISION_MAX_NUM_SEQS=1`, `VISION_GPU_MEM_UTIL=0.96`, and add `--enforce-eager` to the command in `compose.yaml`. `down && up -d vllm-vision`. Rerun smoke test.
 2. **Tier 2:** `VISION_MODEL="QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ"`, restore `VISION_MAX_MODEL_LEN=16384`. The MoE variant trims activation pressure even though weight size is similar.
-3. **Tier 3:** `VISION_MODEL="Qwen/Qwen3-VL-8B-Instruct-AWQ"`. If even this fails, suspect a config bug (driver, vLLM image pin, GPU pinning) rather than a sizing problem.
+3. **Tier 3:** `VISION_MODEL="cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit"` with `VISION_GPU_MEM_UTIL=0.50` / `VISION_MAX_NUM_SEQS=1` (the current config). If even this fails, suspect a config bug (driver, vLLM image pin, GPU pinning) or a helper service holding more of GPU 4 than expected (`nvidia-smi`) rather than a sizing problem.
 
 ## Agent integration
 

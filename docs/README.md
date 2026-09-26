@@ -26,7 +26,7 @@ Each service has its own folder under [`services/`](services/README.md):
 - [LlamaCPP](services/llamacpp/README.md) — alternative LLM backend
 - [Speech-to-Text](services/speech-to-text/README.md) — Faster Whisper STT
 - [Text-to-Speech](services/text-to-speech/README.md) — selectable: Kokoro (default, fast) or Chatterbox-Turbo (expressive, cloning, streaming)
-- [vLLM Vision](services/vllm-vision/README.md) — Qwen3-VL image-understanding backend on a dedicated GPU
+- [vLLM Vision](services/vllm-vision/README.md) — Qwen3-VL image-understanding backend on the fifth GPU (shared with the STT/TTS/embeddings/face/ComfyUI helpers)
 - [Text-to-Image](services/text-to-image/README.md) — ComfyUI image generation
 - [Face Recognition](services/face-recognition/README.md) — InsightFace identity for HA cameras
 - [Postgres](services/postgres/README.md) — conversation + metrics storage

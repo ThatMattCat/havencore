@@ -102,12 +102,13 @@ conversation_histories (
 #### vLLM Chat Backend (Port 8000)
 - High-performance inference server
 - Optimized for throughput and latency
-- Supports quantized (AWQ/GPTQ) and full-precision models
-- Serves `Qwen3.8-27B` (dense hybrid-attention, BF16) under the OpenAI-compat name `gpt-3.5-turbo`
+- Supports quantized (compressed-tensors/AWQ/GPTQ) and full-precision models
+- Serves `Qwen3.8-Flash-Next` (MoE, INT4 W4A16 quant, PLE tables offloaded to host RAM) under the OpenAI-compat name `gpt-3.5-turbo`
+- Owns GPUs 0-3 outright (`-tp 4` + expert parallel); every other GPU service is pinned to GPU 4
 
 #### vLLM Vision Backend (Port 8001)
-- Serves `Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
-- Pinned to a dedicated GPU via `CUDA_VISIBLE_DEVICES`
+- Serves `Qwen3-VL-8B-Instruct-AWQ` (the `cyankiwi` 4-bit quant) under the OpenAI-compat name `gpt-4-vision`
+- Pinned to GPU 4 via `CUDA_VISIBLE_DEVICES`, sharing it with the STT/TTS/embeddings/face/ComfyUI helpers
 - Backs the vision MCP tools (describe / OCR / identify / compare images)
 - All tunables exposed via `VISION_*` env vars
 
@@ -291,8 +292,8 @@ services:
 - **Proxy**: Nginx (reverse proxy, load balancer)
 
 ### AI/ML Stack
-- **Chat LLM**: vLLM serving `Qwen/Qwen3.8-27B` (dense hybrid-attention, BF16) under the OpenAI-compat name `gpt-3.5-turbo`
-- **Vision LLM**: vLLM serving `QuantTrio/Qwen3-VL-32B-Instruct-AWQ` under the OpenAI-compat name `gpt-4-vision`
+- **Chat LLM**: vLLM serving `VnimanieAI/Qwen3.8-Flash-Next-W4A16` (MoE, INT4) under the OpenAI-compat name `gpt-3.5-turbo`
+- **Vision LLM**: vLLM serving `cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` under the OpenAI-compat name `gpt-4-vision`
 - **Speech-to-Text**: Faster-Whisper
 - **Text-to-Speech**: Kokoro (default) or Chatterbox-Turbo (Resemble AI) — selectable
 - **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`

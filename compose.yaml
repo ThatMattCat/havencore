@@ -254,13 +254,18 @@ services:
       - ./shared:/app/shared:ro
     restart: unless-stopped
   vllm:
-    # Pinned to the `qwen38-cu129` special-release image (pushed 2026-08-12) —
-    # the dedicated vLLM build with Qwen3.8 hybrid-attention support. The cu129
-    # (CUDA 12.9) variant is deliberate: our host driver is 580.x, and the
-    # default/cu130 tags have shipped builds requiring a newer driver.
-    # Rollback digest (vLLM v0.19.0, known-good with GLM-4.5-Air):
-    #   vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
-    image: vllm/vllm-openai@sha256:3879c346b0866fe8e1894243bb4fcdfc38f8dfcdb8a710a3b1d456ce4e799999
+    # Pinned to the `qwen38-flash-next-x86_64-cu130` vendor image (pushed
+    # 2026-08-26) — the vLLM dev build with `qwen4_exp` (Qwen3.8-Flash-Next)
+    # support, including the PLE n-gram-table CPU offload. This is the CUDA
+    # 13.0 build the quant's model card was validated on; host driver 580.x
+    # supports CUDA 13.0. (The cu129 variant, sha256:f16a96245c0a..., loaded
+    # but deadlocked during kernel warmup — see notes below.)
+    # Rollback digests:
+    #   Qwen3.8-27B (`qwen38-cu129`, pushed 2026-08-12):
+    #     vllm/vllm-openai@sha256:3879c346b0866fe8e1894243bb4fcdfc38f8dfcdb8a710a3b1d456ce4e799999
+    #   vLLM v0.19.0 (known-good with GLM-4.5-Air):
+    #     vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
+    image: vllm/vllm-openai@sha256:0aea30240f3e3d9ffae8526643950e170eb5fa07fc427016a9dd90892afa2aa3
     runtime: nvidia
     # profiles: ["vllm"]
     env_file:
@@ -272,6 +277,38 @@ services:
       # 71 restarts, 22 min). Set HF_HUB_OFFLINE=0 in .env once to pull a new
       # model, then flip it back.
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      # Flash-Next: keep the ~102 GB BF16 PLE (n-gram) lookup tables in host
+      # RAM instead of VRAM. Needs >=110 GB free host RAM (this host has 251).
+      - VLLM_PLE_CPU_OFFLOAD=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Flash-Next: the TP>1 vocab-masking helper is torch.compile-decorated
+      # regardless of --compilation-config; on this host its inductor kernel
+      # load (cuModuleLoad) hung every worker at 100% CPU after CUDA-graph
+      # capture. Disabling dynamo globally is what the quant card's "do not
+      # let torch.compile run" actually requires here.
+      - TORCH_COMPILE_DISABLE=1
+      # GPUs 0-3 are this service's; GPU 4 hosts vllm-vision + the helpers.
+      # Hide it so neither the TP ranks nor the PLE offload worker touch it.
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+      # REQUIRED for Flash-Next on this host: the v2 model runner stages PLE
+      # inputs from CUDA tensors via a device-to-host copy that waits on an
+      # event recorded on the model stream; that handoff races and every boot
+      # deadlocked after CUDA-graph capture (workers at 100% CPU, GPUs idle,
+      # then `queue.Full` in PleOffloadConnector._launch once torch.compile
+      # was disabled). The v1 runner feeds the offload worker from its CPU
+      # input mirrors and needs no such sync. (CUDA_LAUNCH_BLOCKING=1 also
+      # cures it, at ~40% of the decode speed.)
+      - VLLM_USE_V2_MODEL_RUNNER=0
+    # The PLE offload worker hands GPU buffers between processes with the
+    # `pidfd_getfd` syscall, which Docker's default seccomp profile blocks.
+    # Both settings are required by the quant's model card; LAN-only host.
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    # tini as PID 1: a hung `vllm serve` otherwise becomes an unkillable
+    # zombie that `docker compose stop` refuses ("PID ... is zombie").
+    init: true
     ports:
       - "8000:8000"
     volumes:
@@ -285,28 +322,58 @@ services:
     #   --reasoning-parser glm45 --enable-auto-tool-choice --trust-remote-code
     #   --host 0.0.0.0 --port 8000
     #
-    # Qwen3.8-27B notes:
-    # - Unquantized BF16 (~53 GB weights, ~13.3 GB/GPU at tp=4). FP8 checkpoint
-    #   exists but 3090s (SM86) have no native FP8; BF16 is the max-quality fit.
-    # - Dense hybrid-attention model (48/64 layers Gated DeltaNet linear attn,
-    #   16 full-attn @ 4 KV heads) — NOT MoE, so no --enable-expert-parallel.
-    #   KV cost is only ~64 KB/token, so the full native 262144 context fits:
-    #   ~16.8 GB KV for one max-length sequence (~4.2 GB/GPU at tp=4) on top of
-    #   ~13.3 GB/GPU weights, inside the 0.80 budget. Two sequences share the
-    #   pool — both at full context won't fit, which is fine for this household.
-    # - --language-model-only skips the vision tower (vllm-vision covers images).
-    # - Built-in MTP draft head available later via --speculative-config.
+    # Rollback command (pairs with the `qwen38-cu129` digest above; dense
+    # Qwen3.8-27B, BF16, ~13.3 GB/GPU weights, full 262k context):
+    #   --model Qwen/Qwen3.8-27B --served-model-name gpt-3.5-turbo
+    #   --tensor-parallel-size 4 --language-model-only --max-model-len 262144
+    #   --max-num-seqs 2 --gpu-memory-utilization 0.80
+    #   --tool-call-parser qwen3_coder --reasoning-parser qwen3
+    #   --enable-auto-tool-choice --host 0.0.0.0 --port 8000
+    # (drop VLLM_PLE_CPU_OFFLOAD, cap_add and security_opt when rolling back)
+    #
+    # Qwen3.8-Flash-Next notes (VnimanieAI/Qwen3.8-Flash-Next-W4A16 quant):
+    # - MoE: 512 experts / 10 active, ~125B backbone + 51B PLE n-gram tables.
+    #   INT4 g128 experts + attention, BF16 everything else; 168 GB on disk,
+    #   ~66 GB of which is GPU-resident (~16.5 GB/GPU at tp=4). The official
+    #   FP8 checkpoint cannot run on 3090s (SM86 has no FP8).
+    # - --enable-expert-parallel is MANDATORY: moe_intermediate_size=640 is not
+    #   divisible into 128-wide quant groups under plain TP (640/4 = 160).
+    # - --compilation-config mode 0: inductor compile of this arch hangs forever
+    #   on Ampere; FULL_DECODE_ONLY keeps decode CUDA graphs (9 → 105 tok/s).
+    # - 4x24 GB fits weights + ~98k context OR weights + MTP, not both. MTP
+    #   (--speculative-config '{"method":"mtp","num_speculative_tokens":4}')
+    #   is off; re-enable if we ever drop context.
+    # - GPUs 0-3 must be DEDICATED to this service (CUDA_VISIBLE_DEVICES
+    #   above). Measured: weights 18.2 GiB/GPU + ~2 GiB profiling peak; KV is
+    #   ~14.7 KB/token/GPU and does NOT shrink with TP (2 KV heads replicate
+    #   below 1 head/rank), so 98k ctx needs 1.24 GiB/GPU. With STT/TTS/
+    #   embeddings/face/ComfyUI sharing these cards the budget capped at 0.88
+    #   and only ~0.5 GiB was left for KV (~32k ctx); fp8 KV is rejected
+    #   ("QSA requires a BF16 main KV cache"). All helpers are therefore
+    #   pinned to GPU 4 via the *_GPU vars in .env, beside a downsized
+    #   vllm-vision (Qwen3-VL-8B AWQ at VISION_GPU_MEM_UTIL=0.50).
+    # - Flags mirror the quant card's 4x3090 recipe (max-num-seqs 64, no
+    #   --language-model-only / --max-num-batched-tokens); the deadlock they
+    #   were suspected of turned out to be the v2-runner PLE race above.
+    # - gpu-memory-utilization 0.94 (card: 0.92): the v1 runner charges CUDA
+    #   graph memory (~0.4 GiB) against the budget, so 0.92 left only 1.06 GiB
+    #   for KV (< the 1.24 GiB one 98k request needs). Measured at 0.94: KV
+    #   121k tokens (1.23x concurrency at 98k), ~84 tok/s decode short-ctx,
+    #   ~92 tok/s at 31k ctx, prefill ~1.7k tok/s, warm TTFT ~0.3 s.
+    # - Same reasoning/tool parsers as Qwen3.8-27B — no agent-side change.
     command: >
-      --model Qwen/Qwen3.8-27B
+      --model VnimanieAI/Qwen3.8-Flash-Next-W4A16
       --served-model-name gpt-3.5-turbo
       --tensor-parallel-size 4
-      --language-model-only
-      --max-model-len 262144
-      --max-num-seqs 2
-      --gpu-memory-utilization 0.80
+      --enable-expert-parallel
+      --max-model-len 98304
+      --max-num-seqs 64
+      --gpu-memory-utilization 0.94
+      --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}'
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --enable-auto-tool-choice
+      --trust-remote-code
       --host 0.0.0.0
       --port 8000
 
@@ -412,8 +479,12 @@ services:
       - ./services/text-to-image/custom_nodes:/app/custom_nodes
       # - ./services/text-to-image/cache:/root/.cache
 
+    # The image's CMD hardcodes `--default-device 3`. ComfyUI (or one of its
+    # custom nodes) still opens a CUDA context on host GPU 0 when pinned via
+    # CUDA_VISIBLE_DEVICES alone, so the host GPU is isolated at the Docker
+    # level with device_ids below — the container sees exactly one device (0).
+    command: ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--default-device", "0"]
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       # Optional: Set GPU memory limit (in MB)
       # - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
@@ -426,7 +497,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["${TEXT_TO_IMAGE_GPU:-3}"]
               capabilities: [gpu]
     
     healthcheck:
@@ -507,7 +578,7 @@ services:
       start_period: 40s
     restart: unless-stopped
   face-recognition:
-    # InsightFace buffalo_l (RetinaFace + ArcFace) on GPU 3.
+    # InsightFace buffalo_l (RetinaFace + ArcFace); host GPU from FACE_RECOGNITION_GPU.
     # Volume-mounted app dir so step-by-step changes don't require a rebuild.
     # CUDA_VISIBLE_DEVICES pins the host GPU; ctx_id=0 inside the container.
     build:
@@ -519,7 +590,7 @@ services:
     ports:
       - "6006:6006"
     environment:
-      - CUDA_VISIBLE_DEVICES=3
+      - CUDA_VISIBLE_DEVICES=${FACE_RECOGNITION_GPU:-3}
     volumes:
       - ./services/face-recognition/app:/app
       - ./volumes/face_snapshots:/data/snapshots
@@ -572,7 +643,7 @@ services:
     environment:
       - MODEL_ID=BAAI/bge-large-en-v1.5
       - PORT=3000
-      - CUDA_VISIBLE_DEVICES=0  # Set to the GPU index you want to use (e.g., 3)
+      - CUDA_VISIBLE_DEVICES=${EMBEDDINGS_GPU:-0}  # host GPU index (see .env)
     deploy:
       resources:
         reservations: # GPU Device to use is configured in shared_config.py

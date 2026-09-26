@@ -12,7 +12,7 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [MCP Tools](mcp-tools/README.md) | 6010 (host IP only) | MCP Streamable HTTP tool host — serves the agent's 11 tool modules at `/mcp/<name>` behind per-mount bearer tokens | Python, Starlette, mcp SDK (reuses the agent image) |
 | [Speech-to-Text](speech-to-text/README.md) | 6001 | Audio transcription | Python, Faster Whisper, CUDA |
 | [Text-to-Speech](text-to-speech/README.md) | 6005 | Speech synthesis — selectable engine: Kokoro (default, fast) or Chatterbox-Turbo (cloning + streaming) | Python, Kokoro / Chatterbox-TTS, CUDA |
-| [vLLM Vision](vllm-vision/README.md) | 8001 | Image / short-video understanding (Qwen3-VL on a dedicated GPU) | vLLM, CUDA |
+| [vLLM Vision](vllm-vision/README.md) | 8001 | Image / short-video understanding (Qwen3-VL on GPU 4, shared with the helper services) | vLLM, CUDA |
 | [Text-to-Image](text-to-image/README.md) | 8188 | Image generation | ComfyUI |
 | [vLLM](vllm/README.md) | 8000 | Primary LLM inference | vLLM, CUDA |
 | [LlamaCPP](llamacpp/README.md) | 8000 | Alternative LLM backend (inactive — compose stanza commented out) | llama.cpp |
