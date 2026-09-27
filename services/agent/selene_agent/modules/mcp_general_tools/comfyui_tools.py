@@ -3,6 +3,7 @@ Simplified ComfyUI Client - Cleaner async implementation
 """
 
 import json
+import random
 import asyncio
 import uuid
 import time
@@ -22,7 +23,9 @@ class ComfyUIConfig:
     port: int = 8188
     workflow_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/modules/mcp_general_tools/comfyui_workflows"))
     output_dir: Path = field(default_factory=lambda: Path("/app/selene_agent/outputs"))
-    timeout: int = 120
+    # Generous: the first job after a cold container streams ~23 GB of
+    # Qwen-Image weights off disk before sampling even starts.
+    timeout: int = 300
     
     def __post_init__(self):
         self.workflow_dir.mkdir(exist_ok=True)
@@ -188,11 +191,20 @@ class WorkflowBuilder:
         # Work on a copy
         workflow = json.loads(json.dumps(workflow))
         
-        # Find text encode nodes and categorize them
+        # Find text encode nodes and categorize them. Legacy SD/SDXL graphs
+        # carry two CLIPTextEncode nodes (positive first); Qwen-Image 2.1
+        # graphs carry a single TextEncodeQwenImage21 node that takes both
+        # prompts itself.
         text_nodes = []
         for node_id, node in workflow.items():
-            if node.get("class_type") == "CLIPTextEncode":
+            class_type = node.get("class_type")
+            if class_type == "CLIPTextEncode":
                 text_nodes.append((node_id, node))
+            elif class_type == "TextEncodeQwenImage21":
+                if positive:
+                    node["inputs"]["prompt"] = positive
+                if negative is not None:
+                    node["inputs"]["negative_prompt"] = negative
         
         # Sort by node ID (usually positive comes first)
         text_nodes.sort(key=lambda x: int(x[0]) if x[0].isdigit() else float('inf'))
@@ -212,6 +224,21 @@ class WorkflowBuilder:
         
         return workflow
     
+    @staticmethod
+    def set_size(workflow: Dict[str, Any], width: int, height: int) -> Dict[str, Any]:
+        """Set the output size on every EmptyLatentImage node."""
+        workflow = json.loads(json.dumps(workflow))
+        for node in workflow.values():
+            if node.get("class_type") == "EmptyLatentImage" and "inputs" in node:
+                node["inputs"]["width"] = int(width)
+                node["inputs"]["height"] = int(height)
+        return workflow
+
+    @staticmethod
+    def uses_legacy_clip(workflow: Dict[str, Any]) -> bool:
+        """True for SD/SDXL-style graphs whose negative prompt actually matters."""
+        return any(n.get("class_type") == "CLIPTextEncode" for n in workflow.values())
+
     @staticmethod
     def update_node(workflow: Dict[str, Any], 
                    node_id: str, 
@@ -262,21 +289,41 @@ class SimpleComfyUI:
     
     async def text_to_image(self,
                           prompt: str,
-                          workflow_name: str = "default",
+                          workflow_name: str = "qwen_image_2.1",
                           negative: Optional[str] = None,
                           seed: Optional[int] = None,
+                          width: Optional[int] = None,
+                          height: Optional[int] = None,
                           **kwargs) -> Dict[str, Any]:
-        """Simple text-to-image generation"""
+        """Simple text-to-image generation.
+
+        ``workflow_name`` picks a JSON graph from ``comfyui_workflows/``:
+        ``qwen_image_2.1`` (default; Qwen-Image 2.1, natural-language
+        prompts, cfg 1 so the negative prompt is inert) or ``default`` (the
+        legacy SD 1.5 CyberRealistic graph, tag prompts + tag negative).
+        """
         # Load workflow
         workflow = await self.client.load_workflow(workflow_name)
-        
+
+        # The SD-era tag-soup negative only helps CLIP-conditioned graphs;
+        # Qwen-Image runs at cfg 1 where the negative is ignored anyway.
+        if negative is None and self.builder.uses_legacy_clip(workflow):
+            negative = self.default_negative
+
+        # Fresh seed per call so a repeated prompt gives a new image.
+        if seed is None:
+            seed = random.randrange(0, 2**53)
+
         # Update with prompts
         workflow = self.builder.update_prompts(
             workflow,
             positive=prompt,
-            negative=negative or self.default_negative,
+            negative=negative,
             seed=seed
         )
+
+        if width and height:
+            workflow = self.builder.set_size(workflow, width, height)
         
         # Apply any additional node updates
         if kwargs:

@@ -14,7 +14,7 @@ dashboard playground at `/playgrounds/comfy`.
 
 Mounted from this directory so models and workflows survive rebuilds:
 
-- `models/` — Stable Diffusion / Flux checkpoints, loras, VAEs
+- `models/` — checkpoints, `diffusion_models/`, `text_encoders/`, `vae/`, loras (Qwen-Image 2.1 is the agent default)
 - `custom_nodes/` — ComfyUI-Manager is auto-installed by the
   `comfyui-manager-installer` service on first boot
 - `input/` — source images for img2img workflows

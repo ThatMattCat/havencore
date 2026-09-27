@@ -9,7 +9,7 @@ import json
 import asyncio
 import aiohttp
 import logging
-from typing import Annotated, Any, Awaitable, Callable, Dict, List, Optional, Union
+from typing import Annotated, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 import requests
 from datetime import datetime
 import pytz
@@ -67,23 +67,50 @@ class GeneralToolsServer:
 
         @mcp.tool(
             name="generate_image",
-            description="Generate an image from a text prompt and return the filepath and URL link to the image.",
+            description=(
+                "Generate an image from a text description and return the "
+                "filepath and URL link to the image. Handles any style: "
+                "photorealistic, anime, illustration, 3D render, product shots, "
+                "posters with text. Takes about 20-30 seconds."
+            ),
             structured_output=False,
         )
         async def generate_image(
             prompt: Annotated[str, Field(description=(
-                "The text prompt to generate an image from, written as tags. "
-                "eg: mountain, snow, realistic"
+                "A natural-language description of the finished image, in full "
+                "sentences: subject, setting, style, lighting, composition. Name "
+                "the style explicitly (e.g. 'a photorealistic photograph of', "
+                "'an anime illustration of', 'a flat vector logo of'). Any text "
+                "that should appear in the image goes in double quotes."
             ))],
+            aspect_ratio: Annotated[Literal["square", "landscape", "portrait", "wide", "tall"], NULL_OK, Field(description=(
+                "Output shape. Default 'square' (1:1). 'landscape'/'portrait' "
+                "are 3:2, 'wide'/'tall' are 16:9 (cinematic or phone-screen)."
+            ))] = None,
         ) -> str:
+            sizes = {
+                "square": (1024, 1024),
+                "landscape": (1216, 832),
+                "portrait": (832, 1216),
+                "wide": (1344, 768),
+                "tall": (768, 1344),
+            }
+            width, height = sizes.get(aspect_ratio or "square", sizes["square"])
+
             async def run() -> str:
                 async with SimpleComfyUI("text-to-image:8188") as comfy:
                     result = await comfy.text_to_image(
                         prompt=prompt,
-                        workflow_name="default"
+                        workflow_name="qwen_image_2.1",
+                        width=width,
+                        height=height,
                     )
                     return json.dumps(result)
-            return await self._call("generate_image", {"prompt": prompt}, run)
+            return await self._call(
+                "generate_image",
+                {"prompt": prompt, "aspect_ratio": aspect_ratio},
+                run,
+            )
 
         if SIGNAL_PHONE_NUMBER and SIGNAL_DEFAULT_RECIPIENT:
             @mcp.tool(

@@ -24,7 +24,7 @@ instead of registering one that always errors.
 
 | Tool | Needs | Purpose |
 |------|-------|---------|
-| `generate_image(prompt)` | (none) | Submits a prompt to the ComfyUI service at `text-to-image:8188` using the `default` workflow. Returns a filepath and a URL to the finished image. |
+| `generate_image(prompt, aspect_ratio?)` | (none) | Submits a natural-language description to the ComfyUI service at `text-to-image:8188` using the `qwen_image_2.1` workflow (Qwen-Image 2.1, any style, ~20-35 s). `aspect_ratio` is one of `square` (1024²), `landscape`/`portrait` (3:2), `wide`/`tall` (16:9). Returns a filepath and a URL to the finished image. |
 | `send_signal_message(message, attachments?)` | `SIGNAL_PHONE_NUMBER`, `SIGNAL_DEFAULT_RECIPIENT` | Sends a Signal message (text + optional image/video attachments) via the `signal-api` container (`signal-cli-rest-api`). Recipient is fixed to `SIGNAL_DEFAULT_RECIPIENT` — the tool is intentionally not a free-form "send to anyone". Attachments accept URLs (auto-downloaded, 50 MB cap) or local paths, are base64-encoded, and sent via `POST /v2/send`; per-attachment errors are tracked and only a full failure is surfaced. Video size cap is ~95 MB. |
 | `query_multimodal_api(image_url, text?)` | (none) | Send an image URL (and optional text prompt) to the vision-capable vLLM (the multimodal chat model by default; see `VISION_API_BASE`). POSTs JSON to the agent's own `/api/vision/ask_url` endpoint, which forwards to that vLLM — the agent-side proxy is the single chokepoint for logging and authentication. Image-only by design (the URL endpoint is single-image). For higher-leverage tools — fresh camera snapshots, two-image diffs, OCR — prefer the dedicated [Vision Tools server](vision.md) (`mcp_vision_tools`); for video uploads, use the multipart `/api/vision/ask` endpoint or the dashboard playground. |
 | `wolfram_alpha(query)` | `WOLFRAM_ALPHA_API_KEY` | Wolfram Alpha LLM API for factual + computational questions. 1000-char response cap, 30 s timeout. |
@@ -77,7 +77,8 @@ the module):
 ## Internals worth knowing
 
 - **`generate_image` uses the `SimpleComfyUI` helper** in
-  `comfyui_tools.py` with workflow `default`. The helper downloads the
+  `comfyui_tools.py` with workflow `qwen_image_2.1` (the legacy SD 1.5
+  `default` graph is kept on disk but unused). The helper downloads the
   finished image from ComfyUI itself and saves it into the agent's local
   output dir. Each returned image carries a `path`
   (`/app/selene_agent/outputs/<file>`) and a `url`
