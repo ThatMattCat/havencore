@@ -339,6 +339,11 @@ services:
     #   dated from when the helpers shared these cards), and the vision tower
     #   + image profiling need room the text-only config didn't.
     # - max-num-seqs 4: chat, autonomy turns and vision calls all land here.
+    # - Thinking: the chat template defaults to reasoning_effort xhigh
+    #   (options: xhigh / medium / low, or enable_thinking=false for none).
+    #   --default-chat-template-kwargs sets medium for every request that
+    #   doesn't pass its own chat_template_kwargs; per-request values still
+    #   win, so vision calls keep enable_thinking=false.
     # - Built-in MTP draft head available later via --speculative-config.
     command: >
       --model Qwen/Qwen3.8-27B
@@ -349,6 +354,7 @@ services:
       --limit-mm-per-prompt '{"image": 2, "video": 1}'
       --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
       --gpu-memory-utilization 0.90
+      --default-chat-template-kwargs '{"reasoning_effort": "medium"}'
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --enable-auto-tool-choice

@@ -779,6 +779,7 @@ command: >
   --limit-mm-per-prompt '{"image": 2, "video": 1}'
   --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
   --gpu-memory-utilization 0.90
+  --default-chat-template-kwargs '{"reasoning_effort": "medium"}'
   --tool-call-parser qwen3_coder
   --reasoning-parser qwen3
   --enable-auto-tool-choice

@@ -34,6 +34,7 @@ vllm:
     --limit-mm-per-prompt '{"image": 2, "video": 1}'
     --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
     --gpu-memory-utilization 0.90
+    --default-chat-template-kwargs '{"reasoning_effort": "medium"}'
     --tool-call-parser qwen3_coder
     --reasoning-parser qwen3
     --enable-auto-tool-choice
@@ -83,6 +84,11 @@ Flag-by-flag:
 - `--gpu-memory-utilization 0.90` — GPUs 0-3 are dedicated to this
   service, and the vision tower plus image profiling need headroom a
   text-only configuration would not. See the GPU layout section below.
+- `--default-chat-template-kwargs '{"reasoning_effort": "medium"}'` —
+  the server-side default thinking level for every request that does
+  not pass its own `chat_template_kwargs`. The chat template's own
+  default is `xhigh`. See
+  [Thinking level](#thinking-level) below.
 - No `--trust-remote-code` and no `--compilation-config` — the pinned
   build supports the architecture natively and `torch.compile` runs
   normally (it accounts for ~93 s of the cold start).
@@ -159,6 +165,24 @@ block spends the same completion budget as the visible answer — see
 `--tool-call-parser qwen3_coder` wires native function-calling on the
 same model. The Qwen3.8-Flash-Next rollback uses the same two parsers,
 so switching between them needs no agent-side code change.
+
+### Thinking level
+
+Qwen3.8-27B is a reasoning model, and its chat template takes three
+`chat_template_kwargs`:
+
+| Key | Values | Effect |
+|-----|--------|--------|
+| `enable_thinking` | `true` (template default), `false` | `false` skips the think block entirely |
+| `reasoning_effort` | `xhigh` (template default), `medium`, `low` | `xhigh` and `low` each add an instruction to the system prompt; `medium` adds none. Any other value raises a template error |
+| `preserve_thinking` | `true` (template default), `false` | `false` drops the reasoning of earlier turns from the rendered history |
+
+The agent's chat paths send no `chat_template_kwargs`, so they run at
+the server default set by `--default-chat-template-kwargs`: thinking on,
+effort `medium`. Values passed on a request override the server
+default, which is how vision calls stay at `enable_thinking: false`
+(`VISION_CHAT_TEMPLATE_KWARGS`). To change the chat level, edit the flag
+in `compose.yaml` and recreate the `vllm` container.
 
 Two quirks of Qwen3.8's chat template / vLLM's request schema the agent
 compensates for at send time (`_messages_for_llm`): a system message
