@@ -108,13 +108,34 @@ ANTHROPIC_MODEL="claude-opus-4-7"  # default Anthropic model
 
 #### GPU Settings
 ```bash
-# Speech-to-Text GPU allocation
-STT_DEVICE="0"       # GPU index for STT model
+# Host GPU index per helper service
+STT_DEVICE="0"             # speech-to-text (Faster Whisper)
+EMBEDDINGS_GPU="0"         # text-embeddings-inference
+FACE_RECOGNITION_GPU="3"   # InsightFace face-recognition
+TEXT_TO_IMAGE_GPU="3"      # ComfyUI (isolated at the Docker level via device_ids)
 ```
 
 The text-to-speech GPU depends on the active engine — `TTS_KOKORO_GPU`
 (default) or `CHATTERBOX_GPU` — see [TTS engine selection](#tts-engine-selection)
-below.
+below. The optional `vllm-vision` service (off by default — see
+[Vision Backend Configuration](#vision-backend-configuration)) is pinned
+in `compose.yaml` (`CUDA_VISIBLE_DEVICES=4`).
+
+The `.env.example` defaults are single-GPU-friendly, but the default chat
+model (Qwen3.8-27B) needs GPUs 0-3 **to itself**: vLLM claims 90% of
+each card, and any helper holding VRAM on those cards comes straight out
+of its KV cache (or stops it starting at all). On the reference 5-GPU
+host every one of these vars — `STT_DEVICE`, `EMBEDDINGS_GPU`,
+`FACE_RECOGNITION_GPU`, `TEXT_TO_IMAGE_GPU`, `TTS_KOKORO_GPU` /
+`CHATTERBOX_GPU` — is set to `4`. Nothing LLM-sized lives on GPU 4 by default — vision is served by
+the chat model on GPUs 0-3. See
+[vLLM → GPU layout and sizing](services/vllm/README.md#gpu-layout-and-sizing).
+
+ComfyUI is the odd one out: it still opened a CUDA context on GPU 0 when
+pinned by `CUDA_VISIBLE_DEVICES` alone, so `TEXT_TO_IMAGE_GPU` feeds
+Docker `device_ids` instead and the container sees exactly one device
+(the image's hardcoded `--default-device 3` is overridden to `0` via a
+compose `command`).
 
 #### Pronunciation Tuning
 
@@ -376,7 +397,7 @@ FACE_REC_BURST_FRAMES=6
 FACE_REC_BURST_INTERVAL_MS=500
 
 # GPU label (informational only; the actual placement is via
-# CUDA_VISIBLE_DEVICES on the compose service)
+# FACE_RECOGNITION_GPU -> CUDA_VISIBLE_DEVICES on the compose service)
 FACE_REC_GPU_DEVICE=3
 
 # Snapshot retention sweeper. Set INTERVAL_MIN=0 to disable the periodic
@@ -741,22 +762,34 @@ Per-server reference docs live under
 
 #### vLLM Configuration (Default)
 Defined in `compose.yaml` (Qwen3.8-27B, a dense hybrid-attention
-reasoning model run unquantized in BF16, served under the OpenAI-compat
-name `gpt-3.5-turbo` for client convenience):
+reasoning model — multimodal, run unquantized in BF16 as
+`Qwen/Qwen3.8-27B`, served under the OpenAI-compat name `gpt-3.5-turbo`
+for client convenience):
 
 ```yaml
+environment:
+  - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}   # resolve the model from the local HF cache only
+  - CUDA_VISIBLE_DEVICES=0,1,2,3          # GPUs 0-3 are dedicated to this service
 command: >
   --model Qwen/Qwen3.8-27B
   --served-model-name gpt-3.5-turbo
   --tensor-parallel-size 4
-  --language-model-only
   --max-model-len 262144
-  --max-num-seqs 2
-  --gpu-memory-utilization 0.80
+  --max-num-seqs 4
+  --limit-mm-per-prompt '{"image": 2, "video": 1}'
+  --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
+  --gpu-memory-utilization 0.90
+  --default-chat-template-kwargs '{"reasoning_effort": "medium"}'
   --tool-call-parser qwen3_coder
   --reasoning-parser qwen3
   --enable-auto-tool-choice
 ```
+
+The model needs GPUs 0-3 free of every other service (see
+[GPU Settings](#gpu-settings)); it has no special host RAM requirement.
+The agent caches `max_model_len` from `/v1/models` once per process, so
+after changing `--max-model-len` run `docker compose restart agent` or
+the context-limit threshold keeps the old value.
 
 `--reasoning-parser qwen3` splits the model's `<think>…</think>`
 chain-of-thought into a separate reasoning field on the response,
@@ -766,8 +799,9 @@ wire) and also normalizes it onto the assistant message as
 `reasoning_content` so the chat template can render `<think>…</think>`
 for in-progress agentic tool-call iterations — see
 [Agent → WebSocket event schema](api-reference.md#websockets) and
-[vLLM service docs](services/vllm/README.md) for the lifecycle, model
-sizing notes, and the GLM-4.5-Air rollback pairing.
+[vLLM service docs](services/vllm/README.md) for the lifecycle, the
+flag-by-flag rationale, model sizing notes, and the Qwen3.8-Flash-Next /
+GLM-4.5-Air rollback pairings.
 
 **Key Parameters**:
 - `--model`: HuggingFace model path
@@ -808,21 +842,35 @@ are logged at INFO: `[anthropic] cache read=N create=N input=N output=N`.
 
 ### Vision Backend Configuration
 
-The `vllm-vision` service is a second vLLM instance pinned to a dedicated
-GPU and serving a Qwen3-VL model. The agent reaches it via three env vars,
-mirroring the `LLM_API_BASE` / `LLM_API_KEY` pattern:
+Vision is served by the **chat vLLM itself**: the default model
+`Qwen/Qwen3.8-27B` is multimodal (a 27-layer ViT handling image and
+video input, and the `vllm` service passes
+`--limit-mm-per-prompt '{"image": 2, "video": 1}'` plus an
+`--mm-processor-kwargs` size cap so each image costs ~2k tokens at most).
+The agent reaches it via env vars mirroring the `LLM_API_BASE` /
+`LLM_API_KEY` pattern:
 
 ```bash
-VISION_API_BASE="http://10.0.0.1:8001/v1"   # Host-scoped URL the agent calls (NOT the compose-internal vllm-vision:8000).
-VISION_API_KEY="1234"                       # Bearer token; vllm-vision currently doesn't enforce, but the SDK requires a value.
-VISION_SERVED_NAME="gpt-4-vision"           # OpenAI-compat alias the model is served under; sent in every request body.
+VISION_API_BASE="http://10.0.0.1:8000/v1"   # Same endpoint as LLM_API_BASE (host-scoped, NOT the compose-internal vllm:8000).
+VISION_API_KEY="1234"                       # Bearer token; vLLM currently doesn't enforce, but the SDK requires a value.
+VISION_SERVED_NAME="gpt-3.5-turbo"          # Must match the chat vLLM's --served-model-name; sent in every request body.
+#VISION_CHAT_TEMPLATE_KWARGS='{"enable_thinking": false}'  # Default. Raw JSON forwarded as chat_template_kwargs on every vision call.
 ```
 
+`VISION_CHAT_TEMPLATE_KWARGS` exists because the chat model is a
+reasoning model: without `enable_thinking=false` it spends the small vision
+`max_tokens` budget on its think block and returns empty content (both
+vision paths now surface that as an explicit "returned no content"
+error rather than a blank answer). Set it to an empty string to omit the
+field for a backend that rejects `chat_template_kwargs`; invalid JSON
+logs a warning and omits the field. The parser lives in
+`selene_agent.utils.config.vision_chat_template_kwargs()`.
+
 `VISION_API_BASE` must be reachable **from inside the agent container** —
-typically the same host LAN IP `LLM_API_BASE` uses, on port `8001`. A
-hostname that only resolves outside the docker network will fail with
-`Cannot connect to host` even though DNS resolves. After changing the
-value, recreate the agent so the env is picked up:
+typically the same host LAN IP `LLM_API_BASE` uses. A hostname that only
+resolves outside the docker network will fail with `Cannot connect to
+host` even though DNS resolves. After changing the value, recreate the
+agent so the env is picked up:
 
 ```bash
 docker compose up -d --force-recreate --no-deps agent
@@ -837,10 +885,26 @@ clients can show which tier of the fallback ladder is active. The five
 purpose-built tools (`describe_image`, `describe_camera_snapshot`,
 `compare_snapshots`, `identify_object`, `read_text_in_image`) live in
 the [Vision Tools MCP server](services/agent/tools/vision.md).
-Service-side flags (model selection, context window, GPU memory
-utilization) live in `compose.yaml` and the
+**Tradeoff.** Image tokens now consume the chat model's KV cache on
+GPUs 0-3. Occasional camera snapshots and playground uploads are fine; a
+steady stream of frames is not. The escape hatch is the shelved
+`vllm-vision` service — a second vLLM instance on GPU 4 serving a
+dedicated Qwen3-VL model, kept behind the `vllm-vision` compose profile.
+To re-enable it:
+
+```bash
+COMPOSE_PROFILES="kokoro,vllm-vision"       # add the profile beside the TTS engine's
+VISION_API_BASE="http://10.0.0.1:8001/v1"   # its host port
+VISION_SERVED_NAME="gpt-4-vision"           # its --served-model-name
+```
+
+then `docker compose down && docker compose up -d`. Its service-side
+flags (`VISION_MODEL`, `VISION_MAX_MODEL_LEN`, `VISION_MAX_NUM_SEQS`,
+`VISION_GPU_MEM_UTIL`) are read from `.env` by `compose.yaml` and only
+apply while that profile is active; the
 [vllm-vision service doc](services/vllm-vision/README.md) covers the
-fallback ladder for tight 24 GB fits.
+model ladder and the values the shared-GPU layout requires. Leaving it
+off frees ~10.5 GiB on GPU 4 for the helpers and ComfyUI.
 
 ### Nginx Gateway Configuration
 
@@ -1043,8 +1107,9 @@ docker compose exec agent curl https://api.weatherapi.com
 # Check HuggingFace token
 echo $HF_HUB_TOKEN
 
-# Pre-download models
-huggingface-cli download Qwen/Qwen3.8-27B
+# Pre-download models (~56 GB; see the vLLM service doc for the
+# HF_HUB_OFFLINE refs/main gotcha)
+hf download Qwen/Qwen3.8-27B
 
 # Check disk space
 df -h

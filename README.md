@@ -21,13 +21,13 @@ Voice in, voice out. Your own LLM. Your own tools. Your data never leaves the bo
 
 ## What this is
 
-**HavenCore** is a production-grade personal AI assistant I built to run entirely on my own hardware — no cloud inference, no data phoned home. It hears you through a wake-word device, transcribes with Whisper, reasons with a local MoE LLM (GLM-4.5-Air-AWQ-FP16Mix on vLLM), calls tools over MCP (Home Assistant, Plex, web search, image gen, etc.), speaks back with Kokoro TTS, and runs proactively on its own schedule when you're not looking.
+**HavenCore** is a production-grade personal AI assistant I built to run entirely on my own hardware — no cloud inference, no data phoned home. It hears you through a wake-word device, transcribes with Whisper, reasons with a local LLM (Qwen3.8-27B on vLLM), calls tools over MCP (Home Assistant, Plex, web search, image gen, etc.), speaks back with Kokoro TTS, and runs proactively on its own schedule when you're not looking.
 
 Everything is one `docker compose up -d` away. Fourteen containers, one GPU fleet, one dashboard.
 
 > The assistant's name is **Selene**. She lives on five RTX 3090s in my shed.
 
-> **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default GLM-4.5-Air-AWQ-FP16Mix stack wants **~72 GB VRAM sharded across 4× 24 GB cards** (MoE, `-tp 4 --enable-expert-parallel`); fewer/smaller GPUs work if you swap in a smaller model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB, or Qwen2.5-14B on a single card). Plan on ~60 GB of disk for images + model weights on first build.
+> **Hardware you'll need:** Linux host, recent NVIDIA driver + container toolkit, Docker Compose v2, and GPU VRAM for your chosen LLM. The default Qwen3.8-27B stack wants **4× 24 GB cards to itself** (unquantized BF16, `-tp 4`, ~22 GB in use per card) plus a fifth card for the helper services; fewer/smaller GPUs work if you swap in a smaller model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB, or Qwen2.5-14B on a single card). Plan on ~150 GB of disk for images and volumes, plus ~56 GB for the chat model weights.
 
 ---
 
@@ -184,10 +184,10 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 <td>
 
 **AI / ML**
-- vLLM (GLM-4.5-Air-AWQ-FP16Mix, 4× tensor-parallel + expert-parallel)
+- vLLM (Qwen3.8-27B, unquantized BF16, 4× tensor-parallel, 262k context)
 - Faster-Whisper (STT)
 - Kokoro TTS
-- Qwen3-VL-32B-Instruct-AWQ (vision, served by a second vLLM)
+- Vision via the same Qwen3.8-27B model (multimodal; the optional Qwen3-VL `vllm-vision` service is shelved behind a compose profile)
 - ComfyUI (image gen)
 - BGE-large embeddings (TEI)
 - Qdrant (vectors)
@@ -252,7 +252,7 @@ Wake-word + mic + speaker runs on an ESP32-S3-BOX-3 and talks to HavenCore over 
 │  │                 ├─ metrics_db (turn_metrics)                  │
 │  │                 └─ autonomy engine (asyncio)                  │
 │  │                                                               │
-│  │   stt (6001)  tts (6005)  vllm-vision (8001)  comfy (8188)    │
+│  │   stt (6001)  tts (6005)  comfy (8188)  [vllm-vision: opt]    │
 │  │   face-rec (6006)  ntfy (8585)  embeddings (3000)             │
 │  │   qdrant (6333)  mosquitto (1883)  signal-api (127.0.0.1:8080)│
 │  └───────────────────────────────────────────────────────────────┘
@@ -271,11 +271,11 @@ git clone https://github.com/ThatMattCat/havencore.git
 cd havencore
 cp .env.example .env     # fill in HOST_IP_ADDRESS, HAOS_TOKEN, API keys
 docker compose up -d     # first build: 60–90 min
-                         # first model load: 10–15 min (GLM-4.5-Air-AWQ-FP16Mix, ~70 GB pull)
+                         # chat model cold start: ~5.5 min (Qwen3.8-27B, ~56 GB of weights)
 open http://localhost    # SvelteKit dashboard
 ```
 
-Full walkthrough, hardware requirements (TL;DR: one 24 GB GPU works with a smaller model; the default GLM-4.5-Air-AWQ wants ~72 GB sharded across 4× 24 GB cards), NVIDIA driver pinning, and troubleshooting: [**docs/getting-started.md**](docs/getting-started.md).
+Full walkthrough, hardware requirements (TL;DR: one 24 GB GPU works with a smaller model; the default Qwen3.8-27B wants 4× 24 GB cards to itself), NVIDIA driver pinning, and troubleshooting: [**docs/getting-started.md**](docs/getting-started.md).
 
 ### Things worth knowing
 - **Hot reload for Python:** services mount their source; `docker compose restart agent` picks up edits.
@@ -299,7 +299,7 @@ havencore/
 │   │   └── frontend/         #   SvelteKit dashboard (static adapter)
 │   ├── speech-to-text/       # Faster-Whisper
 │   ├── text-to-speech/       # Kokoro
-│   ├── vllm/  vllm-vision/   # LLM backends (chat + vision)
+│   ├── vllm/  vllm-vision/   # LLM backends (chat model also serves vision; vllm-vision shelved)
 │   ├── text-to-image/        # ComfyUI
 │   ├── face-recognition/     # InsightFace buffalo_l
 │   ├── postgres/ qdrant/ embeddings/

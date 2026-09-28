@@ -1,8 +1,10 @@
 # MCP Server: Vision Tools (`mcp_vision_tools`)
 
 Reference doc for the vision-tools MCP server. Layers five purpose-built
-vision tools on top of the [`vllm-vision`](../../vllm-vision/README.md)
-service so the LLM can ask high-leverage questions ("what's on the
+vision tools on top of the vision-capable vLLM — by default the
+multimodal [chat `vllm` service](../../vllm/README.md); optionally the
+shelved [`vllm-vision`](../../vllm-vision/README.md) service — so the
+LLM can ask high-leverage questions ("what's on the
 backyard camera?", "what changed?", "transcribe this receipt") without
 having to assemble image URLs and prompts manually.
 
@@ -14,7 +16,7 @@ having to assemble image URLs and prompts manually.
 | Entry point | `python -m selene_agent.modules.mcp_vision_tools` |
 | Transport | MCP Streamable HTTP — served by the `mcp-tools` service at `/mcp/vision` (bearer token from `MCP_TOKEN_VISION`) |
 | Server name | `havencore-vision-tools` |
-| Backing service | [vllm-vision (port 8001)](../../vllm-vision/README.md) |
+| Backing service | Whatever `VISION_API_BASE` points at: the [chat `vllm` (port 8000)](../../vllm/README.md) by default, or the shelved [vllm-vision (port 8001)](../../vllm-vision/README.md) |
 | Tool count | 5 |
 
 This module is **complementary** to the lower-level `query_multimodal_api`
@@ -34,7 +36,7 @@ prefer these over `query_multimodal_api`.
 | `identify_object(image_url, hint?)` | Focused "what is this thing?" — returns a concise name + one-sentence description. `hint` ("plant", "bug", "appliance brand") narrows the domain. |
 | `read_text_in_image(image_url)` | OCR-flavored prompt with `temperature=0.1` and `max_tokens=1024`. Preserves rough layout where it matters; marks illegible regions `[illegible]`. For receipts, mail, error screenshots, whiteboards. |
 
-All tools accept `http(s)://` and `data:` URLs — `vllm-vision` fetches
+All tools accept `http(s)://` and `data:` URLs — the vision vLLM fetches
 them itself.
 
 ## Internals worth knowing
@@ -54,8 +56,10 @@ The `/api/vision/ask_url` request schema is single-image
 (`{text, image_url, ...}`). To send two images in one call —
 necessary for an actual side-by-side diff rather than two separate
 descriptions — `compare_snapshots` posts directly to
-`vllm-vision`'s OpenAI-compatible `/v1/chat/completions` with a
-multi-part user message:
+the vision vLLM's OpenAI-compatible `/v1/chat/completions` with a
+multi-part user message (this is why the chat `vllm` service runs with
+`--limit-mm-per-prompt '{"image": 2, ...}'` — vLLM's default is one
+image per prompt):
 
 ```json
 {
@@ -107,8 +111,9 @@ hint always lands in the prompt context.
 
 | Var | What it does |
 |-----|--------------|
-| `VISION_API_BASE` | Used for the `compare_snapshots` direct path; same value as the agent's. |
-| `VISION_SERVED_NAME` | Sent as `model` in the `compare_snapshots` chat-completions body. |
+| `VISION_API_BASE` | Used for the `compare_snapshots` direct path; same value as the agent's (the chat vLLM on `:8000` by default). |
+| `VISION_SERVED_NAME` | Sent as `model` in the `compare_snapshots` chat-completions body (`gpt-3.5-turbo` by default). |
+| `VISION_CHAT_TEMPLATE_KWARGS` | Raw JSON forwarded as `chat_template_kwargs` on the `compare_snapshots` direct path (the chokepoint tools inherit it from the agent). Default `{"enable_thinking": false}` keeps the reasoning chat model from spending the vision `max_tokens` on its think block; empty string omits the field. |
 
 The single-chokepoint tools rely on `agent:6002` being reachable
 in-cluster (it always is — same compose network).
@@ -176,7 +181,7 @@ publishes after `script.capture_all_cameras` is wedged.
 
 ### `compare_snapshots` fails with `"VISION_API_BASE is not configured"`
 
-The direct-to-vllm-vision path requires the env var. Confirm the
+The direct-to-vLLM path requires the env var. Confirm the
 `mcp-tools` container (where the tool runs) has it set:
 
 ```bash
@@ -189,17 +194,26 @@ the rest of the vision pipeline needs). Add it from `.env.example` and
 
 ### Any tool returns `"vision API error (5xx)"`
 
-`vllm-vision` is unreachable or unhealthy. Run through the same
+The vision vLLM is unreachable or unhealthy. Run through the same
 checklist as `query_multimodal_api`:
 
 ```bash
-docker compose ps vllm-vision
-docker compose exec agent curl -sf http://vllm-vision:8000/v1/models
+docker compose ps vllm                      # (vllm-vision instead, if that profile is enabled)
+docker compose exec agent bash -lc 'curl -sf -m 3 "$VISION_API_BASE/models"'
 curl -sf http://localhost:6002/api/vision/health
 ```
 
 The agent's `/api/vision/ask_url` proxy returns the upstream error
 verbatim, so a model-side OOM or schema mismatch shows up here.
+
+### Any tool returns `"vision model returned no content"`
+
+The model answered with an empty `content`. With the reasoning chat
+model as the backend this means the think block consumed the whole
+`max_tokens` budget — check that `VISION_CHAT_TEMPLATE_KWARGS` in `.env`
+still carries `enable_thinking: false` (or is unset, which is the same
+default) and that `mcp-tools` / `agent` were recreated after any change.
+Raising the tool's `max_tokens` is the fallback if thinking must stay on.
 
 ## Related files
 
@@ -215,8 +229,11 @@ verbatim, so a model-side OOM or schema mismatch shows up here.
 
 ## See also
 
-- [vllm-vision](../../vllm-vision/README.md) — backend service, model fit,
-  fallback ladder.
+- [vLLM](../../vllm/README.md) — the default vision backend (the
+  multimodal chat model) and its `--limit-mm-per-prompt` /
+  `--mm-processor-kwargs` flags.
+- [vllm-vision](../../vllm-vision/README.md) — the shelved dedicated
+  backend, model fit, fallback ladder, how to re-enable it.
 - [General Tools](general.md) — `query_multimodal_api`, the lower-level
   tool these wrap.
 - [MQTT Tools](mqtt.md) — `get_camera_snapshots`, the HA-script trigger

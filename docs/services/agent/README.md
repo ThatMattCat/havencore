@@ -59,7 +59,7 @@ All endpoints live on a single port (6002). The SvelteKit dashboard is built int
 | `/api/metrics/*` | GET | Per-turn timings, daily aggregates, top tools |
 | `/api/tts/*` | POST/GET | Proxies to text-to-speech |
 | `/api/stt/*` | POST/GET | Proxies to speech-to-text |
-| `/api/vision/*` | POST/GET | Proxies to `vllm-vision`. `POST /api/vision/ask` is multipart and accepts both image and short-video uploads (used by the dashboard playground); `POST /api/vision/ask_url` is JSON, image-only (used by the `query_multimodal_api` MCP tool — single chokepoint for image-URL inputs). Both responses include the served-model name. `GET /api/vision/health` proxies `/v1/models`. |
+| `/api/vision/*` | POST/GET | Proxies to the vision-capable vLLM at `VISION_API_BASE` (the multimodal chat model by default; the shelved `vllm-vision` service if pointed there). `POST /api/vision/ask` is multipart and accepts both image and short-video uploads (used by the dashboard playground); `POST /api/vision/ask_url` is JSON, image-only (used by the `query_multimodal_api` MCP tool — single chokepoint for image-URL inputs). Both responses include the served-model name. `GET /api/vision/health` proxies `/v1/models`. |
 | `/api/comfy/*` | POST/GET | Proxies to text-to-image (ComfyUI) |
 | `/api/autonomy/status` | GET | Autonomy engine state (running/paused, last dispatch, next-due) |
 | `/api/autonomy/pause` | POST | Runtime kill switch — stop dispatch without restart |
@@ -107,7 +107,7 @@ Tools are grouped into MCP servers. Each server has its own reference doc under 
 | MQTT / Cameras | 1 — `get_camera_snapshots` (returns an error result, rather than disappearing, while the broker is unreachable) | [tools/mqtt.md](tools/mqtt.md) |
 | GitHub | 7 — repo code search / read / list / pull-latest + list/get/create GitHub Issues (untrusted issue text is enclosed in per-response `UNTRUSTED_USER_TEXT_<id>` blocks) | [tools/github.md](tools/github.md) |
 | Device Actions | 5 — `set_alarm` on the user's phone (intent-fire); `take_photo` / `identify_object_in_photo` / `read_text_from_image` / `who_is_in_view` round-trip a JPEG through `/api/companion/upload`. The vision-chained variants forward the captured `image_url` to the vision pipeline; `who_is_in_view` POSTs the JPEG to face-recognition's `/api/identify` for identity matching against the enrolled gallery | [tools/device-action.md](tools/device-action.md) |
-| Vision | 5 — `describe_image`, `describe_camera_snapshot`, `identify_object`, `read_text_in_image`, `compare_snapshots` (proxied to `vllm-vision`) | [tools/vision.md](tools/vision.md) |
+| Vision | 5 — `describe_image`, `describe_camera_snapshot`, `identify_object`, `read_text_in_image`, `compare_snapshots` (proxied to the vision-capable vLLM — the chat model by default) | [tools/vision.md](tools/vision.md) |
 | Face | 5 — `face_who_is_at`, `face_recent_visitors`, `face_enroll_person`, `face_list_known_people`, `face_set_access_level` (calls the face-recognition service) | [tools/face.md](tools/face.md) |
 | Reminder | 3 — `schedule_reminder`, `list_reminders`, `cancel_reminder` (one-shot or recurring autonomy `reminder` agenda items) | [tools/reminder.md](tools/reminder.md) |
 

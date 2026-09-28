@@ -6,15 +6,15 @@ talks to as `gpt-3.5-turbo`.
 | | |
 |---|---|
 | **Port** | `8000` (HTTP, `/v1/*`) |
-| **Health** | `curl http://localhost:8000/v1/models` |
-| **Image** | `vllm/vllm-openai` pinned to v0.19.0 digest in `compose.yaml` |
-| **Model** | `QuantTrio/GLM-4.5-Air-AWQ-FP16Mix` by default — MoE (~106B total / ~12B active), sharded across 4× 24 GB GPUs with `-tp 4 --enable-expert-parallel`. `--reasoning-parser glm45` splits CoT into a separate `reasoning` field so `message.content` stays clean for voice satellites. |
+| **Health** | `curl http://localhost:8000/health` |
+| **Image** | `vllm/vllm-openai` pinned to the `qwen38-cu129` special-release digest in `compose.yaml` |
+| **Model** | `Qwen/Qwen3.8-27B` by default — dense hybrid-attention, unquantized BF16, multimodal (also the vision backend), 262k context, sharded across 4× 24 GB GPUs with `-tp 4`. `--reasoning-parser qwen3` splits CoT into a separate `reasoning` field so `message.content` stays clean for voice satellites. |
 
 ## Key env / config
 
 Command-line flags live in `compose.yaml` under `services.vllm.command`:
-`--model`, `--served-model-name`, `--quantization`, `-tp` (tensor
-parallel), `--max-model-len`, `--gpu-memory-utilization`.
+`--model`, `--served-model-name`, `-tp` (tensor parallel),
+`--max-model-len`, `--gpu-memory-utilization`.
 
 The agent reads the endpoint from `LLM_API_BASE` in `.env`.
 

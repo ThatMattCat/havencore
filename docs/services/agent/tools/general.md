@@ -24,9 +24,9 @@ instead of registering one that always errors.
 
 | Tool | Needs | Purpose |
 |------|-------|---------|
-| `generate_image(prompt)` | (none) | Submits a prompt to the ComfyUI service at `text-to-image:8188` using the `default` workflow. Returns a filepath and a URL to the finished image. |
+| `generate_image(prompt, aspect_ratio?)` | (none) | Submits a natural-language description to the ComfyUI service at `text-to-image:8188` using the `qwen_image_2.1` workflow (Qwen-Image 2.1, any style, ~20-35 s). `aspect_ratio` is one of `square` (1024²), `landscape`/`portrait` (3:2), `wide`/`tall` (16:9). Returns a filepath and a URL to the finished image. |
 | `send_signal_message(message, attachments?)` | `SIGNAL_PHONE_NUMBER`, `SIGNAL_DEFAULT_RECIPIENT` | Sends a Signal message (text + optional image/video attachments) via the `signal-api` container (`signal-cli-rest-api`). Recipient is fixed to `SIGNAL_DEFAULT_RECIPIENT` — the tool is intentionally not a free-form "send to anyone". Attachments accept URLs (auto-downloaded, 50 MB cap) or local paths, are base64-encoded, and sent via `POST /v2/send`; per-attachment errors are tracked and only a full failure is surfaced. Video size cap is ~95 MB. |
-| `query_multimodal_api(image_url, text?)` | (none) | Send an image URL (and optional text prompt) to the vision LLM (`vllm-vision`). POSTs JSON to the agent's own `/api/vision/ask_url` endpoint, which forwards to `vllm-vision` — the agent-side proxy is the single chokepoint for logging and authentication. Image-only by design (the URL endpoint is single-image). For higher-leverage tools — fresh camera snapshots, two-image diffs, OCR — prefer the dedicated [Vision Tools server](vision.md) (`mcp_vision_tools`); for video uploads, use the multipart `/api/vision/ask` endpoint or the dashboard playground. |
+| `query_multimodal_api(image_url, text?)` | (none) | Send an image URL (and optional text prompt) to the vision-capable vLLM (the multimodal chat model by default; see `VISION_API_BASE`). POSTs JSON to the agent's own `/api/vision/ask_url` endpoint, which forwards to that vLLM — the agent-side proxy is the single chokepoint for logging and authentication. Image-only by design (the URL endpoint is single-image). For higher-leverage tools — fresh camera snapshots, two-image diffs, OCR — prefer the dedicated [Vision Tools server](vision.md) (`mcp_vision_tools`); for video uploads, use the multipart `/api/vision/ask` endpoint or the dashboard playground. |
 | `wolfram_alpha(query)` | `WOLFRAM_ALPHA_API_KEY` | Wolfram Alpha LLM API for factual + computational questions. 1000-char response cap, 30 s timeout. |
 | `get_weather_forecast(location, date?)` | `WEATHER_API_KEY` | weatherapi.com forecast — current day by default, or a specific `YYYY-MM-DD` up to 365 days ahead. Returns temp, conditions, precip, wind, and astronomy (sunrise/sunset/moon phase). |
 | `brave_search(query, count?)` | `BRAVE_SEARCH_API_KEY` | Brave Search web results. (Pair with `fetch_webpage` to read the returned pages.) |
@@ -49,13 +49,16 @@ Env vars read directly via `os.getenv()` in `mcp_server.py`:
 
 ComfyUI image generation and the vision gateway use in-cluster routing
 (`text-to-image:8188` directly; `query_multimodal_api` posts to the agent's
-own `/api/vision/ask_url`, which then talks to `vllm-vision`) and require no
-additional credentials — they only work when their respective services are
-running. The agent reads `VISION_API_BASE` and `VISION_SERVED_NAME` for
-the upstream call (`VISION_API_KEY` is defined in `config.py` but currently
-unused — the `vllm-vision` instance is unauthenticated on the internal
-network); see
-[Configuration](../../../configuration.md) and the
+own `/api/vision/ask_url`, which then talks to the vision vLLM) and require
+no additional credentials — they only work when their respective services
+are running. The agent reads `VISION_API_BASE`, `VISION_SERVED_NAME` and
+`VISION_CHAT_TEMPLATE_KWARGS` for the upstream call (`VISION_API_KEY` is
+defined in `config.py` but currently unused — the vLLM instances are
+unauthenticated on the internal network). By default these point at the
+multimodal chat `vllm` service; the shelved `vllm-vision` service is the
+opt-in alternative. See
+[Configuration](../../../configuration.md#vision-backend-configuration), the
+[vLLM service doc](../../vllm/README.md) and the
 [vllm-vision service doc](../../vllm-vision/README.md).
 
 The agent connects to the server via its `MCP_SERVERS` entry in `.env`
@@ -74,14 +77,15 @@ the module):
 ## Internals worth knowing
 
 - **`generate_image` uses the `SimpleComfyUI` helper** in
-  `comfyui_tools.py` with workflow `default`. The helper downloads the
+  `comfyui_tools.py` with workflow `qwen_image_2.1` (the legacy SD 1.5
+  `default` graph is kept on disk but unused). The helper downloads the
   finished image from ComfyUI itself and saves it into the agent's local
   output dir. Each returned image carries a `path`
   (`/app/selene_agent/outputs/<file>`) and a `url`
   (`http://<HOST_IP_ADDRESS>:6002/outputs/<file>`) served directly by the
   agent's `/outputs` static mount — not a `text-to-image:8188` URL.
 - **`query_multimodal_api` routes through the agent's own FastAPI proxy,
-  not directly at `vllm-vision`.** The tool POSTs JSON to
+  not directly at the vision vLLM.** The tool POSTs JSON to
   `http://agent:6002/api/vision/ask_url`, which fills in the served-model
   name (`VISION_SERVED_NAME`) and forwards to the `VISION_API_BASE`
   upstream. Single chokepoint for logging, auth, and any future
@@ -126,14 +130,15 @@ docker compose exec mcp-tools curl -I http://text-to-image:8188
 
 ### `query_multimodal_api` returns a 5xx or `Vision API error`
 
-`vllm-vision` is down or unreachable, or the agent's `/api/vision/ask_url`
+The vision vLLM is down or unreachable, or the agent's `/api/vision/ask_url`
 proxy can't reach the upstream URL configured in `VISION_API_BASE`. Check
 in this order:
 
 ```bash
-# 1. Is vllm-vision running and serving the model?
-docker compose ps vllm-vision
-docker compose exec agent curl -sf http://vllm-vision:8000/v1/models
+# 1. Is the vision backend running and serving the model? By default that is
+#    the chat `vllm` service (use `vllm-vision` if that profile is enabled).
+docker compose ps vllm
+docker compose exec agent curl -sf http://vllm:8000/v1/models
 
 # 2. Can the agent container reach the host-LAN URL configured in .env?
 docker compose exec agent bash -lc 'curl -sf -m 3 -o /dev/null -w "%{http_code}\n" "$VISION_API_BASE/models"'

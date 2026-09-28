@@ -122,7 +122,7 @@ export HF_HUB_TOKEN="your_token_here"
 
 # Pre-download models manually
 huggingface-cli login
-huggingface-cli download Qwen/Qwen3.8-27B
+hf download Qwen/Qwen3.8-27B
 
 # Check token in container
 docker compose exec agent env | grep HF_HUB_TOKEN
@@ -139,7 +139,7 @@ Downloading... (very slow or hanging)
 export HF_ENDPOINT="https://hf-mirror.com"
 
 # Download with resume capability
-huggingface-cli download --resume-download Qwen/Qwen3.8-27B
+hf download Qwen/Qwen3.8-27B
 
 # Check network connectivity
 curl -I https://huggingface.co
@@ -148,10 +148,104 @@ curl -I https://huggingface.co
 ### GPU and Model Loading Issues
 
 These are the most common first-run failures for the default
-Qwen3.8-27B stack (dense hybrid-attention, BF16, `-tp 4` on
-4× 24 GB cards). All require `nvidia-smi` to work on the host before
-anything else — if it doesn't, fix the driver/container-toolkit install
-first.
+Qwen3.8-27B stack (dense hybrid-attention, unquantized BF16, multimodal,
+`-tp 4` on 4× 24 GB cards). All require `nvidia-smi` to work on the host
+before anything else — if it doesn't, fix the driver/container-toolkit
+install first. The flag-by-flag rationale lives in the
+[vLLM service doc](services/vllm/README.md). Entries marked
+*Flash-Next rollback only* apply when the `vllm` service has been
+switched back to `VnimanieAI/Qwen3.8-Flash-Next-W4A16`.
+
+#### Symptom: vLLM crash-loops with `LocalEntryNotFoundError`
+```
+huggingface_hub.errors.LocalEntryNotFoundError: ... HF_HUB_OFFLINE ...
+```
+
+**Cause**: the compose services run with `HF_HUB_OFFLINE=1`, and in
+offline mode vLLM resolves the model through `refs/main` in the HF
+cache. `hf download --revision <sha>` does not write that file.
+
+**Solution**:
+
+```bash
+# Write the snapshot sha into refs/main, then restart vllm
+ls ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/
+echo "<snapshot sha>" > ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/refs/main
+docker compose restart vllm
+
+# Or: set HF_HUB_OFFLINE=0 in .env for one boot so the hub call resolves it.
+```
+
+#### Symptom (Flash-Next rollback only): vLLM boots, captures CUDA graphs, then hangs forever
+```
+docker compose logs -f vllm
+# ... "Capturing CUDA graphs" completes, then nothing; nvidia-smi shows
+# the GPUs idle while every TP worker sits at 100% CPU. With
+# TORCH_COMPILE_DISABLE=1 it can instead die with
+#   queue.Full ... PleOffloadConnector._launch
+```
+
+This does not apply to the default Qwen3.8-27B, which needs neither
+setting and runs `torch.compile` normally.
+
+**Cause**: with Flash-Next, the vLLM v2 model runner stages PLE inputs
+from CUDA tensors through a device-to-host copy that waits on an event
+recorded on the model stream, and that handoff races on this host. A
+second, separate hang comes from the TP>1 vocab-masking helper, which is
+`torch.compile`-decorated regardless of `--compilation-config` and
+stalls loading its inductor kernel on Ampere.
+
+**Solution**: the default `vllm` service does not set these env vars —
+they have to be added back as part of the rollback (see
+[vLLM → Rollback](services/vllm/README.md#rollback)). Check they are
+present:
+
+```bash
+docker compose exec vllm env | grep -E 'VLLM_USE_V2_MODEL_RUNNER|TORCH_COMPILE_DISABLE'
+# VLLM_USE_V2_MODEL_RUNNER=0   (v1 runner feeds the offload worker from CPU mirrors)
+# TORCH_COMPILE_DISABLE=1
+
+# If the container will not stop ("PID ... is zombie"), `init: true` is
+# missing from the service — a hung vllm serve becomes an unkillable PID 1.
+```
+
+`CUDA_LAUNCH_BLOCKING=1` also cures the deadlock, but at ~40% of the
+decode speed — use it only for diagnosis.
+
+#### Symptom: vLLM refuses to start because the KV cache is too small
+```
+docker compose logs vllm
+# vLLM exits during startup: either the KV cache left after loading
+# weights cannot hold one --max-model-len request, or the free memory on
+# a device is below the requested --gpu-memory-utilization (e.g. 20.9 GiB
+# free < 21.2 GiB requested at 0.90 with Whisper on the same card).
+```
+
+**Cause**: another service is holding VRAM on one of GPUs 0-3. At
+`--gpu-memory-utilization 0.90` the 13.11 GiB of weights per GPU leave
+7.52 GiB per GPU for KV, and a single 262,144-token request needs
+~4.2 GB of that per GPU. Whatever a helper service
+(STT/TTS/embeddings/face/ComfyUI) holds on those cards comes straight
+out of the KV pool, and once the free memory on a card drops below the
+requested budget vLLM will not start at all.
+
+**Solution**:
+
+```bash
+# 1. Find the squatter
+nvidia-smi
+
+# 2. Move every helper to GPU 4 in .env (the reference host sets all of these to "4")
+STT_DEVICE="4"
+TTS_KOKORO_GPU="4"        # or CHATTERBOX_GPU="4"
+EMBEDDINGS_GPU="4"
+FACE_RECOGNITION_GPU="4"
+TEXT_TO_IMAGE_GPU="4"
+docker compose down && docker compose up -d
+
+# 3. Last resort: shrink --max-model-len in compose.yaml (e.g. 262144 -> 131072),
+#    then `docker compose restart agent` so it re-reads the new limit.
+```
 
 #### Symptom: vLLM exits during startup with CUDA OOM
 ```
@@ -159,34 +253,39 @@ torch.cuda.OutOfMemoryError: CUDA out of memory.
 Tried to allocate XXX MiB. GPU 0 has total capacity of 23.69 GiB
 ```
 
-**Cause**: the MoE model's per-shard working set plus KV cache is
-exceeding available VRAM on one of the GPUs — typically because an aux
-service (TTS/STT/embeddings) is co-pinned on that card and holding VRAM
-vLLM wanted. With `-tp 4` vLLM occupies *all four* cards simultaneously,
-so every aux service shares with it. (`vllm-vision` is on the dedicated
-5th card and does not contend with the main vLLM instance.)
+**Cause**: the model's per-GPU working set (13.11 GiB of weights plus
+the vision tower and profiling peak) plus KV cache is exceeding
+available VRAM on one of GPUs 0-3 — typically because an aux service
+(TTS/STT/embeddings/face/ComfyUI) is still pinned to that card. With
+`-tp 4` vLLM occupies *all four* cards simultaneously and expects them
+to itself; the helpers belong on GPU 4.
 
 **Solutions**:
 
 ```bash
-# 1. Lower vLLM's per-GPU allowance so aux services have more headroom:
-#    --gpu-memory-utilization 0.72   (default in compose is 0.80)
+# 1. Move every aux service to GPU 4 (all are .env vars now):
+#    - STT:           STT_DEVICE
+#    - TTS:           TTS_KOKORO_GPU (or CHATTERBOX_GPU)
+#    - embeddings:    EMBEDDINGS_GPU
+#    - face-rec:      FACE_RECOGNITION_GPU
+#    - ComfyUI:       TEXT_TO_IMAGE_GPU (Docker device_ids, not CUDA_VISIBLE_DEVICES)
+#    - vllm-vision:   only if that optional profile is enabled; compose.yaml
+#                     `CUDA_VISIBLE_DEVICES=4` (already there)
+#    Then `docker compose down && docker compose up -d`.
 
 # 2. Shrink the KV cache window:
-#    --max-model-len 16384           (default in compose is 262144)
+#    --max-model-len 131072          (default in compose is 262144)
 
-# 3. Move aux services to GPUs that don't spike at the same time:
-#    - embeddings:    compose.yaml `CUDA_VISIBLE_DEVICES=2`
-#    - face-rec:      compose.yaml `CUDA_VISIBLE_DEVICES=3`
-#    - vllm-vision:   compose.yaml `CUDA_VISIBLE_DEVICES=4` (dedicated 5th card)
-#    - TTS:           .env `CHATTERBOX_GPU`
-#    - STT:           .env `STT_DEVICE`
-#    STT/TTS run sequentially with the LLM turn, so co-pinning is OK.
+# 3. Lower vLLM's per-GPU allowance — only if 1-2 are impossible; every
+#    step below 0.90 comes straight out of KV (see the KV-too-small
+#    symptom above):
+#    --gpu-memory-utilization 0.85
 
 # 4. Swap to a smaller model that fits on fewer GPUs, e.g.
 #    Qwen2.5-72B-Instruct-AWQ (2× 24 GB via -tp 2) or Qwen2.5-14B-AWQ
 #    (single 24 GB card). Drop --tool-call-parser/--reasoning-parser and
-#    --language-model-only when the replacement doesn't support them.
+#    the --limit-mm-per-prompt/--mm-processor-kwargs flags when the
+#    replacement doesn't support them.
 
 # 5. Confirm nothing else is holding VRAM:
 nvidia-smi
@@ -199,8 +298,12 @@ docker compose logs -f vllm
 ```
 
 **Cause**: the weights cache is still downloading — the first run pulls
-~35 GB of AWQ shards before loading. Subsequent starts hit the cached
-copy and load in 2–4 minutes.
+~56 GB of BF16 shards before loading (with `HF_HUB_OFFLINE=0`; the
+default `1` refuses and you must pre-download with `hf download`).
+Subsequent starts hit the cached copy: ~20 s of model load plus 185 s of
+engine init (~93 s of it `torch.compile`), ~5.5 minutes to healthy. On
+the Flash-Next rollback, a stall *after* "Capturing CUDA graphs" is a
+different problem — see the deadlock symptom above.
 
 **Solutions**:
 
@@ -234,7 +337,7 @@ healthcheck's `start_period` is too short for your hardware.
 curl http://localhost:8000/v1/models
 
 # 2. If the log shows "Application startup complete" but the probe still
-#    fails, extend the start_period in compose.yaml (default 600s for vllm).
+#    fails, extend the start_period in compose.yaml (2000s for vllm).
 
 # 3. The agent waits for vllm to be healthy before accepting chat traffic.
 #    If agent's healthcheck is also failing, check `docker compose logs agent`
@@ -243,25 +346,30 @@ curl http://localhost:8000/v1/models
 
 #### Symptom: STT / TTS fail with CUDA OOM
 
-**Cause**: the non-LLM services share GPUs with vLLM by default. If
-vLLM is greedy about KV cache, there's no room left for the small
-models.
+**Cause**: the small models are still pinned to one of GPUs 0-3, where
+vLLM (at `--gpu-memory-utilization 0.90`) leaves essentially nothing —
+or they are on GPU 4 and something else is holding more of it than
+expected — a large ComfyUI model, or the optional `vllm-vision` profile
+enabled at a `VISION_GPU_MEM_UTIL` above the `0.50` the shared layout
+assumes.
 
 **Solutions**:
 
 ```bash
-# Pin specific GPUs in .env so services don't compete
-CHATTERBOX_GPU="1"    # host GPU index for the TTS model
-STT_DEVICE="1"        # Whisper uses raw index, not cuda: prefix
+# Pin the helpers to the fifth card in .env (the `.env.example` defaults
+# are single-GPU-friendly, not this host's layout)
+TTS_KOKORO_GPU="4"    # or CHATTERBOX_GPU="4"
+STT_DEVICE="4"        # Whisper uses raw index, not cuda: prefix
 
 # Then restart just the affected services
-docker compose up -d --force-recreate text-to-speech speech-to-text
+docker compose up -d --force-recreate text-to-speech-kokoro speech-to-text
 ```
 
-`vllm-vision` is pinned to its own card via `CUDA_VISIBLE_DEVICES=4` in
-`compose.yaml` and doesn't compete with the main vLLM instance — see the
-[vllm-vision service doc](services/vllm-vision/README.md) for its
-single-card sizing notes if vision OOMs in isolation.
+By default no LLM lives on GPU 4 — vision is served by the chat model on
+GPUs 0-3. If you have re-enabled the shelved `vllm-vision` profile it
+takes half the card; see the
+[vllm-vision service doc](services/vllm-vision/README.md) for the model
+ladder and the `VISION_*` values that layout requires.
 
 ### Service Startup Issues
 
@@ -468,19 +576,39 @@ RuntimeError: Failed to load model
 # Check available GPU memory
 nvidia-smi
 
-# Reduce GPU memory utilization
-# Edit compose.yaml:
+# Reduce the context window (KV cache), not the memory budget — every
+# step below 0.90 comes out of KV. Edit compose.yaml:
 command: [
   "--model", "Qwen/Qwen3.8-27B",
-  "--gpu-memory-utilization", "0.7",  # Reduced from 0.80
-  "--max-model-len", "16384"          # Reduced from 262144
+  "--max-model-len", "131072"         # Reduced from 262144
 ]
+# ...then `docker compose restart agent` so it re-reads the new limit.
+
+# Flash-Next rollback only: check the host has >=110 GB of RAM free for
+# the offloaded PLE tables (the default Qwen3.8-27B needs no extra RAM)
+free -g
 
 # Check model exists
 docker compose exec vllm ls -la /root/.cache/huggingface/
 
 # Try smaller model
 command: ["--model", "microsoft/Phi-3-mini-4k-instruct"]
+```
+
+#### Symptom: Context-limit threshold ignores a `--max-model-len` change
+
+**Cause**: the agent reads `max_model_len` from vLLM's `/v1/models`
+once per process and caches it. The summarize-and-reset threshold
+(`max_model_len` × `CONVERSATION_CONTEXT_LIMIT_FRACTION`) keeps using
+the value from before the vLLM change.
+
+**Solution**:
+```bash
+# Confirm what vLLM reports now
+curl -s http://localhost:8000/v1/models | grep -o '"max_model_len":[0-9]*'
+
+# Restart the agent so it re-reads the value
+docker compose restart agent
 ```
 
 #### Symptom: LLM responses are slow or timing out
@@ -1026,8 +1154,8 @@ docker compose exec postgres psql -U havencore -d havencore -f /docker-entrypoin
 
 #### Model Recovery
 ```bash
-# Re-download models
-docker compose exec agent huggingface-cli download Qwen/Qwen3.8-27B
+# Re-download models (on the host; ~56 GB)
+hf download Qwen/Qwen3.8-27B
 
 # Clear model cache and restart
 docker compose exec vllm rm -rf /root/.cache/huggingface/

@@ -8,15 +8,19 @@ Before starting, ensure you have:
 
 ### Hardware Requirements
 - **NVIDIA GPU(s)**: Required for AI model inference. The default vLLM
-  model (Qwen3.8-27B, dense hybrid-attention, unquantized BF16) needs
-  ~53 GB of VRAM for weights plus KV cache, sharded across 4× 24 GB
-  cards via `-tp 4`. STT, TTS, vision, and image-gen contend for
-  leftover VRAM on whichever card you pin them to — a 4-GPU host is
-  the target. Fewer-GPU configurations work if you swap in a smaller
-  model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB).
-- **RAM**: Minimum 32GB, recommended 64GB+
-- **Storage**: At least 150GB free space for model weights, container
-  images, and Docker volumes.
+  model (Qwen3.8-27B, dense, unquantized BF16) needs ~13 GB of
+  VRAM per card for weights plus KV cache, sharded across 4× 24 GB
+  cards via `-tp 4` — and it needs those four cards **to itself**. STT,
+  TTS, vision, embeddings, face-recognition and image-gen share a fifth
+  card (pin them with the `*_GPU` / `STT_DEVICE` vars) — a 5-GPU host
+  is the target. Fewer-GPU configurations work if you swap in a smaller
+  model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB), in which case the helpers
+  can share the LLM's cards again.
+- **RAM**: 32-64 GB. The default chat model has no special host RAM
+  requirement.
+- **Storage**: At least 150GB free space for container images and
+  Docker volumes, plus the model weights (the default chat model alone
+  is ~56GB on disk).
 - **CPU**: Modern multi-core processor (Intel/AMD)
 
 ### Software Requirements
@@ -71,10 +75,14 @@ LLM_API_KEY="your_secret_key_here"
 COMPOSE_PROFILES="kokoro"   # kokoro (default, fast) | chatterbox
 TTS_PROVIDER="kokoro"       # keep in sync with COMPOSE_PROFILES
 
-# GPU configuration
-TTS_KOKORO_GPU="0"   # host GPU index for Kokoro TTS (default engine)
-CHATTERBOX_GPU="0"   # host GPU index for Chatterbox TTS (used when COMPOSE_PROFILES=chatterbox)
-STT_DEVICE="0"       # GPU for speech-to-text
+# GPU configuration — with the default chat model, point ALL of these at
+# the card vLLM does not use (GPU 4 on a 5-GPU host); GPUs 0-3 are its.
+TTS_KOKORO_GPU="0"          # host GPU index for Kokoro TTS (default engine)
+CHATTERBOX_GPU="0"          # host GPU index for Chatterbox TTS (used when COMPOSE_PROFILES=chatterbox)
+STT_DEVICE="0"              # GPU for speech-to-text
+EMBEDDINGS_GPU="0"          # GPU for text-embeddings-inference
+FACE_RECOGNITION_GPU="3"    # GPU for face-recognition
+TEXT_TO_IMAGE_GPU="3"       # GPU for ComfyUI
 ```
 
 ### 4. Start the System
@@ -171,8 +179,10 @@ docker compose build --no-cache --progress=plain
 
 #### Model Download Issues
 ```bash
-# Pre-download models manually
-huggingface-cli download Qwen/Qwen3.8-27B
+# Pre-download models manually (~56 GB). If you pass --revision, also
+# write the snapshot sha to the model's refs/main in the HF cache or
+# vLLM (HF_HUB_OFFLINE=1) will crash-loop — see the vLLM service doc.
+hf download Qwen/Qwen3.8-27B
 
 # Check network connectivity
 curl -I https://huggingface.co

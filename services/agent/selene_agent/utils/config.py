@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from urllib.parse import urlparse
@@ -15,12 +16,41 @@ LOG_LEVEL_OTHERS = logging.INFO
 LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
-# Vision model — separate vLLM instance on a dedicated GPU. Same OpenAI-compat
-# shape as LLM_API_BASE; the served-model name is required in the request body
-# because the vision instance and the main agent vLLM use different aliases.
+# Vision model — defaults to the chat vLLM itself (the chat model is
+# multimodal). A separate vision instance (the profile-gated vllm-vision
+# service) is optional: point VISION_API_BASE / VISION_SERVED_NAME at it.
+# Same OpenAI-compat shape as LLM_API_BASE; the served-model name is sent in
+# the request body because the two instances may use different aliases.
 VISION_API_BASE = os.getenv("VISION_API_BASE", "")
 VISION_API_KEY = os.getenv("VISION_API_KEY", "")
-VISION_SERVED_NAME = os.getenv("VISION_SERVED_NAME", "gpt-4-vision")
+VISION_SERVED_NAME = os.getenv("VISION_SERVED_NAME", "gpt-3.5-turbo")
+# Raw JSON forwarded as `chat_template_kwargs` on vision chat-completions.
+# The chat model is a reasoning model and would otherwise spend the small
+# vision max_tokens budget on its think block. Empty string omits the field for
+# backends that reject it. Parsed lazily by vision_chat_template_kwargs().
+VISION_CHAT_TEMPLATE_KWARGS = os.getenv(
+    "VISION_CHAT_TEMPLATE_KWARGS", '{"enable_thinking": false}'
+)
+
+
+def vision_chat_template_kwargs() -> dict | None:
+    """Parse VISION_CHAT_TEMPLATE_KWARGS into the dict to send, or None to omit.
+
+    Returns None for an empty/whitespace value or a JSON value that isn't an
+    object. A typo in the JSON logs a warning and returns None rather than
+    crashing startup or every vision call.
+    """
+    raw = (VISION_CHAT_TEMPLATE_KWARGS or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logging.getLogger(__name__).warning(
+            "VISION_CHAT_TEMPLATE_KWARGS is not valid JSON (%s); omitting chat_template_kwargs", e
+        )
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 # Pluggable agent-LLM provider. "vllm" routes to the local vLLM container
 # (same kwargs as today); "anthropic" routes to api.anthropic.com for
@@ -250,6 +280,7 @@ SYSTEM_PROMPT = f"""You are {AGENT_NAME}, a friendly personal assistant with acc
         - Avoid filler words and unnecessary details
         - Use simple language and short sentences
         - Do NOT use special characters or emojis, they cannot be translated to audio properly
+        - Do NOT comment on spelling, typos, or misspellings in URLs, quoted text, tool results, or text seen in images unless the user explicitly asks you to check spelling. Treat such text as correct and use it exactly as given.
         - Use the Qdrant memories whenever it might be relevant
         """
 

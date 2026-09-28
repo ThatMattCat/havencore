@@ -34,9 +34,9 @@ HavenCore is a self-hosted AI smart home assistant that provides:
 
 **Minimum Requirements**:
 - **CPU**: Modern multi-core processor (Intel i5/AMD Ryzen 5 or better)
-- **RAM**: 32GB (64GB recommended)
-- **Storage**: 150GB free space for model weights, container images, and Docker volumes
-- **GPU**: NVIDIA GPU(s) with enough VRAM for the default Qwen3.8-27B model (unquantized BF16, ≈53GB of weights plus KV cache, sharded `-tp 4` across 4× 24GB cards), plus headroom on those cards for STT/TTS, plus a dedicated card for vllm-vision and another for face-recognition
+- **RAM**: 32GB (64GB recommended); the default chat model has no special host RAM requirement
+- **Storage**: 150GB free space for container images and Docker volumes, plus the model weights (the default chat model alone is ~56GB on disk)
+- **GPU**: NVIDIA GPU(s) with enough VRAM for the default Qwen3.8-27B model (unquantized BF16, ~13GB of weights per card plus KV cache, sharded `-tp 4` across 4× 24GB cards that it needs **to itself**), plus a fifth card shared by STT, TTS, embeddings, face-recognition and ComfyUI (vision rides on the multimodal chat model, so no second LLM card is needed)
 - **Network**: Reliable internet for initial setup and external services
 
 **Recommended Setups**:

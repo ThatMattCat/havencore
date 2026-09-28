@@ -25,8 +25,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Clone ComfyUI at a pinned commit so fresh builds stay reproducible.
+# v0.37.4 (2026-09) — Qwen-Image 2.1 needs >= 0.37.0.
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app \
-    && git -C /app checkout 31283d2892f54caf9bfdf6edb9c98cbfa88c5f0c
+    && git -C /app checkout 8ff6dc384ba5c410266b40e137799e049459d4f2
 
 # Install Python dependencies. Torch is pinned to the last trio verified
 # working on NVIDIA driver 580.x; newer torch has required newer drivers.

@@ -129,7 +129,7 @@ Ordered by leverage and dependency.
 
 ## Notes
 
-- GPU budget is the real constraint. vLLM (`-tp 4`) spans the four main GPUs at `--gpu-memory-utilization 0.79`; face-recognition co-tenants GPU 3 with vLLM (small ~600 MB resident model). ComfyUI and embeddings co-tenant on the lower GPUs. Vision (`vllm-vision`, Qwen3-VL) lives on a dedicated 5th RTX 3090 (GPU 4). A neural-avatar talking head would still need new headroom. Live2D sidesteps this.
+- GPU budget is the real constraint. vLLM (`-tp 4`) owns the four main GPUs outright at `--gpu-memory-utilization 0.90`; STT, TTS, embeddings, face-recognition and ComfyUI all share the 5th RTX 3090 (GPU 4). Vision rides on the multimodal chat model, so the former dedicated `vllm-vision` instance is shelved (freeing ~10.5 GiB on GPU 4). A neural-avatar talking head would still need new headroom. Live2D sidesteps this.
 - Satellite firmware lives in a separate repo (`havencore-satellite-firmware`); anything touching audio capture, wake-word, or on-device embeddings straddles both repos.
 - The Android companion app lives in a separate repo (`havencore-companion-app`); anything touching mobile chat, the default-assistant slot, or push notifications straddles both repos.
 - Multi-user / speaker-aware memory pairs naturally with the L1–L4 memory consolidation tiers — speaker ID (#1) is effectively the prerequisite for that direction, not a side quest.

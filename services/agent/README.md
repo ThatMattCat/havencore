@@ -50,7 +50,7 @@ These all serve the SPA and are meant to be opened in a browser:
 | `http://HOST:6002/playgrounds` | Playgrounds | Index of per-service playgrounds (TTS, STT, Vision, ComfyUI) with health badges |
 | `http://HOST:6002/playgrounds/tts` | TTS Playground | Synthesize speech from text with voice + format selection; plays the result inline |
 | `http://HOST:6002/playgrounds/stt` | STT Playground | Transcribe an uploaded audio file or a clip recorded from the browser microphone |
-| `http://HOST:6002/playgrounds/vision` | Vision Playground | Send an image + prompt to the vision LLM (vllm-vision) and render the response |
+| `http://HOST:6002/playgrounds/vision` | Vision Playground | Send an image + prompt to the vision LLM (the multimodal chat vLLM by default) and render the response |
 | `http://HOST:6002/playgrounds/comfy` | ComfyUI Playground | Queue an image-generation prompt and view the rendered output |
 | `http://HOST:6002/metrics` | Metrics | Per-turn LLM/tool/total latencies, daily activity, top tools, p95 stats |
 | `http://HOST:6002/system` | System | MCP server status, loaded LLM model, DB connection, per-server tool listings, live log stream |
@@ -80,7 +80,7 @@ JSON endpoints consumed by the dashboard frontend. Can also be called directly.
 | `GET` | `/api/tts/health` | TTS service health proxy |
 | `POST` | `/api/stt/transcribe` | Multipart proxy to `/v1/audio/transcriptions`. Fields: `file`, `language?`, `response_format?` |
 | `GET` | `/api/stt/health` | STT service health proxy |
-| `POST` | `/api/vision/ask` | Multipart: `image` + `prompt`. Encodes image as data URL and forwards to vllm-vision. Returns `{response, latency_ms}` |
+| `POST` | `/api/vision/ask` | Multipart: `image` + `prompt`. Encodes image as data URL and forwards to the vision vLLM at `VISION_API_BASE`. Returns `{response, latency_ms}` |
 | `GET` | `/api/vision/health` | Vision service health proxy |
 | `POST` | `/api/comfy/generate` | Body: `{prompt, negative_prompt?, seed?, steps?}`. Queues workflow, returns `{prompt_id}` |
 | `GET` | `/api/comfy/status/{prompt_id}` | Returns `{status: "pending"\|"done", images: [...]}`  |
@@ -197,7 +197,7 @@ Tools are provided by MCP (Model Context Protocol) servers, each running as a su
 |------|-------------|
 | `generate_image` | Generate images via ComfyUI |
 | `send_signal_message` | Send Signal message (text + images/video) via signal-cli-rest-api |
-| `query_multimodal_api` | Send images/audio to the vision LLM (vllm-vision) for analysis |
+| `query_multimodal_api` | Send images to the vision LLM (the multimodal chat vLLM by default) for analysis |
 | `wolfram_alpha` | Query Wolfram Alpha for math, science, facts |
 | `get_weather_forecast` | Weather data from WeatherAPI |
 | `brave_search` | Web search via Brave Search API |
@@ -316,9 +316,10 @@ All configuration is via environment variables (loaded in `selene_agent/utils/co
 | `LLM_PROVIDER` | `vllm` | Seed value for the agent-LLM provider (`vllm`, `anthropic`, `openai`). Persisted in `agent_state`; this env var is only the first-boot fallback. The OpenAI-compat `/v1/chat/completions` endpoint stays pinned to vLLM regardless. |
 | `ANTHROPIC_API_KEY` | — | API key when `LLM_PROVIDER=anthropic` |
 | `ANTHROPIC_MODEL` | `claude-opus-4-7` | Model id for the Anthropic provider |
-| `VISION_API_BASE` | — | OpenAI-compat endpoint for the vision vLLM (e.g. `http://vllm-vision:8000/v1`) |
+| `VISION_API_BASE` | — | OpenAI-compat endpoint for the vision vLLM. Defaults to the chat vLLM (e.g. `http://<HOST_IP>:8000/v1`, same as `LLM_API_BASE`) since the chat model is multimodal; point at `:8001` for the shelved `vllm-vision` service |
 | `VISION_API_KEY` | — | API key for the vision LLM backend |
-| `VISION_SERVED_NAME` | `gpt-4-vision` | Model name the vision vLLM is served as |
+| `VISION_SERVED_NAME` | `gpt-3.5-turbo` | Model name the vision vLLM is served as (`gpt-4-vision` for `vllm-vision`) |
+| `VISION_CHAT_TEMPLATE_KWARGS` | `{"enable_thinking": false}` | Raw JSON forwarded as `chat_template_kwargs` on every vision call so the reasoning model doesn't spend the vision `max_tokens` on its think block. Empty string omits the field |
 | `AGENT_NAME` | `""` | Name of the assistant persona |
 | `MCP_SERVERS` | `{}` | JSON array of MCP server configs |
 

@@ -12,9 +12,9 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [MCP Tools](mcp-tools/README.md) | 6010 (host IP only) | MCP Streamable HTTP tool host — serves the agent's 11 tool modules at `/mcp/<name>` behind per-mount bearer tokens | Python, Starlette, mcp SDK (reuses the agent image) |
 | [Speech-to-Text](speech-to-text/README.md) | 6001 | Audio transcription | Python, Faster Whisper, CUDA |
 | [Text-to-Speech](text-to-speech/README.md) | 6005 | Speech synthesis — selectable engine: Kokoro (default, fast) or Chatterbox-Turbo (cloning + streaming) | Python, Kokoro / Chatterbox-TTS, CUDA |
-| [vLLM Vision](vllm-vision/README.md) | 8001 | Image / short-video understanding (Qwen3-VL on a dedicated GPU) | vLLM, CUDA |
+| [vLLM Vision](vllm-vision/README.md) | 8001 | Optional second vLLM for a dedicated Qwen3-VL model — shelved behind the `vllm-vision` compose profile; vision is served by the chat model by default | vLLM, CUDA |
 | [Text-to-Image](text-to-image/README.md) | 8188 | Image generation | ComfyUI |
-| [vLLM](vllm/README.md) | 8000 | Primary LLM inference | vLLM, CUDA |
+| [vLLM](vllm/README.md) | 8000 | Primary LLM inference — chat and vision (the Qwen3.8-27B chat model is multimodal) | vLLM, CUDA |
 | [LlamaCPP](llamacpp/README.md) | 8000 | Alternative LLM backend (inactive — compose stanza commented out) | llama.cpp |
 | [PostgreSQL](postgres/README.md) | 5432 | Conversation + metrics storage | PostgreSQL 15 Alpine |
 | [Qdrant](qdrant/README.md) | 6333, 6334 | Vector DB for semantic memory | Qdrant |
@@ -36,7 +36,8 @@ agent → embeddings:3000
 agent → mcp-tools:6010          (MCP Streamable HTTP tool sessions)
 agent → text-to-speech:6005     (TTS — Kokoro or Chatterbox, active engine)
 agent → speech-to-text:6001     (STT playground proxy)
-agent → vllm-vision:8000        (Vision playground proxy + query_multimodal_api chokepoint)
+agent → vllm:8000               (also as VISION_API_BASE: vision playground proxy + query_multimodal_api chokepoint;
+                                 vllm-vision:8000 instead when that optional profile is enabled)
 agent → text-to-image:8188      (ComfyUI playground proxy)
 agent → face-recognition:6006   (/people dashboard proxy)
 mcp-tools → agent:6002          (reminder module → autonomy API; vision tools → /api/vision/ask_url)
