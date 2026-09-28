@@ -316,7 +316,7 @@ All configuration is via environment variables (loaded in `selene_agent/utils/co
 | `LLM_PROVIDER` | `vllm` | Seed value for the agent-LLM provider (`vllm`, `anthropic`, `openai`). Persisted in `agent_state`; this env var is only the first-boot fallback. The OpenAI-compat `/v1/chat/completions` endpoint stays pinned to vLLM regardless. |
 | `ANTHROPIC_API_KEY` | — | API key when `LLM_PROVIDER=anthropic` |
 | `ANTHROPIC_MODEL` | `claude-opus-4-7` | Model id for the Anthropic provider |
-| `VISION_API_BASE` | — | OpenAI-compat endpoint for the vision vLLM. Defaults to the chat vLLM (e.g. `http://<HOST_IP>:8000/v1`, same as `LLM_API_BASE`) since the Flash-Next model is multimodal; point at `:8001` for the shelved `vllm-vision` service |
+| `VISION_API_BASE` | — | OpenAI-compat endpoint for the vision vLLM. Defaults to the chat vLLM (e.g. `http://<HOST_IP>:8000/v1`, same as `LLM_API_BASE`) since the chat model is multimodal; point at `:8001` for the shelved `vllm-vision` service |
 | `VISION_API_KEY` | — | API key for the vision LLM backend |
 | `VISION_SERVED_NAME` | `gpt-3.5-turbo` | Model name the vision vLLM is served as (`gpt-4-vision` for `vllm-vision`) |
 | `VISION_CHAT_TEMPLATE_KWARGS` | `{"enable_thinking": false}` | Raw JSON forwarded as `chat_template_kwargs` on every vision call so the reasoning model doesn't spend the vision `max_tokens` on its think block. Empty string omits the field |

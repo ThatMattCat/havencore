@@ -16,8 +16,8 @@ LOG_LEVEL_OTHERS = logging.INFO
 LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
-# Vision model — defaults to the chat vLLM itself (the Flash-Next chat model
-# is multimodal). A separate vision instance (the profile-gated vllm-vision
+# Vision model — defaults to the chat vLLM itself (the chat model is
+# multimodal). A separate vision instance (the profile-gated vllm-vision
 # service) is optional: point VISION_API_BASE / VISION_SERVED_NAME at it.
 # Same OpenAI-compat shape as LLM_API_BASE; the served-model name is sent in
 # the request body because the two instances may use different aliases.
@@ -25,8 +25,8 @@ VISION_API_BASE = os.getenv("VISION_API_BASE", "")
 VISION_API_KEY = os.getenv("VISION_API_KEY", "")
 VISION_SERVED_NAME = os.getenv("VISION_SERVED_NAME", "gpt-3.5-turbo")
 # Raw JSON forwarded as `chat_template_kwargs` on vision chat-completions.
-# Flash-Next is a reasoning model and would otherwise spend the small vision
-# max_tokens budget on its think block. Empty string omits the field for
+# The chat model is a reasoning model and would otherwise spend the small
+# vision max_tokens budget on its think block. Empty string omits the field for
 # backends that reject it. Parsed lazily by vision_chat_template_kwargs().
 VISION_CHAT_TEMPLATE_KWARGS = os.getenv(
     "VISION_CHAT_TEMPLATE_KWARGS", '{"enable_thinking": false}'

@@ -1,6 +1,6 @@
 # vLLM Vision Backend
 
-> **Status: shelved, not deleted.** As of 2026-09-26 the agent's vision pipeline (`/api/vision/*`, `query_multimodal_api`, `mcp_vision_tools`, the autonomy scene-description gather) runs on the main [`vllm`](../vllm/README.md) service — the `VnimanieAI/Qwen3.8-Flash-Next-W4A16` chat model is multimodal (its 27-layer ViT survives the W4A16 quant), verified live with an `image_url` chat completion. This service is therefore gated behind the compose profile `vllm-vision` and does not start by default, which returns ~10.5 GiB on GPU 4 to STT/TTS/embeddings/face-recognition/ComfyUI. See [Configuration → Vision Backend](../../configuration.md#vision-backend-configuration) for the default (chat-model) wiring, including `VISION_CHAT_TEMPLATE_KWARGS`.
+> **Status: shelved, not deleted.** As of 2026-09-26 the agent's vision pipeline (`/api/vision/*`, `query_multimodal_api`, `mcp_vision_tools`, the autonomy scene-description gather) runs on the main [`vllm`](../vllm/README.md) service — the `Qwen/Qwen3.8-27B` chat model is multimodal (27-layer ViT, image and video input), verified live with an `image_url` chat completion. This service is therefore gated behind the compose profile `vllm-vision` and does not start by default, which returns ~10.5 GiB on GPU 4 to STT/TTS/embeddings/face-recognition/ComfyUI. See [Configuration → Vision Backend](../../configuration.md#vision-backend-configuration) for the default (chat-model) wiring, including `VISION_CHAT_TEMPLATE_KWARGS`.
 
 Second vLLM instance, dedicated to a vision-language model. When enabled it is pinned to the 5th RTX 3090 (`CUDA_VISIBLE_DEVICES=4`), which it shares with every non-LLM GPU service (STT, TTS, embeddings, face-recognition, ComfyUI) — GPUs 0-3 are dedicated to the main `vllm` service. Exposes an OpenAI-compatible API on host port 8001 under its own served-model-name (`gpt-4-vision`).
 
@@ -25,7 +25,7 @@ then `docker compose down && docker compose up -d`. The `VISION_MODEL` / `VISION
 
 ## Single-card sizing — three-tier ladder
 
-A single 24GB card is right on the edge for the larger Qwen3-VL variants, and since the Flash-Next chat model took GPUs 0-3 for itself, GPU 4 also has to host STT, TTS, embeddings, face-recognition and ComfyUI. The last active config (before the service was shelved) was therefore the **8B** model at the bottom of the ladder, run at half the card (`VISION_GPU_MEM_UTIL=0.50`) so the helpers fit beside it; the `.env.example` values still reflect it. The larger tiers are documented so a swap is a one-line change to `VISION_MODEL` in `.env`, then `docker compose down && up -d vllm-vision` — but they only fit if the helpers move off GPU 4 (or a sixth card appears).
+A single 24GB card is right on the edge for the larger Qwen3-VL variants, and since the chat model took GPUs 0-3 for itself, GPU 4 also has to host STT, TTS, embeddings, face-recognition and ComfyUI. The last active config (before the service was shelved) was therefore the **8B** model at the bottom of the ladder, run at half the card (`VISION_GPU_MEM_UTIL=0.50`) so the helpers fit beside it; the `.env.example` values still reflect it. The larger tiers are documented so a swap is a one-line change to `VISION_MODEL` in `.env`, then `docker compose down && up -d vllm-vision` — but they only fit if the helpers move off GPU 4 (or a sixth card appears).
 
 | Tier | Model | Notes |
 |------|-------|-------|
@@ -55,7 +55,7 @@ vllm-vision:
     --trust-remote-code
 ```
 
-The image digest is vLLM 0.19.0 — well above the 0.11.0 minimum Qwen3-VL requires, and known-good on NVIDIA driver 580.x. (The main `vllm` service moved to a newer vendor build for Qwen3.8-Flash-Next; this service did not need to follow.)
+The image digest is vLLM 0.19.0 — well above the 0.11.0 minimum Qwen3-VL requires, and known-good on NVIDIA driver 580.x. (The main `vllm` service runs a dedicated Qwen3.8 build of vLLM; this service did not need to follow.)
 
 The `compose.yaml` defaults above are the Tier 1 values. The `.env.example` overrides them for the Tier 3 config that was last active:
 

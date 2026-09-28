@@ -8,7 +8,7 @@ Before starting, ensure you have:
 
 ### Hardware Requirements
 - **NVIDIA GPU(s)**: Required for AI model inference. The default vLLM
-  model (Qwen3.8-Flash-Next, MoE, INT4 W4A16 quant) needs ~18 GB of
+  model (Qwen3.8-27B, dense, unquantized BF16) needs ~13 GB of
   VRAM per card for weights plus KV cache, sharded across 4× 24 GB
   cards via `-tp 4` — and it needs those four cards **to itself**. STT,
   TTS, vision, embeddings, face-recognition and image-gen share a fifth
@@ -16,12 +16,11 @@ Before starting, ensure you have:
   is the target. Fewer-GPU configurations work if you swap in a smaller
   model (e.g. Qwen2.5-72B-AWQ on 2× 24 GB), in which case the helpers
   can share the LLM's cards again.
-- **RAM**: The default model offloads ~102 GB of lookup tables to host
-  RAM and needs at least 110 GB free; 32-64 GB is enough with a smaller
-  model.
+- **RAM**: 32-64 GB. The default chat model has no special host RAM
+  requirement.
 - **Storage**: At least 150GB free space for container images and
   Docker volumes, plus the model weights (the default chat model alone
-  is 168GB on disk).
+  is ~56GB on disk).
 - **CPU**: Modern multi-core processor (Intel/AMD)
 
 ### Software Requirements
@@ -180,10 +179,10 @@ docker compose build --no-cache --progress=plain
 
 #### Model Download Issues
 ```bash
-# Pre-download models manually (~180 GB). If you pass --revision, also
+# Pre-download models manually (~56 GB). If you pass --revision, also
 # write the snapshot sha to the model's refs/main in the HF cache or
 # vLLM (HF_HUB_OFFLINE=1) will crash-loop — see the vLLM service doc.
-hf download VnimanieAI/Qwen3.8-Flash-Next-W4A16
+hf download Qwen/Qwen3.8-27B
 
 # Check network connectivity
 curl -I https://huggingface.co

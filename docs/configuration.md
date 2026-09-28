@@ -122,12 +122,12 @@ below. The optional `vllm-vision` service (off by default — see
 in `compose.yaml` (`CUDA_VISIBLE_DEVICES=4`).
 
 The `.env.example` defaults are single-GPU-friendly, but the default chat
-model (Qwen3.8-Flash-Next) needs GPUs 0-3 **to itself**: its KV cache
-does not shrink with tensor parallelism, so any helper holding VRAM on
-those cards costs it context. On the reference 5-GPU host every one of
-these vars — `STT_DEVICE`, `EMBEDDINGS_GPU`, `FACE_RECOGNITION_GPU`,
-`TEXT_TO_IMAGE_GPU`, `TTS_KOKORO_GPU` / `CHATTERBOX_GPU` — is set to
-`4`. Nothing LLM-sized lives on GPU 4 by default — vision is served by
+model (Qwen3.8-27B) needs GPUs 0-3 **to itself**: vLLM claims 90% of
+each card, and any helper holding VRAM on those cards comes straight out
+of its KV cache (or stops it starting at all). On the reference 5-GPU
+host every one of these vars — `STT_DEVICE`, `EMBEDDINGS_GPU`,
+`FACE_RECOGNITION_GPU`, `TEXT_TO_IMAGE_GPU`, `TTS_KOKORO_GPU` /
+`CHATTERBOX_GPU` — is set to `4`. Nothing LLM-sized lives on GPU 4 by default — vision is served by
 the chat model on GPUs 0-3. See
 [vLLM → GPU layout and sizing](services/vllm/README.md#gpu-layout-and-sizing).
 
@@ -761,34 +761,34 @@ Per-server reference docs live under
 ### LLM Backend Configuration
 
 #### vLLM Configuration (Default)
-Defined in `compose.yaml` (Qwen3.8-Flash-Next, a MoE reasoning model —
-512 experts / 10 active — run as the INT4 W4A16 quant
-`VnimanieAI/Qwen3.8-Flash-Next-W4A16`, served under the OpenAI-compat
-name `gpt-3.5-turbo` for client convenience):
+Defined in `compose.yaml` (Qwen3.8-27B, a dense hybrid-attention
+reasoning model — multimodal, run unquantized in BF16 as
+`Qwen/Qwen3.8-27B`, served under the OpenAI-compat name `gpt-3.5-turbo`
+for client convenience):
 
 ```yaml
 environment:
-  - VLLM_PLE_CPU_OFFLOAD=1          # ~102 GB of PLE tables live in host RAM
-  - TORCH_COMPILE_DISABLE=1
-  - CUDA_VISIBLE_DEVICES=0,1,2,3    # GPUs 0-3 are dedicated to this service
-  - VLLM_USE_V2_MODEL_RUNNER=0      # v2 runner deadlocks on this host
+  - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}   # resolve the model from the local HF cache only
+  - CUDA_VISIBLE_DEVICES=0,1,2,3          # GPUs 0-3 are dedicated to this service
 command: >
-  --model VnimanieAI/Qwen3.8-Flash-Next-W4A16
+  --model Qwen/Qwen3.8-27B
   --served-model-name gpt-3.5-turbo
   --tensor-parallel-size 4
-  --enable-expert-parallel
-  --max-model-len 98304
-  --max-num-seqs 64
-  --gpu-memory-utilization 0.94
-  --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}'
+  --max-model-len 262144
+  --max-num-seqs 4
+  --limit-mm-per-prompt '{"image": 2, "video": 1}'
+  --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
+  --gpu-memory-utilization 0.90
   --tool-call-parser qwen3_coder
   --reasoning-parser qwen3
   --enable-auto-tool-choice
-  --trust-remote-code
 ```
 
-The model needs >=110 GB of free host RAM for the offloaded PLE tables
-and GPUs 0-3 free of every other service (see [GPU Settings](#gpu-settings)).
+The model needs GPUs 0-3 free of every other service (see
+[GPU Settings](#gpu-settings)); it has no special host RAM requirement.
+The agent caches `max_model_len` from `/v1/models` once per process, so
+after changing `--max-model-len` run `docker compose restart agent` or
+the context-limit threshold keeps the old value.
 
 `--reasoning-parser qwen3` splits the model's `<think>…</think>`
 chain-of-thought into a separate reasoning field on the response,
@@ -799,7 +799,7 @@ wire) and also normalizes it onto the assistant message as
 for in-progress agentic tool-call iterations — see
 [Agent → WebSocket event schema](api-reference.md#websockets) and
 [vLLM service docs](services/vllm/README.md) for the lifecycle, the
-flag-by-flag rationale, model sizing notes, and the Qwen3.8-27B /
+flag-by-flag rationale, model sizing notes, and the Qwen3.8-Flash-Next /
 GLM-4.5-Air rollback pairings.
 
 **Key Parameters**:
@@ -842,8 +842,8 @@ are logged at INFO: `[anthropic] cache read=N create=N input=N output=N`.
 ### Vision Backend Configuration
 
 Vision is served by the **chat vLLM itself**: the default model
-`VnimanieAI/Qwen3.8-Flash-Next-W4A16` is multimodal (its 27-layer ViT
-survives the W4A16 quant, and the `vllm` service passes
+`Qwen/Qwen3.8-27B` is multimodal (a 27-layer ViT handling image and
+video input, and the `vllm` service passes
 `--limit-mm-per-prompt '{"image": 2, "video": 1}'` plus an
 `--mm-processor-kwargs` size cap so each image costs ~2k tokens at most).
 The agent reaches it via env vars mirroring the `LLM_API_BASE` /
@@ -856,8 +856,8 @@ VISION_SERVED_NAME="gpt-3.5-turbo"          # Must match the chat vLLM's --serve
 #VISION_CHAT_TEMPLATE_KWARGS='{"enable_thinking": false}'  # Default. Raw JSON forwarded as chat_template_kwargs on every vision call.
 ```
 
-`VISION_CHAT_TEMPLATE_KWARGS` exists because Flash-Next is a reasoning
-model: without `enable_thinking=false` it spends the small vision
+`VISION_CHAT_TEMPLATE_KWARGS` exists because the chat model is a
+reasoning model: without `enable_thinking=false` it spends the small vision
 `max_tokens` budget on its think block and returns empty content (both
 vision paths now surface that as an explicit "returned no content"
 error rather than a blank answer). Set it to an empty string to omit the
@@ -1106,9 +1106,9 @@ docker compose exec agent curl https://api.weatherapi.com
 # Check HuggingFace token
 echo $HF_HUB_TOKEN
 
-# Pre-download models (~180 GB; see the vLLM service doc for the
+# Pre-download models (~56 GB; see the vLLM service doc for the
 # HF_HUB_OFFLINE refs/main gotcha)
-hf download VnimanieAI/Qwen3.8-Flash-Next-W4A16
+hf download Qwen/Qwen3.8-27B
 
 # Check disk space
 df -h

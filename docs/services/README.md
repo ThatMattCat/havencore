@@ -14,7 +14,7 @@ HavenCore is a collection of containerized services orchestrated via Docker Comp
 | [Text-to-Speech](text-to-speech/README.md) | 6005 | Speech synthesis — selectable engine: Kokoro (default, fast) or Chatterbox-Turbo (cloning + streaming) | Python, Kokoro / Chatterbox-TTS, CUDA |
 | [vLLM Vision](vllm-vision/README.md) | 8001 | Optional second vLLM for a dedicated Qwen3-VL model — shelved behind the `vllm-vision` compose profile; vision is served by the chat model by default | vLLM, CUDA |
 | [Text-to-Image](text-to-image/README.md) | 8188 | Image generation | ComfyUI |
-| [vLLM](vllm/README.md) | 8000 | Primary LLM inference — chat and vision (the Flash-Next model is multimodal) | vLLM, CUDA |
+| [vLLM](vllm/README.md) | 8000 | Primary LLM inference — chat and vision (the Qwen3.8-27B chat model is multimodal) | vLLM, CUDA |
 | [LlamaCPP](llamacpp/README.md) | 8000 | Alternative LLM backend (inactive — compose stanza commented out) | llama.cpp |
 | [PostgreSQL](postgres/README.md) | 5432 | Conversation + metrics storage | PostgreSQL 15 Alpine |
 | [Qdrant](qdrant/README.md) | 6333, 6334 | Vector DB for semantic memory | Qdrant |

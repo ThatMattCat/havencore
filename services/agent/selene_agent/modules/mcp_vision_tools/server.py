@@ -1,6 +1,6 @@
 """
 Vision Tools MCP Server — purpose-built tools on top of the vision-capable vLLM
-(the Flash-Next chat model by default; the shelved vllm-vision service if
+(the multimodal chat model by default; the shelved vllm-vision service if
 VISION_API_BASE points at it).
 
 The general-purpose `query_multimodal_api` (in `mcp_general_tools`) already routes

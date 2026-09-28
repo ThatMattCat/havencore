@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vision backend smoke test. Originally the Phase 1 decision gate for the
 # vllm-vision service; the defaults now target the main chat vLLM on :8000
-# (the Flash-Next model is multimodal and serves vision by default). It still
+# (the chat model is multimodal and serves vision by default). It still
 # works against the shelved vllm-vision service — override VISION_BASE to
 # http://localhost:8001 and VISION_MODEL to gpt-4-vision (and GPU_INDEX=4).
 #

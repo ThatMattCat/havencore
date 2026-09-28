@@ -314,14 +314,16 @@ services:
     # Full write-up: docs/services/vllm/README.md.
     #
     # Qwen3.8-27B notes:
-    # - Unquantized BF16 (~53 GB weights, ~13.3 GB/GPU at tp=4). FP8 checkpoint
+    # - Unquantized BF16 (55.6 GB on disk, 13.11 GiB/GPU at tp=4). FP8 checkpoint
     #   exists but 3090s (SM86) have no native FP8; BF16 is the max-quality fit.
     # - Dense hybrid-attention model (48/64 layers Gated DeltaNet linear attn,
     #   16 full-attn @ 4 KV heads) — NOT MoE, so no --enable-expert-parallel.
     #   KV cost is only ~64 KB/token, so the full native 262144 context fits:
     #   ~16.8 GB KV for one max-length sequence (~4.2 GB/GPU at tp=4) on top of
-    #   the weights. Concurrent sequences share the pool — several at full
-    #   context won't fit, which is fine for this household.
+    #   the weights. Measured at 0.90: 7.52 GiB/GPU of KV = 482,775 tokens
+    #   (1.84x concurrency at 262k), ~44 tok/s decode, cold start ~5.5 min.
+    #   Concurrent sequences share the pool — several at full context won't
+    #   fit, which is fine for this household.
     # - Vision: the checkpoint is multimodal (27-layer ViT, ~461M params,
     #   image + video), and this instance is the agent's vision backend
     #   (VISION_API_BASE/VISION_SERVED_NAME in .env), so there is NO
@@ -370,10 +372,11 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
   vllm-vision:
-    # Same digest as the main `vllm` service: vLLM 0.19.0, verified on NVIDIA
-    # driver 580.x. Above the 0.11.0 minimum required for Qwen3-VL support.
+    # vLLM 0.19.0 (the main `vllm` service is on a newer special-release
+    # digest), verified on NVIDIA driver 580.x. Above the 0.11.0 minimum
+    # required for Qwen3-VL support.
     image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
-    # Shelved 2026-09-26 — the Flash-Next chat model (`vllm` above) is
+    # Shelved 2026-09-26 — the chat model (`vllm` above) is
     # multimodal and now serves vision, so this second instance is off by
     # default. Re-enable by adding `vllm-vision` to COMPOSE_PROFILES in .env
     # (e.g. COMPOSE_PROFILES="kokoro,vllm-vision") and pointing

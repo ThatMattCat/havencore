@@ -1,5 +1,5 @@
 """Vision proxy — wraps the OpenAI-compat chat-completion endpoint of the
-vision-capable vLLM (the Flash-Next chat model by default; VISION_API_BASE /
+vision-capable vLLM (the multimodal chat model by default; VISION_API_BASE /
 VISION_SERVED_NAME can point at the shelved vllm-vision service instead)."""
 import base64
 import time
@@ -37,8 +37,8 @@ async def _call_vision(
         "max_tokens": max_tokens,
         "stream": False,
     }
-    # Reasoning models (Flash-Next) would spend the small vision budget on
-    # their think block; the default kwargs turn thinking off per-request.
+    # A reasoning model (the chat model is one) would spend the small vision
+    # budget on its think block; the default kwargs turn thinking off per-request.
     template_kwargs = config.vision_chat_template_kwargs()
     if template_kwargs:
         body["chat_template_kwargs"] = template_kwargs
@@ -89,7 +89,7 @@ async def ask(
     Accepts both `file` (preferred — image OR video) and `image` (legacy
     image-only field name retained so older callers keep working). The MIME
     type on the upload picks the content-part shape: `image/*` -> image_url,
-    `video/*` -> video_url. The vision-capable vLLM (the Flash-Next chat model
+    `video/*` -> video_url. The vision-capable vLLM (the multimodal chat model
     by default) handles both via the OpenAI-compat multimodal schema.
     """
     if not prompt.strip():

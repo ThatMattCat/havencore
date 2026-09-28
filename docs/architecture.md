@@ -103,8 +103,8 @@ conversation_histories (
 - High-performance inference server
 - Optimized for throughput and latency
 - Supports quantized (compressed-tensors/AWQ/GPTQ) and full-precision models
-- Serves `Qwen3.8-Flash-Next` (MoE, INT4 W4A16 quant, PLE tables offloaded to host RAM) under the OpenAI-compat name `gpt-3.5-turbo`
-- Owns GPUs 0-3 outright (`-tp 4` + expert parallel); every other GPU service is pinned to GPU 4
+- Serves `Qwen3.8-27B` (dense hybrid-attention, unquantized BF16, 262k context) under the OpenAI-compat name `gpt-3.5-turbo`
+- Owns GPUs 0-3 outright (`-tp 4`); every other GPU service is pinned to GPU 4
 - Multimodal: also serves the vision pipeline (`/api/vision/*`, `query_multimodal_api`, the vision MCP tools) — `VISION_API_BASE` / `VISION_SERVED_NAME` point at this same instance. `--limit-mm-per-prompt` allows 2 images per prompt and `--mm-processor-kwargs` caps each image at ~2 MP so image tokens stay bounded; they still share the chat KV cache on GPUs 0-3
 
 #### vLLM Vision Backend (Port 8001) — optional, shelved
@@ -293,8 +293,8 @@ services:
 - **Proxy**: Nginx (reverse proxy, load balancer)
 
 ### AI/ML Stack
-- **Chat LLM**: vLLM serving `VnimanieAI/Qwen3.8-Flash-Next-W4A16` (MoE, INT4) under the OpenAI-compat name `gpt-3.5-turbo`
-- **Vision LLM**: the same Flash-Next vLLM (the model is multimodal); the shelved `vllm-vision` service (`cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` as `gpt-4-vision`) remains available behind a compose profile
+- **Chat LLM**: vLLM serving `Qwen/Qwen3.8-27B` (dense, BF16) under the OpenAI-compat name `gpt-3.5-turbo`
+- **Vision LLM**: the same Qwen3.8-27B vLLM (the model is multimodal); the shelved `vllm-vision` service (`cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit` as `gpt-4-vision`) remains available behind a compose profile
 - **Speech-to-Text**: Faster-Whisper
 - **Text-to-Speech**: Kokoro (default) or Chatterbox-Turbo (Resemble AI) — selectable
 - **Embeddings**: text-embeddings-inference serving `BAAI/bge-large-en-v1.5`

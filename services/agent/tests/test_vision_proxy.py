@@ -1,6 +1,6 @@
 """Tests for the agent's vision proxy (`selene_agent.api.vision._call_vision`).
 
-The vision-capable vLLM is the Flash-Next chat model by default — a reasoning
+The vision-capable vLLM is the multimodal chat model by default — a reasoning
 model — so the proxy forwards `chat_template_kwargs` (enable_thinking=false by
 default) and refuses an empty `content` instead of handing the caller a blank
 description. aiohttp is swapped for a fake session that records the posted

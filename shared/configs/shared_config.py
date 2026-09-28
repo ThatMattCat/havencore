@@ -18,14 +18,14 @@ LLM_API_BASE = os.getenv('LLM_API_BASE', 'http://10.0.0.1:8000/v1')
 # --served-model-name so chat works as soon as the backend comes up.
 LLM_MODEL_FALLBACK = os.getenv('LLM_MODEL_FALLBACK', 'gpt-3.5-turbo')
 
-# Vision defaults to the chat vLLM (the Flash-Next chat model is multimodal);
+# Vision defaults to the chat vLLM (the chat model is multimodal);
 # point these at :8001 / gpt-4-vision to use the shelved vllm-vision service.
 VISION_API_BASE = os.getenv('VISION_API_BASE', 'http://10.0.0.1:8000/v1')
 VISION_API_KEY = os.getenv('VISION_API_KEY', '1234')
 VISION_SERVED_NAME = os.getenv('VISION_SERVED_NAME', 'gpt-3.5-turbo')
 # Raw JSON forwarded as `chat_template_kwargs` on vision chat-completions.
-# Flash-Next is a reasoning model and would otherwise spend the small vision
-# max_tokens budget on its think block; set to an empty string to omit the
+# The chat model is a reasoning model and would otherwise spend the small
+# vision max_tokens budget on its think block; set to an empty string to omit the
 # field for backends that reject it.
 VISION_CHAT_TEMPLATE_KWARGS = os.getenv('VISION_CHAT_TEMPLATE_KWARGS', '{"enable_thinking": false}')
 
