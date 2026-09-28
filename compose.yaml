@@ -254,18 +254,16 @@ services:
       - ./shared:/app/shared:ro
     restart: unless-stopped
   vllm:
-    # Pinned to the `qwen38-flash-next-x86_64-cu130` vendor image (pushed
-    # 2026-08-26) — the vLLM dev build with `qwen4_exp` (Qwen3.8-Flash-Next)
-    # support, including the PLE n-gram-table CPU offload. This is the CUDA
-    # 13.0 build the quant's model card was validated on; host driver 580.x
-    # supports CUDA 13.0. (The cu129 variant, sha256:f16a96245c0a..., loaded
-    # but deadlocked during kernel warmup — see notes below.)
+    # Pinned to the `qwen38-cu129` special-release image (pushed 2026-08-12) —
+    # the dedicated vLLM build with Qwen3.8 hybrid-attention support, and the
+    # digest Qwen3.8-27B was known-good on before the Flash-Next detour. The
+    # cu129 (CUDA 12.9) variant is deliberate: our host driver is 580.x.
     # Rollback digests:
-    #   Qwen3.8-27B (`qwen38-cu129`, pushed 2026-08-12):
-    #     vllm/vllm-openai@sha256:3879c346b0866fe8e1894243bb4fcdfc38f8dfcdb8a710a3b1d456ce4e799999
+    #   Qwen3.8-Flash-Next (`qwen38-flash-next-x86_64-cu130`, pushed 2026-08-26):
+    #     vllm/vllm-openai@sha256:0aea30240f3e3d9ffae8526643950e170eb5fa07fc427016a9dd90892afa2aa3
     #   vLLM v0.19.0 (known-good with GLM-4.5-Air):
     #     vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
-    image: vllm/vllm-openai@sha256:0aea30240f3e3d9ffae8526643950e170eb5fa07fc427016a9dd90892afa2aa3
+    image: vllm/vllm-openai@sha256:3879c346b0866fe8e1894243bb4fcdfc38f8dfcdb8a710a3b1d456ce4e799999
     runtime: nvidia
     # profiles: ["vllm"]   # (always on; unlike vllm-vision below, which is profile-gated)
     env_file:
@@ -277,36 +275,9 @@ services:
       # 71 restarts, 22 min). Set HF_HUB_OFFLINE=0 in .env once to pull a new
       # model, then flip it back.
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
-      # Flash-Next: keep the ~102 GB BF16 PLE (n-gram) lookup tables in host
-      # RAM instead of VRAM. Needs >=110 GB free host RAM (this host has 251).
-      - VLLM_PLE_CPU_OFFLOAD=1
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      # Flash-Next: the TP>1 vocab-masking helper is torch.compile-decorated
-      # regardless of --compilation-config; on this host its inductor kernel
-      # load (cuModuleLoad) hung every worker at 100% CPU after CUDA-graph
-      # capture. Disabling dynamo globally is what the quant card's "do not
-      # let torch.compile run" actually requires here.
-      - TORCH_COMPILE_DISABLE=1
       # GPUs 0-3 are this service's; GPU 4 hosts the helpers (STT/TTS/
-      # embeddings/face/ComfyUI).
-      # Hide it so neither the TP ranks nor the PLE offload worker touch it.
+      # embeddings/face/ComfyUI). Hide it so no TP rank lands on it.
       - CUDA_VISIBLE_DEVICES=0,1,2,3
-      # REQUIRED for Flash-Next on this host: the v2 model runner stages PLE
-      # inputs from CUDA tensors via a device-to-host copy that waits on an
-      # event recorded on the model stream; that handoff races and every boot
-      # deadlocked after CUDA-graph capture (workers at 100% CPU, GPUs idle,
-      # then `queue.Full` in PleOffloadConnector._launch once torch.compile
-      # was disabled). The v1 runner feeds the offload worker from its CPU
-      # input mirrors and needs no such sync. (CUDA_LAUNCH_BLOCKING=1 also
-      # cures it, at ~40% of the decode speed.)
-      - VLLM_USE_V2_MODEL_RUNNER=0
-    # The PLE offload worker hands GPU buffers between processes with the
-    # `pidfd_getfd` syscall, which Docker's default seccomp profile blocks.
-    # Both settings are required by the quant's model card; LAN-only host.
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - seccomp=unconfined
     # tini as PID 1: a hung `vllm serve` otherwise becomes an unkillable
     # zombie that `docker compose stop` refuses ("PID ... is zombie").
     init: true
@@ -323,71 +294,62 @@ services:
     #   --reasoning-parser glm45 --enable-auto-tool-choice --trust-remote-code
     #   --host 0.0.0.0 --port 8000
     #
-    # Rollback command (pairs with the `qwen38-cu129` digest above; dense
-    # Qwen3.8-27B, BF16, ~13.3 GB/GPU weights, full 262k context):
-    #   --model Qwen/Qwen3.8-27B --served-model-name gpt-3.5-turbo
-    #   --tensor-parallel-size 4 --language-model-only --max-model-len 262144
-    #   --max-num-seqs 2 --gpu-memory-utilization 0.80
+    # Rollback command (pairs with the `qwen38-flash-next-x86_64-cu130` digest
+    # above; MoE INT4 quant, ~18.2 GiB/GPU weights, 98k context, ~84 tok/s).
+    # Dropped 2026-09-28 for answer quality (uncalibrated RTN quant with INT4
+    # attention; false "misspelled" claims, weak long agent loops):
+    #   --model VnimanieAI/Qwen3.8-Flash-Next-W4A16 --served-model-name gpt-3.5-turbo
+    #   --tensor-parallel-size 4 --enable-expert-parallel --max-model-len 98304
+    #   --max-num-seqs 64 --limit-mm-per-prompt '{"image": 2, "video": 1}'
+    #   --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
+    #   --gpu-memory-utilization 0.94
+    #   --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}'
     #   --tool-call-parser qwen3_coder --reasoning-parser qwen3
-    #   --enable-auto-tool-choice --host 0.0.0.0 --port 8000
-    # (drop VLLM_PLE_CPU_OFFLOAD, cap_add and security_opt when rolling back)
+    #   --enable-auto-tool-choice --trust-remote-code --host 0.0.0.0 --port 8000
+    # It also needs, on the service: environment VLLM_PLE_CPU_OFFLOAD=1
+    # (~102 GB of PLE tables in host RAM), VLLM_USE_V2_MODEL_RUNNER=0 and
+    # TORCH_COMPILE_DISABLE=1 (both cure boot deadlocks on this host),
+    # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, plus
+    # `cap_add: [SYS_PTRACE]` and `security_opt: [seccomp=unconfined]`.
+    # Full write-up: docs/services/vllm/README.md.
     #
-    # Qwen3.8-Flash-Next notes (VnimanieAI/Qwen3.8-Flash-Next-W4A16 quant):
-    # - MoE: 512 experts / 10 active, ~125B backbone + 51B PLE n-gram tables.
-    #   INT4 g128 experts + attention, BF16 everything else; 168 GB on disk,
-    #   ~66 GB of which is GPU-resident (~16.5 GB/GPU at tp=4). The official
-    #   FP8 checkpoint cannot run on 3090s (SM86 has no FP8).
-    # - --enable-expert-parallel is MANDATORY: moe_intermediate_size=640 is not
-    #   divisible into 128-wide quant groups under plain TP (640/4 = 160).
-    # - --compilation-config mode 0: inductor compile of this arch hangs forever
-    #   on Ampere; FULL_DECODE_ONLY keeps decode CUDA graphs (9 → 105 tok/s).
-    # - 4x24 GB fits weights + ~98k context OR weights + MTP, not both. MTP
-    #   (--speculative-config '{"method":"mtp","num_speculative_tokens":4}')
-    #   is off; re-enable if we ever drop context.
-    # - GPUs 0-3 must be DEDICATED to this service (CUDA_VISIBLE_DEVICES
-    #   above). Measured: weights 18.2 GiB/GPU + ~2 GiB profiling peak; KV is
-    #   ~14.7 KB/token/GPU and does NOT shrink with TP (2 KV heads replicate
-    #   below 1 head/rank), so 98k ctx needs 1.24 GiB/GPU. With STT/TTS/
-    #   embeddings/face/ComfyUI sharing these cards the budget capped at 0.88
-    #   and only ~0.5 GiB was left for KV (~32k ctx); fp8 KV is rejected
-    #   ("QSA requires a BF16 main KV cache"). All helpers are therefore
-    #   pinned to GPU 4 via the *_GPU vars in .env (vllm-vision is
-    #   profile-gated off since vision moved to this model).
-    # - Flags mirror the quant card's 4x3090 recipe (max-num-seqs 64, no
-    #   --language-model-only / --max-num-batched-tokens); the deadlock they
-    #   were suspected of turned out to be the v2-runner PLE race above.
-    # - gpu-memory-utilization 0.94 (card: 0.92): the v1 runner charges CUDA
-    #   graph memory (~0.4 GiB) against the budget, so 0.92 left only 1.06 GiB
-    #   for KV (< the 1.24 GiB one 98k request needs). Measured at 0.94: KV
-    #   121k tokens (1.23x concurrency at 98k), ~84 tok/s decode short-ctx,
-    #   ~92 tok/s at 31k ctx, prefill ~1.7k tok/s, warm TTFT ~0.3 s.
-    # - Same reasoning/tool parsers as Qwen3.8-27B — no agent-side change.
-    # - Vision: the model is multimodal (27-layer ViT kept in the W4A16 quant);
-    #   the agent's vision proxy (/api/vision/*) and mcp_vision_tools target
-    #   this instance (VISION_API_BASE/VISION_SERVED_NAME in .env), so the
-    #   separate vllm-vision service is profile-gated off. --limit-mm-per-prompt
-    #   image:2 is what compare_snapshots needs (vLLM default is 1); the
-    #   --mm-processor-kwargs size cap bounds each image to ~2 MP (~2k tokens,
-    #   a full 1080p snapshot) so memory profiling and KV don't balloon — the
-    #   checkpoint's default longest_edge is 16.7 MP (~16k tokens/image).
-    #   Vision calls pass chat_template_kwargs enable_thinking=false (see
+    # Qwen3.8-27B notes:
+    # - Unquantized BF16 (~53 GB weights, ~13.3 GB/GPU at tp=4). FP8 checkpoint
+    #   exists but 3090s (SM86) have no native FP8; BF16 is the max-quality fit.
+    # - Dense hybrid-attention model (48/64 layers Gated DeltaNet linear attn,
+    #   16 full-attn @ 4 KV heads) — NOT MoE, so no --enable-expert-parallel.
+    #   KV cost is only ~64 KB/token, so the full native 262144 context fits:
+    #   ~16.8 GB KV for one max-length sequence (~4.2 GB/GPU at tp=4) on top of
+    #   the weights. Concurrent sequences share the pool — several at full
+    #   context won't fit, which is fine for this household.
+    # - Vision: the checkpoint is multimodal (27-layer ViT, ~461M params,
+    #   image + video), and this instance is the agent's vision backend
+    #   (VISION_API_BASE/VISION_SERVED_NAME in .env), so there is NO
+    #   --language-model-only and the separate vllm-vision service stays
+    #   profile-gated off. --limit-mm-per-prompt image:2 is what
+    #   compare_snapshots needs (vLLM default is 1); the --mm-processor-kwargs
+    #   size cap bounds each image to ~2 MP (~2k tokens, a full 1080p
+    #   snapshot) so memory profiling and KV don't balloon. Vision calls pass
+    #   chat_template_kwargs enable_thinking=false (see
     #   VISION_CHAT_TEMPLATE_KWARGS) so the small vision max_tokens budget
     #   isn't spent on the think block.
+    # - gpu-memory-utilization 0.90: GPUs 0-3 are dedicated now (the old 0.80
+    #   dated from when the helpers shared these cards), and the vision tower
+    #   + image profiling need room the text-only config didn't.
+    # - max-num-seqs 4: chat, autonomy turns and vision calls all land here.
+    # - Built-in MTP draft head available later via --speculative-config.
     command: >
-      --model VnimanieAI/Qwen3.8-Flash-Next-W4A16
+      --model Qwen/Qwen3.8-27B
       --served-model-name gpt-3.5-turbo
       --tensor-parallel-size 4
-      --enable-expert-parallel
-      --max-model-len 98304
-      --max-num-seqs 64
+      --max-model-len 262144
+      --max-num-seqs 4
       --limit-mm-per-prompt '{"image": 2, "video": 1}'
       --mm-processor-kwargs '{"size": {"longest_edge": 2097152, "shortest_edge": 65536}}'
-      --gpu-memory-utilization 0.94
-      --compilation-config '{"mode": 0, "cudagraph_mode": "FULL_DECODE_ONLY"}'
+      --gpu-memory-utilization 0.90
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --enable-auto-tool-choice
-      --trust-remote-code
       --host 0.0.0.0
       --port 8000
 
